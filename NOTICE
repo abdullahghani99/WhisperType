@@ -1,0 +1,23 @@
+WhisperType
+Copyright (c) 2026 Abdullah Ghani
+Licensed under the MIT License (see LICENSE).
+
+This product uses the following third-party components:
+
+Models (downloaded at runtime, not distributed with this software):
+  - Whisper Large V3 — © OpenAI, MIT License
+  - Qwen2.5-7B-Instruct — © Alibaba Cloud, Apache License 2.0
+  (Both retrieved via the mlx-community organization on Hugging Face.
+   If you swap in a Llama model, Meta's Llama Community License applies.)
+
+Libraries:
+  - MLX, mlx-lm, mlx-whisper — © Apple, MIT License
+  - FastAPI — MIT License
+  - Uvicorn — BSD 3-Clause License
+  - transformers, tokenizers, huggingface-hub — Apache License 2.0
+  - requests — Apache License 2.0
+  - numpy — BSD 3-Clause License
+
+"Whisper" is a trademark/name of OpenAI; "Qwen" of Alibaba. WhisperType is an
+independent open-source project and is not affiliated with, endorsed by, or
+sponsored by OpenAI, Alibaba, Apple, or any commercial dictation product.

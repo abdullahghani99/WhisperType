@@ -1,0 +1,9 @@
+# WhisperType server deps (install into an isolated venv, Python 3.12)
+#   python3.12 -m venv ~/WhisperType-venv
+#   ~/WhisperType-venv/bin/pip install -r requirements.txt
+mlx-lm==0.31.3
+transformers==4.51.3   # 5.x breaks mlx-lm's AutoTokenizer.register; pin to last-good 4.x
+fastapi
+uvicorn
+requests
+python-multipart

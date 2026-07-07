@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>WhisperType</string>
+    <key>CFBundleDisplayName</key>
+    <string>WhisperType</string>
+    <key>CFBundleIdentifier</key>
+    <string>app.whispertype.client</string>
+    <key>CFBundleExecutable</key>
+    <string>WhisperType</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>WhisperType records your voice while you hold the push-to-talk key, to transcribe it into text.</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <!-- The server speaks plain HTTP on the private local network, so allow
+         local cleartext requests (macOS App Transport Security blocks http://
+         by default — this is why URLSession failed while curl worked). -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
+</dict>
+</plist>

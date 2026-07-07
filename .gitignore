@@ -1,0 +1,20 @@
+# Swift build
+.build/
+*.app/
+*.xcodeproj/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Runtime / local state (never commit)
+*.sqlite
+*.sqlite-*
+vocab.json
+vocab.seed.json
+*.log
+
+# macOS
+.DS_Store

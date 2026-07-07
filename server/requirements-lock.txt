@@ -1,0 +1,25 @@
+# Exact working versions (Python 3.12).
+# This is the source of truth for a reproducible server venv. Install with:
+#   python3.12 -m venv ~/WhisperType-venv
+#   ~/WhisperType-venv/bin/pip install -r requirements-lock.txt
+#
+# NOTE: mlx-lm 0.31.3 *declares* transformers>=5.0.0, but transformers 5.x
+# broke mlx-lm's AutoTokenizer.register(); 4.51.3 works. Because of that
+# declared conflict, pip's strict resolver rejects the pinned pair — install
+# with --no-deps ordering (see scripts/deploy_server.sh) or accept the
+# resolver warning; the runtime import + inference are verified working.
+fastapi==0.139.0
+huggingface_hub==0.36.2
+mlx==0.31.2
+mlx-lm==0.31.3
+mlx-metal==0.31.2
+numpy==2.5.1
+pydantic==2.13.4
+pydantic_core==2.46.4
+python-multipart==0.0.32
+requests==2.34.2
+safetensors==0.8.0
+starlette==1.3.1
+tokenizers==0.21.4
+transformers==4.51.3
+uvicorn==0.50.2

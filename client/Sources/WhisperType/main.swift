@@ -69,7 +69,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setupClient() {
         let urlStr = ProcessInfo.processInfo.environment["VF_SERVER_URL"]
-            ?? "http://127.0.0.1:8790" // set VF_SERVER_URL to your server Mac (Tailscale IP)
+            ?? "http://127.0.0.1:8790" // set VF_SERVER_URL to your server Mac
         let apiKey = ProcessInfo.processInfo.environment["VF_API_KEY"]
         client = ServerClient(baseURL: URL(string: urlStr)!, apiKey: apiKey)
         vlog("server url: \(urlStr)")

@@ -87,6 +87,9 @@ struct ServerClient {
         body.append(wav)
         add("\r\n--\(boundary)--\r\n")
         req.httpBody = body
+        // Long dictations take a while to transcribe on the server; a short
+        // timeout silently drops them. Allow up to 5 minutes.
+        req.timeoutInterval = 300
 
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {

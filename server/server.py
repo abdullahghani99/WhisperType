@@ -6,7 +6,7 @@ Runs on your server Mac. One endpoint the client calls:
 
 Pipeline:
     1. ASR  — optionally forwards audio to a separate mlx-whisper server
-              as a fallback (OpenAI-compatible /v1/audio/transcriptions).
+              (whisper-large-v3, OpenAI-compatible /v1/audio/transcriptions).
     2. Polish — a local mlx-lm model held RESIDENT in GPU memory (always warm),
                 cleans dictation (punctuation, caps, filler removal) in ~0.3s.
 
@@ -132,7 +132,18 @@ def _whisper_prompt() -> str | None:
 
 
 def _transcribe_local(tmp_path: str, language: str | None) -> str:
-    kwargs = {"path_or_hf_repo": WHISPER_MODEL, "temperature": 0.0}
+    kwargs = {
+        "path_or_hf_repo": WHISPER_MODEL,
+        # CRITICAL: a temperature-fallback tuple + NOT conditioning on previous
+        # text prevents the repetition/hallucination loop Whisper falls into on
+        # long audio (forcing temperature=0.0 disabled that safety and caused a
+        # 2-min dictation to loop on its first sentence). compression_ratio +
+        # no_speech thresholds let it detect & re-decode a bad segment.
+        "temperature": (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+        "condition_on_previous_text": False,
+        "compression_ratio_threshold": 2.4,
+        "no_speech_threshold": 0.6,
+    }
     prompt = _whisper_prompt()
     if prompt:
         kwargs["initial_prompt"] = prompt
@@ -173,7 +184,10 @@ def _polish(text: str) -> str:
         msgs.append({"role": "assistant", "content": clean_ex})
     msgs.append({"role": "user", "content": text})
     prompt = _tok.apply_chat_template(msgs, add_generation_prompt=True)
-    out = generate(_model, _tok, prompt=prompt, max_tokens=400, verbose=False)
+    # Scale with input so long dictations aren't truncated by the polish step
+    # (~1.6 tokens/word, + headroom).
+    max_toks = max(400, int(len(text.split()) * 1.8) + 200)
+    out = generate(_model, _tok, prompt=prompt, max_tokens=max_toks, verbose=False)
     return out.strip()
 
 
@@ -279,7 +293,7 @@ async def voice_flow(
         polish_ms = int((time.time() - t_p) * 1000)
 
     log.info("WhisperType ok asr=%dms polish=%dms chars=%d", asr_ms, polish_ms, len(text))
-    _capture(raw, corrected, text, asr_ms, polish_ms, len(audio))
+    _capture(raw, corrected, text, asr_ms, polish_ms, len(audio), audio)
     return JSONResponse({
         "raw": raw,
         "corrected": corrected,
@@ -335,6 +349,12 @@ def _init_db():
             raw TEXT, corrected TEXT, polished TEXT, edited TEXT,
             asr_ms INTEGER, polish_ms INTEGER, audio_bytes INTEGER,
             num_words INTEGER)""")
+        # Retain the audio (WAV bytes) so a dictation is NEVER unrecoverable — a
+        # bad transcription can be re-run, and it builds a personal training set.
+        try:
+            con.execute("ALTER TABLE history ADD COLUMN audio BLOB")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         con.commit()
         con.close()
         log.info("capture store ready at %s", DB_PATH)
@@ -367,17 +387,51 @@ def _history_count():
         return 0
 
 
-def _capture(raw, corrected, polished, asr_ms, polish_ms, audio_bytes):
+def _capture(raw, corrected, polished, asr_ms, polish_ms, audio_bytes, audio=None):
     try:
         con = sqlite3.connect(DB_PATH)
         con.execute(
-            "INSERT INTO history (raw, corrected, polished, asr_ms, polish_ms, audio_bytes, num_words) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (raw, corrected, polished, asr_ms, polish_ms, audio_bytes, len((polished or "").split())))
+            "INSERT INTO history (raw, corrected, polished, asr_ms, polish_ms, audio_bytes, num_words, audio) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (raw, corrected, polished, asr_ms, polish_ms, audio_bytes,
+             len((polished or "").split()), audio))
         con.commit()
         con.close()
     except Exception as e:  # noqa: BLE001
         log.warning("capture failed: %s", e)
+
+
+@app.post("/retranscribe")
+async def retranscribe(id: int):
+    """Re-run ASR (+polish) on a stored dictation's retained audio — recovers a
+    bad take now that the repetition-loop bug is fixed."""
+    if not _WHISPER_LOCAL:
+        raise HTTPException(status_code=400, detail="local whisper not available")
+    con = sqlite3.connect(DB_PATH)
+    row = con.execute("SELECT audio FROM history WHERE id=?", (id,)).fetchone()
+    con.close()
+    if not row or row[0] is None:
+        raise HTTPException(status_code=404, detail="no stored audio for that id")
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp.write(row[0])
+            tmp_path = tmp.name
+        raw = await asyncio.to_thread(_transcribe_local, tmp_path, None)
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    corrected = apply_vocab(raw)
+    text = await asyncio.to_thread(_polish, corrected)
+    con = sqlite3.connect(DB_PATH)
+    con.execute("UPDATE history SET raw=?, corrected=?, polished=?, num_words=? WHERE id=?",
+                (raw, corrected, text, len(text.split()), id))
+    con.commit()
+    con.close()
+    return {"id": id, "raw": raw, "text": text}
 
 
 if __name__ == "__main__":

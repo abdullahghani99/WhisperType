@@ -89,7 +89,7 @@ private struct DictionaryTab: View {
             Text("When Whisper mishears a word, add a fix. Applies instantly to every dictation.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
-                TextField("heard (e.g. faroq)", text: $from).textFieldStyle(.roundedBorder)
+                TextField("heard (e.g. helo)", text: $from).textFieldStyle(.roundedBorder)
                 Image(systemName: "arrow.right").foregroundStyle(.secondary)
                 TextField("correct (e.g. Kubernetes)", text: $to).textFieldStyle(.roundedBorder)
                 Button("Add") { state.addReplacement(from, to); from = ""; to = "" }

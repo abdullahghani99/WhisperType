@@ -1,4 +1,6 @@
 import AVFoundation
+import AudioToolbox
+import CoreAudio
 import Foundation
 
 /// Captures microphone audio and produces a 16 kHz mono 16-bit PCM WAV, which
@@ -40,10 +42,22 @@ final class AudioRecorder {
 
         let e = AVAudioEngine()          // fresh engine → current default device
         engine = e
-        if let dev = AVCaptureDevice.default(for: .audio) {
-            logError("input device: \(dev.localizedName)")
-        }
         let input = e.inputNode
+
+        // If the user pinned a specific mic, force the engine onto it (so we
+        // don't follow the system default flipping to AirPods/iPhone/virtual).
+        let pinnedUID = UserDefaults.standard.string(forKey: AudioDevices.defaultsKey) ?? ""
+        if !pinnedUID.isEmpty, let devID = AudioDevices.deviceID(forUID: pinnedUID),
+           let au = input.audioUnit {
+            var dev = devID
+            let st = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
+                                          kAudioUnitScope_Global, 0, &dev,
+                                          UInt32(MemoryLayout<AudioDeviceID>.size))
+            if st != noErr { logError("could not pin input device (err \(st)); using default") }
+        }
+        if let dev = AVCaptureDevice.default(for: .audio) {
+            logError("input device: \(pinnedUID.isEmpty ? dev.localizedName : "pinned \(pinnedUID)")")
+        }
         let inFormat = input.inputFormat(forBus: 0)
 
         // Guard against an invalid/asleep device (0 channels / 0 Hz) — that was

@@ -33,6 +33,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let historyMenu = NSMenu(title: "Recent dictations")
     private var recent: [String] = []
     private let settingsWC = SettingsWindowController()
+    private var healthTimer: Timer?
 
     // Optional mouse-button TOGGLE trigger (e.g. a Logitech side/scroll button):
     // click to start, click again to stop. Coexists with Right-Option (hold).
@@ -55,6 +56,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupHotkey()
 
         Task { await refreshHistory() }   // seed the dropdown from the server
+        startHealthMonitor()
 
         let trusted = AXIsProcessTrusted()
         vlog("accessibility trusted at launch: \(trusted)")
@@ -144,6 +146,31 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openSettings() {
         settingsWC.show(client: client)
+    }
+
+    // MARK: - Health monitor (menu-bar icon reflects server reachability)
+
+    private func startHealthMonitor() {
+        updateHealthIcon()
+        healthTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
+            self?.updateHealthIcon()
+        }
+    }
+
+    private func updateHealthIcon() {
+        Task {
+            let ok = (try? await client.health()) != nil
+            await MainActor.run {
+                let name = ok ? "mic.fill" : "mic.slash.fill"
+                if let img = NSImage(systemSymbolName: name, accessibilityDescription: "WhisperType") {
+                    img.isTemplate = true
+                    self.statusItem.button?.image = img
+                }
+                self.statusItem.button?.toolTip = ok
+                    ? "WhisperType — server reachable"
+                    : "WhisperType — server unreachable"
+            }
+        }
     }
 
     @objc private func openAccessibility() {

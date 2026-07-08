@@ -9,8 +9,20 @@ final class SettingsState: ObservableObject {
     @Published var snippets: [(String, String)] = []
     @Published var history: [String] = []
     @Published var status: String = ""
+    @Published var micDevices: [AudioInputDevice] = []
+    @Published var selectedMicUID: String = UserDefaults.standard.string(forKey: AudioDevices.defaultsKey) ?? ""
 
     var client: ServerClient?
+
+    func loadMics() {
+        micDevices = AudioDevices.inputs()
+        selectedMicUID = UserDefaults.standard.string(forKey: AudioDevices.defaultsKey) ?? ""
+    }
+
+    func selectMic(_ uid: String) {
+        selectedMicUID = uid
+        UserDefaults.standard.set(uid, forKey: AudioDevices.defaultsKey)
+    }
 
     func reload() {
         guard let client = client else { return }
@@ -69,11 +81,12 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             DictionaryTab(state: state).tabItem { Text("Dictionary") }
+            MicTab(state: state).tabItem { Text("Microphone") }
             HistoryTab(state: state).tabItem { Text("History") }
             AboutTab().tabItem { Text("About") }
         }
         .frame(width: 560, height: 460)
-        .onAppear { state.reload() }
+        .onAppear { state.reload(); state.loadMics() }
     }
 }
 
@@ -120,6 +133,31 @@ private struct DictionaryTab: View {
             if !state.status.isEmpty {
                 Text(state.status).font(.caption).foregroundStyle(Color.vfAccent)
             }
+        }
+        .padding(16)
+    }
+}
+
+private struct MicTab: View {
+    @ObservedObject var state: SettingsState
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Microphone").font(.headline)
+            Text("Pin a specific mic so WhisperType ignores macOS flipping the default to AirPods / iPhone / virtual devices (which hand back silence).")
+                .font(.caption).foregroundStyle(.secondary)
+            Picker("Input device", selection: Binding(
+                get: { state.selectedMicUID },
+                set: { state.selectMic($0) })) {
+                Text("System default (follow macOS)").tag("")
+                ForEach(state.micDevices) { d in
+                    Text(d.name).tag(d.uid)
+                }
+            }
+            .pickerStyle(.radioGroup)
+            Button("Refresh device list") { state.loadMics() }
+            Spacer()
+            Text("Tip: pick your headset or “MacBook Pro Microphone” for the most reliable capture.")
+                .font(.caption).foregroundStyle(.secondary)
         }
         .padding(16)
     }

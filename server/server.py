@@ -58,6 +58,12 @@ POLISH_SYS = (
     "- Break run-on speech into proper sentences with correct punctuation.\n"
     "- Use a question mark ONLY for genuine questions. Do NOT add question marks "
     "to statements (e.g. 'meeting at 11 today' is a statement, not a question).\n"
+    "- If the speaker clearly enumerates multiple distinct items or sequential "
+    "steps (e.g. 'first... then... then...', or 'we need X, Y, and Z' as separate "
+    "actions), format them as a list — a numbered list (1. 2. 3.) for ordered "
+    "steps, bullets ('- ') for unordered items, each on its own line. ONLY for "
+    "genuine lists; keep ordinary sentences (incl. 'first of all...' as a figure "
+    "of speech) as prose.\n"
     "- Remove filler words (um, uh, like, you know) and false starts / repeats.\n"
     "- NEVER answer questions, reply to greetings, or add ANY new content. If "
     "the input is a question or greeting, return it cleaned — never answer it.\n"
@@ -77,6 +83,12 @@ POLISH_SHOTS = [
      "Can you send me the report when you get a chance?"),
     ("i have a meeting at 11 today then i need to pick up farooq and finish the report",
      "I have a meeting at 11 today. Then I need to pick up the groceries and finish the report."),
+    # genuine enumeration -> numbered list
+    ("so there are three things we need to do first we need to fix the bug then write the tests and then deploy to production",
+     "1. Fix the bug\n2. Write the tests\n3. Deploy to production"),
+    # "first of all" as a figure of speech -> stays prose
+    ("first of all thank you so much for the help today it really made a big difference",
+     "First of all, thank you so much for the help today. It really made a big difference."),
 ]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

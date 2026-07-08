@@ -169,6 +169,15 @@ def apply_vocab(text: str) -> str:
         text = text.replace(trig, exp)
     for frm, to in _vocab.get("replacements", {}).items():
         text = re.sub(rf"\b{re.escape(frm)}\b", to, text, flags=re.IGNORECASE)
+    # Spoken symbol: "foo underscore bar" -> "foo_bar" (technical identifiers like
+    # ET_Service). Looped to handle chains (a underscore b underscore c). High
+    # signal — two alphanumerics around "underscore" is almost always an identifier.
+    for _ in range(6):
+        new = re.sub(r"\b([A-Za-z0-9]+)\s+underscore\s+([A-Za-z0-9]+)\b",
+                     r"\1_\2", text, count=1, flags=re.IGNORECASE)
+        if new == text:
+            break
+        text = new
     return text
 
 

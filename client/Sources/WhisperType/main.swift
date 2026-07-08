@@ -336,8 +336,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         vlog("recording: stop, wav bytes=\(wav.count)")
 
         guard wav.count > 8_000 else {
-            vlog("recording too short, ignoring")
-            overlay.hide()
+            if wav.count <= 64 {  // header only → the mic produced no samples
+                vlog("no audio captured (mic produced no samples)")
+                overlay.show(.message("No audio captured — check your input device in System Settings ▸ Sound ▸ Input (AirPods/iPhone mics often go silent)"))
+                overlay.hide(after: 4)
+            } else {
+                vlog("recording too short, ignoring")
+                overlay.hide()
+            }
             return
         }
 

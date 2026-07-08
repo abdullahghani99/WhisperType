@@ -40,6 +40,9 @@ final class AudioRecorder {
 
         let e = AVAudioEngine()          // fresh engine → current default device
         engine = e
+        if let dev = AVCaptureDevice.default(for: .audio) {
+            logError("input device: \(dev.localizedName)")
+        }
         let input = e.inputNode
         let inFormat = input.inputFormat(forBus: 0)
 

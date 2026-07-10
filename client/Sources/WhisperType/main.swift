@@ -32,6 +32,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Recent dictations for the menu-bar history dropdown (newest first).
     private let historyMenu = NSMenu(title: "Recent dictations")
     private var recent: [String] = []
+
+    // Last dictation, so "Correct last dictation…" can teach the server a fix.
+    private var lastDictationId: Int?
+    private var lastDictationText: String = ""
     private let settingsWC = SettingsWindowController()
     private var healthTimer: Timer?
 
@@ -57,6 +61,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         Task { await refreshHistory() }   // seed the dropdown from the server
         startHealthMonitor()
+        recorder.configurePreroll()       // start warm engine if pre-roll is enabled
+
+        // Live-apply the pre-roll toggle from Settings without a relaunch:
+        // enabling starts the always-warm engine now; disabling tears it down.
+        NotificationCenter.default.addObserver(
+            forName: .vfPrerollChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.recorder.configurePreroll()
+            vlog("preroll toggled -> \(UserDefaults.standard.bool(forKey: "vf_preroll"))")
+        }
 
         let trusted = AXIsProcessTrusted()
         vlog("accessibility trusted at launch: \(trusted)")
@@ -118,6 +131,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(historyItem)
         menu.addItem(.separator())
 
+        menu.addItem(NSMenuItem(title: "Correct last dictation… (teach a fix)",
+                                action: #selector(correctLastDictation), keyEquivalent: "e"))
         menu.addItem(NSMenuItem(title: "Settings & Dictionary…",
                                 action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Test dictation now (5s)",
@@ -146,6 +161,36 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openSettings() {
         settingsWC.show(client: client)
+    }
+
+    /// Teach the server a fix: show the last dictation, let the user edit it,
+    /// and POST the correction. The server diffs it and derives vocab candidates
+    /// (which surface in Settings ▸ Learning for approval).
+    @objc private func correctLastDictation() {
+        guard let id = lastDictationId else {
+            overlay.show(.message("Dictate something first, then teach a correction"))
+            overlay.hide(after: 2.5)
+            return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        guard let edited = CorrectionPrompt.run(prefill: lastDictationText),
+              edited != lastDictationText else { return }
+        Task {
+            do {
+                try await client.correct(id: id, edited: edited)
+                vlog("correction taught for id=\(id)")
+                await MainActor.run {
+                    self.overlay.show(.message("Learned. Review it in Settings ▸ Learning."))
+                    self.overlay.hide(after: 2.5)
+                }
+            } catch {
+                vlog("correction FAILED: \(error)")
+                await MainActor.run {
+                    self.overlay.show(.message("Couldn’t save correction: \(error.localizedDescription)"))
+                    self.overlay.hide(after: 3)
+                }
+            }
+        }
     }
 
     // MARK: - Health monitor (menu-bar icon reflects server reachability)
@@ -378,8 +423,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task {
             do {
                 let result = try await client.transcribe(wav: wav)
-                vlog("transcribe ok: raw=\"\(result.raw)\" text=\"\(result.text)\"")
-                await MainActor.run { self.addToHistory(result.text) }
+                vlog("transcribe ok: id=\(result.id.map(String.init) ?? "nil") raw=\"\(result.raw)\" text=\"\(result.text)\"")
+                await MainActor.run {
+                    self.addToHistory(result.text)
+                    self.lastDictationId = result.id
+                    self.lastDictationText = result.text
+                }
                 await insert(result.text)
                 overlay.hide(after: 0.4)
             } catch {

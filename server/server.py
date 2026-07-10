@@ -314,8 +314,9 @@ async def voice_flow(
         polish_ms = int((time.time() - t_p) * 1000)
 
     log.info("WhisperType ok asr=%dms polish=%dms chars=%d", asr_ms, polish_ms, len(text))
-    _capture(raw, corrected, text, asr_ms, polish_ms, len(audio), audio)
+    row_id = _capture(raw, corrected, text, asr_ms, polish_ms, len(audio), audio)
     return JSONResponse({
+        "id": row_id,
         "raw": raw,
         "corrected": corrected,
         "text": text,
@@ -357,6 +358,7 @@ async def update_vocab(payload: dict, authorization: str | None = Header(None)):
 # comes next.
 # ---------------------------------------------------------------------------
 import sqlite3  # noqa: E402
+import difflib  # noqa: E402
 
 DB_PATH = os.environ.get("VF_DB_PATH", os.path.join(os.path.dirname(__file__), "history.sqlite"))
 
@@ -376,6 +378,20 @@ def _init_db():
             con.execute("ALTER TABLE history ADD COLUMN audio BLOB")
         except sqlite3.OperationalError:
             pass  # column already exists
+        # Learning candidates: fixes derived from your corrections (POST /correct)
+        # or a deterministic history scan. Never auto-applied — you approve each
+        # one, which promotes it into the live vocab. UNIQUE so re-seeing a fix
+        # bumps its count instead of duplicating; dismissed ones stay dismissed.
+        con.execute("""CREATE TABLE IF NOT EXISTS suggestions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,                 -- 'replacement' | 'term'
+            frm TEXT NOT NULL DEFAULT '',       -- replacement source (heard); '' for terms
+            to_ TEXT NOT NULL,                  -- replacement target, or the term itself
+            count INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'pending',  -- pending | promoted | dismissed
+            source TEXT NOT NULL DEFAULT 'edit',     -- edit | scan
+            ts TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(kind, frm, to_))""")
         con.commit()
         con.close()
         log.info("capture store ready at %s", DB_PATH)
@@ -409,17 +425,21 @@ def _history_count():
 
 
 def _capture(raw, corrected, polished, asr_ms, polish_ms, audio_bytes, audio=None):
+    """Persist a dictation; returns its row id (so the client can correct it)."""
     try:
         con = sqlite3.connect(DB_PATH)
-        con.execute(
+        cur = con.execute(
             "INSERT INTO history (raw, corrected, polished, asr_ms, polish_ms, audio_bytes, num_words, audio) "
             "VALUES (?,?,?,?,?,?,?,?)",
             (raw, corrected, polished, asr_ms, polish_ms, audio_bytes,
              len((polished or "").split()), audio))
+        row_id = cur.lastrowid
         con.commit()
         con.close()
+        return row_id
     except Exception as e:  # noqa: BLE001
         log.warning("capture failed: %s", e)
+        return None
 
 
 @app.post("/retranscribe")
@@ -453,6 +473,230 @@ async def retranscribe(id: int):
     con.commit()
     con.close()
     return {"id": id, "raw": raw, "text": text}
+
+
+# ---------------------------------------------------------------------------
+# Learning loop — close the raw→polished→EDITED circle. When you fix a dictation
+# we store your version, diff it against what we produced, and derive candidate
+# vocab fixes. Nothing is auto-applied: candidates surface as suggestions you
+# approve (promote into live vocab) or dismiss. A deterministic history scan
+# adds candidates for names you keep using that aren't in your vocab yet.
+# ---------------------------------------------------------------------------
+_WORD_RE = re.compile(r"[A-Za-z0-9']+")
+
+
+def _is_termish(tok: str) -> bool:
+    """A proper-noun-ish token worth learning as a term (a name, a product code,
+    an acronym)."""
+    if len(tok) < 2:
+        return False
+    return tok[0].isupper() or any(c.isdigit() for c in tok) or not tok.islower()
+
+
+def _derive_candidates(produced: str, edited: str):
+    """Diff what we produced vs the user's fix. Returns (replacements, terms).
+
+    replacements: [(heard_lower, want)] — single-word substitutions, high signal
+    for a mis-heard name/word (e.g. a name Whisper spelled wrong). Applied
+    case-insensitively to the raw ASR, so we key on the lowercased 'heard' form.
+    terms: [want] — proper-noun-ish tokens present in the fix but not the output,
+    fed to Whisper so it spells them right next time.
+    """
+    prod_tokens = _WORD_RE.findall(produced or "")
+    edit_tokens = _WORD_RE.findall(edited or "")
+    reps, terms = [], []
+    sm = difflib.SequenceMatcher(a=prod_tokens, b=edit_tokens, autojunk=False)
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == "replace":
+            # 1-for-1 word swap → a correction (mishearing). Multi-word swaps are
+            # too noisy to auto-derive; skip them (still captured in `edited`).
+            if i2 - i1 == 1 and j2 - j1 == 1:
+                heard, want = prod_tokens[i1], edit_tokens[j1]
+                # Pure case changes ("we"->"We") are the polisher's job, not a
+                # learned fix — skip both paths so common words don't pollute
+                # suggestions. Real mis-hearings (a mis-spelled name) still flow
+                # through, and the history scan backstops names we lowercased.
+                if heard.lower() != want.lower() and len(want) >= 2:
+                    reps.append((heard.lower(), want))
+                    if _is_termish(want):
+                        terms.append(want)
+        elif op == "insert":
+            for tok in edit_tokens[j1:j2]:
+                if _is_termish(tok):
+                    terms.append(tok)
+    # de-dupe, drop terms already implied by a replacement target
+    rep_targets = {w for _, w in reps}
+    terms = [t for t in dict.fromkeys(terms) if t not in rep_targets]
+    return reps, terms
+
+
+def _add_candidate(kind, frm, to, source="edit", inc=True):
+    """Upsert a learning candidate. edit-derived bumps the count each time it
+    recurs; scan-derived seeds once (INSERT OR IGNORE) so counts stay meaningful.
+    Never resurrects a dismissed candidate."""
+    con = sqlite3.connect(DB_PATH)
+    try:
+        if inc:
+            con.execute(
+                "INSERT INTO suggestions (kind, frm, to_, count, source) VALUES (?,?,?,1,?) "
+                "ON CONFLICT(kind, frm, to_) DO UPDATE SET count = count + 1 "
+                "WHERE suggestions.status != 'dismissed'",
+                (kind, frm, to, source))
+        else:
+            con.execute(
+                "INSERT OR IGNORE INTO suggestions (kind, frm, to_, count, source) VALUES (?,?,?,1,?)",
+                (kind, frm, to, source))
+        con.commit()
+    finally:
+        con.close()
+
+
+_SENT_START = set(".!?:;\n")
+
+
+def _strong_term(tok: str) -> bool:
+    """Unambiguously a name/identifier regardless of position: has a digit,
+    or a non-titlecase shape (an ALLCAPS acronym, CamelCase, iPhone). Plain
+    Titlecase words ('Meeting', a person's name) are ambiguous — handled by
+    position."""
+    if any(c.isdigit() for c in tok):
+        return True
+    return not (tok[0].isupper() and tok[1:].islower())
+
+
+def _scan_history_for_terms(min_count=3, limit_rows=500):
+    """Deterministic: proper-noun-ish tokens used repeatedly across dictations
+    that aren't in vocab yet → term candidates. No model, no network.
+
+    To avoid proposing common words that are merely capitalized at the start of
+    a sentence ('Meeting', 'Then'), a plain Titlecase word only counts when it
+    appears MID-sentence — where capitalization signals a proper noun. Tokens
+    with digits or unusual case (product codes, acronyms, CamelCase) always
+    count."""
+    known = {t.lower() for t in _vocab.get("terms", [])}
+    known |= {v.lower() for v in _vocab.get("replacements", {}).values()}
+    counts = {}
+    con = sqlite3.connect(DB_PATH)
+    try:
+        rows = con.execute(
+            "SELECT COALESCE(edited, polished, corrected, raw) FROM history "
+            "ORDER BY id DESC LIMIT ?", (limit_rows,)).fetchall()
+        for (text,) in rows:
+            if not text:
+                continue
+            for mt in _WORD_RE.finditer(text):
+                tok = mt.group(0)
+                if not _is_termish(tok) or tok.lower() in known:
+                    continue
+                if not _strong_term(tok):
+                    # Plain Titlecase: skip sentence-initial occurrences.
+                    j = mt.start() - 1
+                    while j >= 0 and text[j] == " ":
+                        j -= 1
+                    if j < 0 or text[j] in _SENT_START:
+                        continue
+                counts[tok] = counts.get(tok, 0) + 1
+        for tok, n in counts.items():
+            if n < min_count:
+                continue
+            # Seed once (don't resurface a dismissed one); refresh the observed
+            # frequency for still-pending scan candidates.
+            con.execute(
+                "INSERT OR IGNORE INTO suggestions (kind, frm, to_, count, source) "
+                "VALUES ('term','',?,?, 'scan')", (tok, n))
+            con.execute(
+                "UPDATE suggestions SET count=? WHERE kind='term' AND frm='' AND to_=? "
+                "AND source='scan' AND status='pending'", (n, tok))
+        con.commit()
+    finally:
+        con.close()
+
+
+@app.post("/correct")
+async def correct(payload: dict, authorization: str | None = Header(None)):
+    """Record the user's fix for a dictation and derive learning candidates.
+    Body: {"id": <history id>, "edited": "<corrected text>"}."""
+    _check_auth(authorization)
+    hid = payload.get("id")
+    edited = (payload.get("edited") or "").strip()
+    if not edited:
+        raise HTTPException(status_code=400, detail="empty 'edited' text")
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    row = con.execute("SELECT polished, corrected, raw FROM history WHERE id=?",
+                      (hid,)).fetchone() if hid is not None else None
+    if row is None:
+        con.close()
+        raise HTTPException(status_code=404, detail="no dictation with that id")
+    con.execute("UPDATE history SET edited=? WHERE id=?", (edited, hid))
+    con.commit()
+    con.close()
+    produced = row["polished"] or row["corrected"] or row["raw"] or ""
+    reps, terms = _derive_candidates(produced, edited)
+    for heard, want in reps:
+        _add_candidate("replacement", heard, want, source="edit")
+    for term in terms:
+        _add_candidate("term", "", term, source="edit")
+    log.info("correct id=%s: +%d replacement, +%d term candidates", hid, len(reps), len(terms))
+    return {"id": hid, "derived": {"replacements": reps, "terms": terms}}
+
+
+@app.get("/suggestions")
+async def get_suggestions(limit: int = 50, scan: bool = True):
+    """Pending learning candidates, most-corrected first. `scan` also refreshes
+    deterministic term candidates from history (cheap; idempotent)."""
+    if scan:
+        try:
+            _scan_history_for_terms()
+        except Exception as e:  # noqa: BLE001
+            log.warning("history scan failed: %s", e)
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        "SELECT id, kind, frm, to_ AS to_val, count, source, ts FROM suggestions "
+        "WHERE status='pending' ORDER BY count DESC, id DESC LIMIT ?",
+        (max(1, min(limit, 200)),)).fetchall()
+    con.close()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/suggestions/promote")
+async def promote_suggestion(payload: dict, authorization: str | None = Header(None)):
+    """Approve a candidate → merge into live vocab and mark it promoted."""
+    _check_auth(authorization)
+    sid = payload.get("id")
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    row = con.execute("SELECT * FROM suggestions WHERE id=?", (sid,)).fetchone()
+    if row is None:
+        con.close()
+        raise HTTPException(status_code=404, detail="no suggestion with that id")
+    if row["kind"] == "replacement":
+        _vocab["replacements"][row["frm"]] = row["to_"]
+    elif row["kind"] == "term":
+        if row["to_"] not in _vocab["terms"]:
+            _vocab["terms"].append(row["to_"])
+    _save_vocab()
+    con.execute("UPDATE suggestions SET status='promoted' WHERE id=?", (sid,))
+    con.commit()
+    con.close()
+    log.info("promoted suggestion %s (%s)", sid, row["kind"])
+    return {"id": sid, "vocab": _vocab}
+
+
+@app.post("/suggestions/dismiss")
+async def dismiss_suggestion(payload: dict, authorization: str | None = Header(None)):
+    """Reject a candidate so it never resurfaces."""
+    _check_auth(authorization)
+    sid = payload.get("id")
+    con = sqlite3.connect(DB_PATH)
+    cur = con.execute("UPDATE suggestions SET status='dismissed' WHERE id=?", (sid,))
+    con.commit()
+    changed = cur.rowcount
+    con.close()
+    if not changed:
+        raise HTTPException(status_code=404, detail="no suggestion with that id")
+    return {"id": sid, "status": "dismissed"}
 
 
 if __name__ == "__main__":

@@ -6,8 +6,24 @@ struct ServerClient {
     let apiKey: String?
 
     struct Result {
+        let id: Int?      // history row id — used to teach a correction later
         let raw: String
         let text: String
+    }
+
+    /// A learning candidate the server derived from a correction or history scan.
+    struct Suggestion: Identifiable {
+        let id: Int
+        let kind: String      // "replacement" | "term"
+        let from: String      // replacement source (heard); "" for terms
+        let to: String        // replacement target, or the term itself
+        let count: Int
+        let source: String    // "edit" | "scan"
+
+        /// Human-readable one-liner for the Learning list.
+        var label: String {
+            kind == "replacement" ? "\(from) → \(to)" : "Add term: \(to)"
+        }
     }
 
     /// GET /health — used at startup to verify reachability + ATS from inside
@@ -98,7 +114,63 @@ struct ServerClient {
                           userInfo: [NSLocalizedDescriptionKey: "server error: \(msg)"])
         }
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        return Result(raw: obj["raw"] as? String ?? "",
+        return Result(id: obj["id"] as? Int,
+                      raw: obj["raw"] as? String ?? "",
                       text: obj["text"] as? String ?? "")
+    }
+
+    /// Helper: POST JSON to a path with the optional bearer token.
+    private func postJSON(_ path: String, _ body: [String: Any]) async throws {
+        var req = URLRequest(url: baseURL.appendingPathComponent(path))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let apiKey = apiKey, !apiKey.isEmpty {
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        req.timeoutInterval = 15
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let msg = String(data: data, encoding: .utf8) ?? "unknown"
+            throw NSError(domain: "whispertype", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "server error: \(msg)"])
+        }
+    }
+
+    // MARK: - Learning loop
+
+    /// Teach the server your fix for a dictation. It stores it and derives
+    /// candidate vocab corrections (surfaced via `suggestions()`).
+    func correct(id: Int, edited: String) async throws {
+        try await postJSON("correct", ["id": id, "edited": edited])
+    }
+
+    /// Pending learning candidates, most-corrected first.
+    func suggestions(limit: Int = 50) async throws -> [Suggestion] {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("suggestions"),
+                                  resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "limit", value: String(limit))]
+        var req = URLRequest(url: comps.url!)
+        req.timeoutInterval = 10
+        let (data, _) = try await URLSession.shared.data(for: req)
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        let items = obj["items"] as? [[String: Any]] ?? []
+        return items.compactMap { d in
+            guard let id = d["id"] as? Int, let kind = d["kind"] as? String,
+                  let to = d["to_val"] as? String else { return nil }
+            return Suggestion(id: id, kind: kind, from: d["frm"] as? String ?? "",
+                              to: to, count: d["count"] as? Int ?? 1,
+                              source: d["source"] as? String ?? "")
+        }
+    }
+
+    /// Approve a candidate → merges it into the live vocabulary.
+    func promoteSuggestion(id: Int) async throws {
+        try await postJSON("suggestions/promote", ["id": id])
+    }
+
+    /// Reject a candidate so it never resurfaces.
+    func dismissSuggestion(id: Int) async throws {
+        try await postJSON("suggestions/dismiss", ["id": id])
     }
 }

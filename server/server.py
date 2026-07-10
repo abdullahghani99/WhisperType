@@ -490,6 +490,10 @@ def _is_termish(tok: str) -> bool:
     an acronym)."""
     if len(tok) < 2:
         return False
+    if "'" in tok:
+        return False                             # contractions ("I'm", "it's")
+    if not any(c.isalpha() for c in tok):
+        return False                             # pure numbers ("10", "45")
     return tok[0].isupper() or any(c.isdigit() for c in tok) or not tok.islower()
 
 
@@ -578,6 +582,10 @@ def _scan_history_for_terms(min_count=3, limit_rows=500):
     counts = {}
     con = sqlite3.connect(DB_PATH)
     try:
+        # Scan candidates are fully regenerable, so clear the pending ones first:
+        # the list always reflects the current heuristics (stale noise clears),
+        # while dismissed/promoted rows survive and won't resurface.
+        con.execute("DELETE FROM suggestions WHERE source='scan' AND status='pending'")
         rows = con.execute(
             "SELECT COALESCE(edited, polished, corrected, raw) FROM history "
             "ORDER BY id DESC LIMIT ?", (limit_rows,)).fetchall()

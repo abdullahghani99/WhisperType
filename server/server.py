@@ -8,19 +8,20 @@ Pipeline:
     1. ASR — local mlx-whisper (whisper-large-v3, biased by your vocabulary),
              with an HTTP mlx-whisper server as fallback. Whisper's output is
              already clean and well-punctuated.
-    2. Vocab — deterministic name/jargon/snippet corrections on the transcript.
-               This is the near-verbatim result the client inserts by DEFAULT.
-    3. Polish (OPTIONAL, OFF by default) — an mlx-lm model to remove filler and
-               split run-ons. Disabled because it intermittently paraphrased or
-               responded to the text instead of just formatting it, losing the
-               speaker's meaning. Enable with VF_POLISH=1 (loads the model, and
-               _polish()'s safety net guards against the worst rewrites).
+    2. Vocab — deterministic name/jargon/snippet corrections on the transcript
+               (the faithful, near-verbatim text).
+    3. Polish (ON by default, NARROW) — an mlx-lm model that ONLY removes filler
+               and resolves self-corrections ("I did this, no I did not" -> "I
+               did not"), never paraphrasing or replying. A safety net in
+               _polish() falls back to the verbatim text whenever the model
+               drifts (paraphrases, replies, fabricates, or drops content). Set
+               VF_POLISH=0 for pure near-verbatim (model not loaded at all).
 
 Run under launchd (see scripts/) so it auto-starts.
 
 Env:
     VF_WHISPER_URL   default http://127.0.0.1:8181
-    VF_POLISH        default 0 (off). Set 1 to load the LLM and enable polish.
+    VF_POLISH        default 1 (on, narrow). Set 0 for pure near-verbatim.
     VF_POLISH_MODEL  default mlx-community/Qwen2.5-7B-Instruct-4bit
     VF_PORT          default 8790
     VF_API_KEY       optional; if set, require header  Authorization: Bearer <key>
@@ -54,12 +55,11 @@ PORT = int(os.environ.get("VF_PORT", "8790"))
 API_KEY = os.environ.get("VF_API_KEY", "")
 KEEPALIVE_SEC = int(os.environ.get("VF_KEEPALIVE_SEC", "240"))
 VOCAB_PATH = os.environ.get("VF_VOCAB_PATH", os.path.join(os.path.dirname(__file__), "vocab.json"))
-# Near-verbatim by DEFAULT: Whisper's transcript is already clean/punctuated, and
-# the 8B polish model intermittently paraphrases or responds to the text instead
-# of formatting it — losing the speaker's meaning. So polish is OFF unless
-# explicitly enabled (VF_POLISH=1), in which case the model is loaded and the
-# safety net in _polish() guards against the worst rewrites.
-POLISH_ENABLED = os.environ.get("VF_POLISH", "0").strip().lower() not in ("0", "false", "no", "off", "")
+# Polish is ON by default but scoped NARROWLY (filler + self-correction only, see
+# POLISH_SYS) and wrapped in guards (_polish's safety net) that fall back to the
+# verbatim transcript whenever the model paraphrases, responds, or drifts. Set
+# VF_POLISH=0 for pure near-verbatim (model not loaded at all).
+POLISH_ENABLED = os.environ.get("VF_POLISH", "1").strip().lower() not in ("0", "false", "no", "off", "")
 
 # Examples live INSIDE the system prompt as reference text (not as assistant
 # conversation turns). Multi-turn few-shots made the 8B/4-bit model regurgitate
@@ -68,33 +68,37 @@ POLISH_ENABLED = os.environ.get("VF_POLISH", "0").strip().lower() not in ("0", "
 # "first of all, thank you..." example verbatim). One system message + one user
 # message (the transcript) removes anything for the model to copy.
 POLISH_SYS = (
-    "You clean up raw speech-to-text transcripts for writing. You are a "
-    "FORMATTER, not an assistant: you NEVER answer, reply to, act on, or "
-    "fabricate content from the text — you only tidy it.\n\n"
-    "Take the transcript in the user message and return it with:\n"
-    "- the first letter and the start of every sentence capitalized;\n"
-    "- run-on speech split into sentences with correct punctuation;\n"
-    "- a question mark ONLY on genuine questions (never on statements — "
-    "'meeting at 11 today' is a statement);\n"
-    "- filler words (um, uh, like, you know) and false starts / immediately "
-    "repeated words removed.\n\n"
-    "Do NOT summarize, shorten, condense, paraphrase, reword, merge, reorder, "
-    "drop, or add anything. Keep every point the speaker made, in their own "
-    "words and order — the output is the input minus filler, roughly the same "
-    "length. Keep prose as prose; never produce bullet or numbered lists. "
-    "Output ONLY the cleaned transcript, nothing else.\n\n"
-    "Reference examples (input => cleaned output), for style only — never copy "
-    "or repeat these; always clean the ACTUAL transcript in the user message:\n"
+    "You are a TEXT EDITOR for voice dictation, not an assistant. You never "
+    "reply to, answer, act on, or comment on the text — you only edit it and "
+    "return the edited text.\n\n"
+    "Edit the dictation between <<<BEGIN>>> and <<<END>>> by doing ONLY these:\n"
+    "1. Remove filler: um, uh, er, hmm, like, you know, I mean, sort of / kind "
+    "of when used as filler.\n"
+    "2. Resolve self-corrections and false starts — when the speaker says "
+    "something then retracts or fixes it, keep ONLY their final intended "
+    "version. Examples: 'I did this, oh no, I did not do it' -> 'I did not do "
+    "it'; 'send it to John, sorry, to Jane' -> 'send it to Jane'; 'we need "
+    "five, actually six of them' -> 'we need six of them'.\n"
+    "3. Remove immediately repeated words ('the the report' -> 'the report').\n"
+    "4. Fix capitalization and punctuation; split run-on speech into sentences; "
+    "question mark ONLY for genuine questions (not statements like 'meeting at "
+    "11 today').\n\n"
+    "Keep the speaker's own words, meaning, order, and point of view — first "
+    "person stays first person. Do NOT summarize, shorten, paraphrase, reword, "
+    "reorder, translate, add, explain, answer, or address the speaker, and do "
+    "NOT make bullet or numbered lists. Apart from filler and self-corrections, "
+    "every word stays. If nothing needs fixing, return the text unchanged. "
+    "Output ONLY the edited text — no markers, no preamble, no commentary.\n\n"
+    "Reference examples (raw => edited), for style only — never copy these; "
+    "always edit the ACTUAL dictation between the markers:\n"
     "  \"um so yeah i think we should uh ship the thing by friday\" => "
     "\"I think we should ship the thing by Friday.\"\n"
-    "  \"hey what's happening are we doing all well\" => "
-    "\"Hey, what's happening? Are we doing all well?\"\n"
-    "  \"i have a meeting at 11 today then i need to pick up the files and "
-    "finish the report\" => \"I have a meeting at 11 today. Then I need to pick "
-    "up the files and finish the report.\"\n"
-    "  \"so there are three things first we fix the bug then write tests and "
-    "then deploy\" => \"So there are three things. First, we fix the bug. Then "
-    "write the tests. And then deploy.\""
+    "  \"i did this oh no i did not do it i just forgot\" => "
+    "\"I did not do it. I just forgot.\"\n"
+    "  \"can you like send me the the report when you get a chance you know\" => "
+    "\"Can you send me the report when you get a chance?\"\n"
+    "  \"send it to john sorry i mean to jane by end of day\" => "
+    "\"Send it to Jane by end of day.\""
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -211,16 +215,23 @@ _STOPWORDS = frozenset(
     "there here one ones only just also very really think need".split())
 
 
-def _polish_dropped_content(src: str, out: str) -> bool:
-    """True if polish clearly failed — regurgitated an example, fabricated, or
-    summarized away the content. A safety net so a failed polish can never
-    replace the user's words with something unrelated. Two signals:
+# Second-person words that signal the model started ADDRESSING the speaker
+# (i.e. replying) rather than editing their (usually first-person) dictation.
+_SECOND_PERSON = frozenset(
+    "you your you're youre you've youve you'll youll you'd youd yourself".split())
 
-    1) EXPANSION: a formatter only removes filler + adds punctuation, so the
-       output should never be much longer than the input. Big growth = the model
-       added/fabricated content (this is what caught the "database" fabrication).
+
+def _polish_failed(src: str, out: str) -> bool:
+    """True if polish clearly failed — regurgitated an example, fabricated,
+    summarized, or started replying to the speaker. A safety net so a failed
+    polish can never replace the user's words with something unrelated. Signals:
+
+    1) EXPANSION: editing only removes filler, so the output should never be much
+       longer than the input. Big growth = the model added/fabricated content.
     2) CONTENT DROP: the output should retain the input's content words (common
        function words excluded); low overlap = regurgitation or summarization.
+    3) ADDRESSED THE SPEAKER: second-person words the input didn't have mean the
+       model replied ('you're looking to...') instead of editing.
     """
     src_words = _TOKEN_RE.findall(src.lower())
     out_words = _TOKEN_RE.findall(out.lower())
@@ -234,26 +245,32 @@ def _polish_dropped_content(src: str, out: str) -> bool:
         kept = sum(1 for w in content if w in out_set)
         if kept / len(content) < 0.5:
             return True                               # regurgitated / summarized
+    src_set = set(src_words)
+    added_you = sum(1 for w in out_words if w in _SECOND_PERSON and w not in src_set)
+    if added_you >= 2:
+        return True                                   # started replying to speaker
     return False
 
 
 def _polish(text: str) -> str:
     if not text.strip():
         return text
-    # One system message (rules + reference examples as text) + one user message
-    # (the transcript). NO assistant turns — those made the model copy an example.
+    # System message (rules + reference examples) + one user message with the
+    # transcript wrapped in markers, so the model treats it as DATA to edit, not
+    # a message to reply to. NO assistant turns (those made it copy an example).
     msgs = [{"role": "system", "content": POLISH_SYS},
-            {"role": "user", "content": text}]
+            {"role": "user", "content": f"<<<BEGIN>>>\n{text}\n<<<END>>>"}]
     prompt = _tok.apply_chat_template(msgs, add_generation_prompt=True)
     # Scale with input so long dictations aren't truncated by the polish step
     # (~1.6 tokens/word, + headroom).
     max_toks = max(400, int(len(text.split()) * 1.8) + 200)
     out = generate(_model, _tok, prompt=prompt, max_tokens=max_toks, verbose=False).strip()
-    # Safety net: if polish lost the content, keep the (vocab-corrected) input
-    # rather than emit unrelated text.
-    if _polish_dropped_content(text, out):
-        log.warning("polish output diverged from input; keeping unpolished text "
-                    "(in=%r out=%r)", text[:80], out[:80])
+    # Strip any markers the model echoed back.
+    out = out.replace("<<<BEGIN>>>", "").replace("<<<END>>>", "").strip()
+    # Safety net: if polish paraphrased, replied, fabricated, or dropped content,
+    # keep the (vocab-corrected) verbatim input rather than emit something wrong.
+    if not out or _polish_failed(text, out):
+        log.warning("polish rejected (kept verbatim): in=%r out=%r", text[:80], out[:80])
         return text
     return out
 

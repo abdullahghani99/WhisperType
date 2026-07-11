@@ -5,16 +5,22 @@ Runs on your server Mac. One endpoint the client calls:
     POST /dictate   (multipart: file=<audio>)  ->  {"raw": ..., "text": ...}
 
 Pipeline:
-    1. ASR  — optionally forwards audio to a separate mlx-whisper server
-              (whisper-large-v3, OpenAI-compatible /v1/audio/transcriptions).
-    2. Polish — a local mlx-lm model held RESIDENT in GPU memory (always warm),
-                cleans dictation (punctuation, caps, filler removal) in ~0.3s.
+    1. ASR — local mlx-whisper (whisper-large-v3, biased by your vocabulary),
+             with an HTTP mlx-whisper server as fallback. Whisper's output is
+             already clean and well-punctuated.
+    2. Vocab — deterministic name/jargon/snippet corrections on the transcript.
+               This is the near-verbatim result the client inserts by DEFAULT.
+    3. Polish (OPTIONAL, OFF by default) — an mlx-lm model to remove filler and
+               split run-ons. Disabled because it intermittently paraphrased or
+               responded to the text instead of just formatting it, losing the
+               speaker's meaning. Enable with VF_POLISH=1 (loads the model, and
+               _polish()'s safety net guards against the worst rewrites).
 
-The polish model is loaded once at startup and kept warm for the life of the
-process. Run under launchd (see scripts/) so it auto-starts and stays warm.
+Run under launchd (see scripts/) so it auto-starts.
 
 Env:
     VF_WHISPER_URL   default http://127.0.0.1:8181
+    VF_POLISH        default 0 (off). Set 1 to load the LLM and enable polish.
     VF_POLISH_MODEL  default mlx-community/Qwen2.5-7B-Instruct-4bit
     VF_PORT          default 8790
     VF_API_KEY       optional; if set, require header  Authorization: Bearer <key>
@@ -48,48 +54,48 @@ PORT = int(os.environ.get("VF_PORT", "8790"))
 API_KEY = os.environ.get("VF_API_KEY", "")
 KEEPALIVE_SEC = int(os.environ.get("VF_KEEPALIVE_SEC", "240"))
 VOCAB_PATH = os.environ.get("VF_VOCAB_PATH", os.path.join(os.path.dirname(__file__), "vocab.json"))
+# Near-verbatim by DEFAULT: Whisper's transcript is already clean/punctuated, and
+# the 8B polish model intermittently paraphrases or responds to the text instead
+# of formatting it — losing the speaker's meaning. So polish is OFF unless
+# explicitly enabled (VF_POLISH=1), in which case the model is loaded and the
+# safety net in _polish() guards against the worst rewrites.
+POLISH_ENABLED = os.environ.get("VF_POLISH", "0").strip().lower() not in ("0", "false", "no", "off", "")
 
+# Examples live INSIDE the system prompt as reference text (not as assistant
+# conversation turns). Multi-turn few-shots made the 8B/4-bit model regurgitate
+# an example or fabricate output when the real input was short or off-pattern
+# (e.g. dictating "I think it's only showing the latest one" returned the
+# "first of all, thank you..." example verbatim). One system message + one user
+# message (the transcript) removes anything for the model to copy.
 POLISH_SYS = (
-    "You are a transcription FORMATTER, not a conversational assistant. You "
-    "receive raw speech-to-text and return the SAME words, cleaned for writing.\n"
-    "Rules:\n"
-    "- Always capitalize the first letter of the output and the start of each "
-    "sentence.\n"
-    "- Break run-on speech into proper sentences with correct punctuation.\n"
-    "- Use a question mark ONLY for genuine questions. Do NOT add question marks "
-    "to statements (e.g. 'meeting at 11 today' is a statement, not a question).\n"
-    "- If the speaker clearly enumerates multiple distinct items or sequential "
-    "steps (e.g. 'first... then... then...', or 'we need X, Y, and Z' as separate "
-    "actions), format them as a list — a numbered list (1. 2. 3.) for ordered "
-    "steps, bullets ('- ') for unordered items, each on its own line. ONLY for "
-    "genuine lists; keep ordinary sentences (incl. 'first of all...' as a figure "
-    "of speech) as prose.\n"
-    "- Remove filler words (um, uh, like, you know) and false starts / repeats.\n"
-    "- NEVER answer questions, reply to greetings, or add ANY new content. If "
-    "the input is a question or greeting, return it cleaned — never answer it.\n"
-    "- Preserve the speaker's exact meaning and wording. Do not paraphrase or "
-    "substitute words.\n"
-    "- Output ONLY the cleaned text: no preamble, quotes, or commentary."
+    "You clean up raw speech-to-text transcripts for writing. You are a "
+    "FORMATTER, not an assistant: you NEVER answer, reply to, act on, or "
+    "fabricate content from the text — you only tidy it.\n\n"
+    "Take the transcript in the user message and return it with:\n"
+    "- the first letter and the start of every sentence capitalized;\n"
+    "- run-on speech split into sentences with correct punctuation;\n"
+    "- a question mark ONLY on genuine questions (never on statements — "
+    "'meeting at 11 today' is a statement);\n"
+    "- filler words (um, uh, like, you know) and false starts / immediately "
+    "repeated words removed.\n\n"
+    "Do NOT summarize, shorten, condense, paraphrase, reword, merge, reorder, "
+    "drop, or add anything. Keep every point the speaker made, in their own "
+    "words and order — the output is the input minus filler, roughly the same "
+    "length. Keep prose as prose; never produce bullet or numbered lists. "
+    "Output ONLY the cleaned transcript, nothing else.\n\n"
+    "Reference examples (input => cleaned output), for style only — never copy "
+    "or repeat these; always clean the ACTUAL transcript in the user message:\n"
+    "  \"um so yeah i think we should uh ship the thing by friday\" => "
+    "\"I think we should ship the thing by Friday.\"\n"
+    "  \"hey what's happening are we doing all well\" => "
+    "\"Hey, what's happening? Are we doing all well?\"\n"
+    "  \"i have a meeting at 11 today then i need to pick up the files and "
+    "finish the report\" => \"I have a meeting at 11 today. Then I need to pick "
+    "up the files and finish the report.\"\n"
+    "  \"so there are three things first we fix the bug then write tests and "
+    "then deploy\" => \"So there are three things. First, we fix the bug. Then "
+    "write the tests. And then deploy.\""
 )
-
-# Few-shot examples lock the formatter behavior: questions/greetings are cleaned
-# (not answered), statements stay statements, run-ons get sentence breaks.
-POLISH_SHOTS = [
-    ("um so yeah i think we should uh ship the the voice flow thing by friday",
-     "I think we should ship the Voice Flow thing by Friday."),
-    ("hey what's happening are we doing all well",
-     "Hey, what's happening? Are we doing all well?"),
-    ("can you like send me the the report when you get a chance you know",
-     "Can you send me the report when you get a chance?"),
-    ("i have a meeting at 11 today then i need to pick up farooq and finish the report",
-     "I have a meeting at 11 today. Then I need to pick up the groceries and finish the report."),
-    # genuine enumeration -> numbered list
-    ("so there are three things we need to do first we need to fix the bug then write the tests and then deploy to production",
-     "1. Fix the bug\n2. Write the tests\n3. Deploy to production"),
-    # "first of all" as a figure of speech -> stays prose
-    ("first of all thank you so much for the help today it really made a big difference",
-     "First of all, thank you so much for the help today. It really made a big difference."),
-]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("whispertype")
@@ -193,23 +199,63 @@ def apply_vocab(text: str) -> str:
     return text
 
 
+_TOKEN_RE = re.compile(r"[a-z0-9']+")
+
+# Very common function words carry little content, so a fabrication that happens
+# to share "I / the / think / one" with the input shouldn't count as overlap.
+_STOPWORDS = frozenset(
+    "a an the this that these those i i'm me my we our us you your he she it it's "
+    "its they them their and or but so if then as of to in on at for with from by "
+    "is are was were be been am do does did have has had will would can could "
+    "should may might must not no yes what when where who how why which "
+    "there here one ones only just also very really think need".split())
+
+
+def _polish_dropped_content(src: str, out: str) -> bool:
+    """True if polish clearly failed — regurgitated an example, fabricated, or
+    summarized away the content. A safety net so a failed polish can never
+    replace the user's words with something unrelated. Two signals:
+
+    1) EXPANSION: a formatter only removes filler + adds punctuation, so the
+       output should never be much longer than the input. Big growth = the model
+       added/fabricated content (this is what caught the "database" fabrication).
+    2) CONTENT DROP: the output should retain the input's content words (common
+       function words excluded); low overlap = regurgitation or summarization.
+    """
+    src_words = _TOKEN_RE.findall(src.lower())
+    out_words = _TOKEN_RE.findall(out.lower())
+    if len(src_words) < 4:
+        return False                                  # too short to judge safely
+    if len(out_words) > len(src_words) * 1.5 + 3:
+        return True                                   # fabricated / added content
+    content = [w for w in src_words if w not in _STOPWORDS]
+    if len(content) >= 3:
+        out_set = set(out_words)
+        kept = sum(1 for w in content if w in out_set)
+        if kept / len(content) < 0.5:
+            return True                               # regurgitated / summarized
+    return False
+
+
 def _polish(text: str) -> str:
     if not text.strip():
         return text
-    # Whisper biasing + deterministic replacements already fix spelling upstream,
-    # so we DON'T inject the term list here — that just bloated the prompt and
-    # slowed every polish. Keep the system prompt lean for speed.
-    msgs = [{"role": "system", "content": POLISH_SYS}]
-    for raw_ex, clean_ex in POLISH_SHOTS:
-        msgs.append({"role": "user", "content": raw_ex})
-        msgs.append({"role": "assistant", "content": clean_ex})
-    msgs.append({"role": "user", "content": text})
+    # One system message (rules + reference examples as text) + one user message
+    # (the transcript). NO assistant turns — those made the model copy an example.
+    msgs = [{"role": "system", "content": POLISH_SYS},
+            {"role": "user", "content": text}]
     prompt = _tok.apply_chat_template(msgs, add_generation_prompt=True)
     # Scale with input so long dictations aren't truncated by the polish step
     # (~1.6 tokens/word, + headroom).
     max_toks = max(400, int(len(text.split()) * 1.8) + 200)
-    out = generate(_model, _tok, prompt=prompt, max_tokens=max_toks, verbose=False)
-    return out.strip()
+    out = generate(_model, _tok, prompt=prompt, max_tokens=max_toks, verbose=False).strip()
+    # Safety net: if polish lost the content, keep the (vocab-corrected) input
+    # rather than emit unrelated text.
+    if _polish_dropped_content(text, out):
+        log.warning("polish output diverged from input; keeping unpolished text "
+                    "(in=%r out=%r)", text[:80], out[:80])
+        return text
+    return out
 
 
 def _check_auth(authorization: str | None):
@@ -222,11 +268,15 @@ async def _startup():
     global _model, _tok
     _load_vocab()
     _init_db()
-    t0 = time.time()
-    log.info("loading polish model %s ...", POLISH_MODEL)
-    _model, _tok = load(POLISH_MODEL)
-    _polish("warming up the model now")  # force graph compile so first real call is fast
-    log.info("polish model warm in %.1fs", time.time() - t0)
+    if POLISH_ENABLED:
+        t0 = time.time()
+        log.info("loading polish model %s ...", POLISH_MODEL)
+        _model, _tok = load(POLISH_MODEL)
+        _polish("warming up the model now")  # force graph compile so first real call is fast
+        log.info("polish model warm in %.1fs", time.time() - t0)
+        asyncio.create_task(_keepalive())
+    else:
+        log.info("polish DISABLED (near-verbatim mode); model not loaded")
 
     if _WHISPER_LOCAL:
         try:
@@ -240,8 +290,6 @@ async def _startup():
             globals()["_WHISPER_LOCAL"] = False
     else:
         log.info("local whisper unavailable; using remote HTTP whisper at %s", WHISPER_URL)
-
-    asyncio.create_task(_keepalive())
 
 
 async def _keepalive():
@@ -258,8 +306,9 @@ async def _keepalive():
 @app.get("/health")
 async def health():
     return {
-        "status": "ok" if _model is not None else "loading",
-        "polish_model": POLISH_MODEL,
+        "status": "ok",
+        "polish": "on" if (POLISH_ENABLED and _model is not None) else "off (near-verbatim)",
+        "polish_model": POLISH_MODEL if POLISH_ENABLED else None,
         "whisper": WHISPER_MODEL if _WHISPER_LOCAL else f"remote:{WHISPER_URL}",
         "biasing": _WHISPER_LOCAL,
     }
@@ -269,7 +318,7 @@ async def health():
 async def voice_flow(
     file: UploadFile = File(...),
     language: str | None = Form(None),
-    polish: bool = Form(True),
+    polish: bool | None = Form(None),   # None → server default (VF_POLISH); off by default
     authorization: str | None = Header(None),
 ):
     _check_auth(authorization)
@@ -302,13 +351,16 @@ async def voice_flow(
             raise HTTPException(status_code=502, detail=f"ASR backend error: {e}")
     asr_ms = int((time.time() - t_asr) * 1000)
 
-    # 2) Deterministic vocab corrections on the raw ASR (names, jargon, snippets)
+    # 2) Deterministic vocab corrections on the raw ASR (names, jargon, snippets).
+    #    This is the near-verbatim output — faithful to what was said.
     corrected = apply_vocab(raw)
 
-    # 3) Polish via resident model (terms fed in so it keeps spellings)
+    # 3) Optional LLM polish (off by default; see POLISH_ENABLED). Only runs when
+    #    explicitly requested AND the model is loaded.
+    do_polish = (POLISH_ENABLED if polish is None else polish) and _model is not None
     text = corrected
     polish_ms = 0
-    if polish and corrected:
+    if do_polish and corrected:
         t_p = time.time()
         text = await asyncio.to_thread(_polish, corrected)
         polish_ms = int((time.time() - t_p) * 1000)
@@ -466,7 +518,9 @@ async def retranscribe(id: int):
             except OSError:
                 pass
     corrected = apply_vocab(raw)
-    text = await asyncio.to_thread(_polish, corrected)
+    text = corrected
+    if POLISH_ENABLED and _model is not None:
+        text = await asyncio.to_thread(_polish, corrected)
     con = sqlite3.connect(DB_PATH)
     con.execute("UPDATE history SET raw=?, corrected=?, polished=?, num_words=? WHERE id=?",
                 (raw, corrected, text, len(text.split()), id))

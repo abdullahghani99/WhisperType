@@ -84,6 +84,45 @@ struct ServerClient {
             .filter { !$0.isEmpty }
     }
 
+    /// Prompt mode result: two engineered prompts from one rough dictation.
+    struct Engineered {
+        let raw: String
+        let concise: String
+        let detailed: String
+    }
+
+    /// POST the WAV to /engineer (prompt mode) — returns a concise and a detailed
+    /// engineered prompt built from the rough spoken request.
+    func engineer(wav: Data) async throws -> Engineered {
+        let boundary = "vf-\(UUID().uuidString)"
+        var req = URLRequest(url: baseURL.appendingPathComponent("engineer"))
+        req.httpMethod = "POST"
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        if let apiKey = apiKey, !apiKey.isEmpty {
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        req.timeoutInterval = 300
+        var body = Data()
+        func add(_ s: String) { body.append(s.data(using: .utf8)!) }
+        add("--\(boundary)\r\n")
+        add("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n")
+        add("Content-Type: audio/wav\r\n\r\n")
+        body.append(wav)
+        add("\r\n--\(boundary)--\r\n")
+        req.httpBody = body
+
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let msg = String(data: data, encoding: .utf8) ?? "unknown"
+            throw NSError(domain: "whispertype", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: "server error: \(msg)"])
+        }
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        return Engineered(raw: obj["raw"] as? String ?? "",
+                          concise: obj["concise"] as? String ?? "",
+                          detailed: obj["detailed"] as? String ?? "")
+    }
+
     /// POST the WAV to /WhisperType and return the polished transcript.
     func transcribe(wav: Data) async throws -> Result {
         let boundary = "vf-\(UUID().uuidString)"

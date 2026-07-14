@@ -60,6 +60,11 @@ VOCAB_PATH = os.environ.get("VF_VOCAB_PATH", os.path.join(os.path.dirname(__file
 # verbatim transcript whenever the model paraphrases, responds, or drifts. Set
 # VF_POLISH=0 for pure near-verbatim (model not loaded at all).
 POLISH_ENABLED = os.environ.get("VF_POLISH", "1").strip().lower() not in ("0", "false", "no", "off", "")
+# Prompt mode (Right-⌘): turn a rough spoken idea into a structured, engineered
+# prompt. Deliberately generative and isolated from the faithful dictation path.
+PROMPT_ENABLED = os.environ.get("VF_PROMPT", "1").strip().lower() not in ("0", "false", "no", "off", "")
+# The LLM is loaded if EITHER feature needs it.
+LLM_NEEDED = POLISH_ENABLED or PROMPT_ENABLED
 
 # Examples live INSIDE the system prompt as reference text (not as assistant
 # conversation turns). Multi-turn few-shots made the 8B/4-bit model regurgitate
@@ -100,6 +105,26 @@ POLISH_SYS = (
     "  \"send it to john sorry i mean to jane by end of day\" => "
     "\"Send it to Jane by end of day.\""
 )
+
+# --- Prompt mode (Right-⌘): turn a rough spoken idea into an engineered prompt.
+# Deliberately generative — NOT bound by the dictation faithfulness rules.
+PROMPT_SYS_BASE = (
+    "You are a prompt engineer. Turn the user's rough, spoken request (between "
+    "the markers) into a clear, well-structured prompt they can paste into an AI "
+    "assistant or coding agent. Write it as a direct instruction TO that "
+    "assistant. Capture the speaker's intent faithfully; you may make it explicit "
+    "and well-organized, but do NOT invent requirements, facts, tech choices, or "
+    "scope they did not state or clearly imply. Output ONLY the prompt text — no "
+    "preamble, no explanation, no surrounding quotes or markers."
+)
+PROMPT_LEVEL = {
+    "concise": "\n\nProduce a CONCISE prompt: a single tight paragraph stating "
+               "the goal and any key constraints. No headings, no bullet lists.",
+    "detailed": "\n\nProduce a DETAILED prompt using these markdown sections, "
+                "including ONLY the ones that apply: '**Goal**', '**Context**', "
+                "'**Requirements**', '**Steps**'. Be specific and actionable, but "
+                "do not fabricate details the speaker didn't imply.",
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("whispertype")
@@ -275,6 +300,19 @@ def _polish(text: str) -> str:
     return out
 
 
+def _engineer(transcript: str, level: str) -> str:
+    """Prompt mode: turn a rough spoken request into an engineered prompt at the
+    given level ('concise' | 'detailed'). Deliberately generative — no faithful-
+    ness guard (expansion/structuring is the point)."""
+    sys_prompt = PROMPT_SYS_BASE + PROMPT_LEVEL.get(level, PROMPT_LEVEL["concise"])
+    msgs = [{"role": "system", "content": sys_prompt},
+            {"role": "user", "content": f"<<<REQUEST>>>\n{transcript}\n<<<END>>>"}]
+    prompt = _tok.apply_chat_template(msgs, add_generation_prompt=True)
+    max_toks = 256 if level == "concise" else 800
+    out = generate(_model, _tok, prompt=prompt, max_tokens=max_toks, verbose=False).strip()
+    return out.replace("<<<REQUEST>>>", "").replace("<<<END>>>", "").strip()
+
+
 def _check_auth(authorization: str | None):
     if API_KEY and authorization != f"Bearer {API_KEY}":
         raise HTTPException(status_code=401, detail="invalid or missing API key")
@@ -285,15 +323,15 @@ async def _startup():
     global _model, _tok
     _load_vocab()
     _init_db()
-    if POLISH_ENABLED:
+    if LLM_NEEDED:
         t0 = time.time()
-        log.info("loading polish model %s ...", POLISH_MODEL)
+        log.info("loading LLM %s (polish=%s, prompt=%s) ...", POLISH_MODEL, POLISH_ENABLED, PROMPT_ENABLED)
         _model, _tok = load(POLISH_MODEL)
         _polish("warming up the model now")  # force graph compile so first real call is fast
-        log.info("polish model warm in %.1fs", time.time() - t0)
+        log.info("LLM warm in %.1fs", time.time() - t0)
         asyncio.create_task(_keepalive())
     else:
-        log.info("polish DISABLED (near-verbatim mode); model not loaded")
+        log.info("LLM DISABLED (near-verbatim dictation, no prompt mode); model not loaded")
 
     if _WHISPER_LOCAL:
         try:
@@ -320,28 +358,10 @@ async def _keepalive():
             log.warning("keepalive failed: %s", e)
 
 
-@app.get("/health")
-async def health():
-    return {
-        "status": "ok",
-        "polish": "on" if (POLISH_ENABLED and _model is not None) else "off (near-verbatim)",
-        "polish_model": POLISH_MODEL if POLISH_ENABLED else None,
-        "whisper": WHISPER_MODEL if _WHISPER_LOCAL else f"remote:{WHISPER_URL}",
-        "biasing": _WHISPER_LOCAL,
-    }
-
-
-@app.post("/dictate")
-async def voice_flow(
-    file: UploadFile = File(...),
-    language: str | None = Form(None),
-    polish: bool | None = Form(None),   # None → server default (VF_POLISH); off by default
-    authorization: str | None = Header(None),
-):
-    _check_auth(authorization)
-    audio = await file.read()
-
-    # 1) ASR — local biased Whisper (spells your vocab right), HTTP fallback.
+async def _run_asr(audio: bytes, filename: str | None, language: str | None):
+    """Transcribe audio -> (raw_text, asr_ms). Local biased Whisper first, with
+    the shared HTTP whisper server as fallback. Shared by /WhisperType and
+    /engineer."""
     t_asr = time.time()
     raw = ""
     if _WHISPER_LOCAL:
@@ -362,11 +382,37 @@ async def voice_flow(
                     pass
     if not raw:
         try:
-            raw = _transcribe_remote(audio, file.filename or "audio.wav", language)
+            raw = _transcribe_remote(audio, filename or "audio.wav", language)
         except Exception as e:  # noqa: BLE001
             log.error("ASR failed: %s", e)
             raise HTTPException(status_code=502, detail=f"ASR backend error: {e}")
-    asr_ms = int((time.time() - t_asr) * 1000)
+    return raw, int((time.time() - t_asr) * 1000)
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "polish": "on" if (POLISH_ENABLED and _model is not None) else "off (near-verbatim)",
+        "prompt_mode": "on" if (PROMPT_ENABLED and _model is not None) else "off",
+        "polish_model": POLISH_MODEL if _model is not None else None,
+        "whisper": WHISPER_MODEL if _WHISPER_LOCAL else f"remote:{WHISPER_URL}",
+        "biasing": _WHISPER_LOCAL,
+    }
+
+
+@app.post("/dictate")
+async def voice_flow(
+    file: UploadFile = File(...),
+    language: str | None = Form(None),
+    polish: bool | None = Form(None),   # None → server default (VF_POLISH); off by default
+    authorization: str | None = Header(None),
+):
+    _check_auth(authorization)
+    audio = await file.read()
+
+    # 1) ASR — local biased Whisper (spells your vocab right), HTTP fallback.
+    raw, asr_ms = await _run_asr(audio, file.filename, language)
 
     # 2) Deterministic vocab corrections on the raw ASR (names, jargon, snippets).
     #    This is the near-verbatim output — faithful to what was said.
@@ -390,6 +436,37 @@ async def voice_flow(
         "corrected": corrected,
         "text": text,
         "timing_ms": {"asr": asr_ms, "polish": polish_ms},
+    })
+
+
+@app.post("/engineer")
+async def engineer(
+    file: UploadFile = File(...),
+    language: str | None = Form(None),
+    authorization: str | None = Header(None),
+):
+    """Prompt mode: transcribe a rough spoken request, then engineer it into a
+    CONCISE and a DETAILED prompt. Returns both so the client can flip instantly.
+    Deliberately generative — isolated from the faithful dictation pipeline."""
+    _check_auth(authorization)
+    if not PROMPT_ENABLED or _model is None:
+        raise HTTPException(status_code=503, detail="prompt mode not enabled on server")
+    audio = await file.read()
+    raw, asr_ms = await _run_asr(audio, file.filename, language)
+    transcript = apply_vocab(raw)   # so your names/jargon are spelled right in the prompt
+    if not transcript.strip():
+        raise HTTPException(status_code=422, detail="no speech detected")
+    t_g = time.time()
+    concise = await asyncio.to_thread(_engineer, transcript, "concise")
+    detailed = await asyncio.to_thread(_engineer, transcript, "detailed")
+    gen_ms = int((time.time() - t_g) * 1000)
+    log.info("engineer ok asr=%dms gen=%dms concise=%dch detailed=%dch",
+             asr_ms, gen_ms, len(concise), len(detailed))
+    return JSONResponse({
+        "raw": raw,
+        "concise": concise,
+        "detailed": detailed,
+        "timing_ms": {"asr": asr_ms, "gen": gen_ms},
     })
 
 

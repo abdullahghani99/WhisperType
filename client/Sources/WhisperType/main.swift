@@ -25,9 +25,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var client: ServerClient!
     private var globalMonitor: Any?
     private var localMonitor: Any?
+    private var keyDownMonitor: Any?
     private var isRecording = false
 
+    // Prompt mode (Right-⌘): dictate a rough idea → engineered prompt in a review
+    // overlay. `promptMode` marks the in-flight recording; `promptComboUsed` flags
+    // that another key was pressed during the ⌘ hold (i.e. it was a ⌘-shortcut,
+    // not dictation) so we discard it.
+    private let promptReview = PromptReviewController()
+    private var promptMode = false
+    private var promptComboUsed = false
+
     private let rightOptionKeyCode: UInt16 = 61
+    private let rightCommandKeyCode: UInt16 = 54
 
     // Recent dictations for the menu-bar history dropdown (newest first).
     private let historyMenu = NSMenu(title: "Recent dictations")
@@ -107,6 +117,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         menu.addItem(NSMenuItem(title: "WhisperType — hold ⌥ (Right Option) to dictate",
+                                action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "hold ⌘ (Right Command) for prompt mode (engineer a prompt)",
                                 action: nil, keyEquivalent: ""))
 
         // Mouse-button toggle trigger
@@ -299,13 +311,24 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setupHotkey() {
         let handler: (NSEvent) -> Void = { [weak self] event in
-            guard let self = self, event.keyCode == self.rightOptionKeyCode else { return }
-            let pressed = event.modifierFlags.contains(.option)
-            if pressed { self.beginRecording() } else { self.endRecording() }
+            guard let self = self else { return }
+            if event.keyCode == self.rightOptionKeyCode {           // dictation
+                let pressed = event.modifierFlags.contains(.option)
+                if pressed { self.beginRecording(prompt: false) } else { self.endRecording() }
+            } else if event.keyCode == self.rightCommandKeyCode {   // prompt mode
+                let pressed = event.modifierFlags.contains(.command)
+                if pressed { self.beginRecording(prompt: true) } else { self.endRecording() }
+            }
         }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged], handler: handler)
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { event in
             handler(event); return event
+        }
+        // Combo guard: if any key is pressed during a Right-⌘ hold, it's a
+        // ⌘-shortcut (⌘C, ⌘Tab…), not a prompt dictation — mark it so we discard.
+        keyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { [weak self] _ in
+            guard let self = self, self.isRecording, self.promptMode else { return }
+            self.promptComboUsed = true
         }
 
         setupMouseTap()
@@ -384,8 +407,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Record → transcribe → insert
 
-    private func beginRecording() {
+    private func beginRecording(prompt: Bool = false) {
         guard !isRecording else { return }
+        promptMode = prompt
+        promptComboUsed = false
         recorder.onLevel = { [weak self] level in self?.overlay.state.pushLevel(level) }
         recorder.start()
         // Only enter recording state if the mic actually started — otherwise the
@@ -398,14 +423,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         isRecording = true
         overlay.show(.listening)
-        vlog("recording: start")
+        vlog("recording: start (prompt=\(prompt))")
     }
 
     private func endRecording() {
         guard isRecording else { return }
         isRecording = false
+        let wasPrompt = promptMode
+        let comboUsed = promptComboUsed
         let wav = recorder.stop()
-        vlog("recording: stop, wav bytes=\(wav.count)")
+        vlog("recording: stop, wav bytes=\(wav.count) prompt=\(wasPrompt)")
+
+        // Right-⌘ hold that was actually a ⌘-shortcut → discard silently.
+        if wasPrompt && comboUsed {
+            vlog("prompt hold was a ⌘-shortcut; discarding")
+            overlay.hide()
+            return
+        }
 
         guard wav.count > 8_000 else {
             if wav.count <= 64 {  // header only → the mic produced no samples
@@ -416,6 +450,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 vlog("recording too short, ignoring")
                 overlay.hide()
             }
+            return
+        }
+
+        // Capture the target app BEFORE any overlay/panel steals focus.
+        let targetApp = NSWorkspace.shared.frontmostApplication
+
+        if wasPrompt {
+            overlay.show(.message("Engineering prompt…"))
+            Task { await runPromptMode(wav: wav, targetApp: targetApp) }
             return
         }
 
@@ -435,6 +478,35 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 vlog("transcribe FAILED: \(error)")
                 overlay.show(.message("Couldn’t reach server: \(error.localizedDescription)"))
                 overlay.hide(after: 4)
+            }
+        }
+    }
+
+    /// Prompt mode: engineer the rough dictation into concise/detailed prompts,
+    /// show the review overlay, and insert the chosen one into `targetApp`.
+    private func runPromptMode(wav: Data, targetApp: NSRunningApplication?) async {
+        do {
+            let eng = try await client.engineer(wav: wav)
+            vlog("engineer ok: concise=\(eng.concise.count)ch detailed=\(eng.detailed.count)ch")
+            await MainActor.run {
+                self.overlay.hide()
+                guard !eng.concise.isEmpty || !eng.detailed.isEmpty else {
+                    self.overlay.show(.message("No prompt generated")); self.overlay.hide(after: 2); return
+                }
+                self.promptReview.show(concise: eng.concise, detailed: eng.detailed) { [weak self] chosen in
+                    guard let self = self else { return }
+                    targetApp?.activate(options: [])   // restore focus to where the caret was
+                    guard let text = chosen, !text.isEmpty else { return }   // esc → nothing typed
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        Task { await self.insert(text) }
+                    }
+                }
+            }
+        } catch {
+            vlog("engineer FAILED: \(error)")
+            await MainActor.run {
+                self.overlay.show(.message("Prompt mode failed: \(error.localizedDescription)"))
+                self.overlay.hide(after: 4)
             }
         }
     }

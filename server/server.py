@@ -32,12 +32,14 @@ Env:
 """
 import os
 import re
+import io
+import wave
 import json
 import time
 import asyncio
-import tempfile
 import logging
 
+import numpy as np
 import requests
 from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException
 from fastapi.responses import JSONResponse
@@ -203,7 +205,26 @@ def _whisper_prompt() -> str | None:
     return f"Vocabulary and names: {joined[:600]}."
 
 
-def _transcribe_local(tmp_path: str, language: str | None) -> str:
+def _wav_to_array(audio: bytes) -> np.ndarray:
+    """Decode WAV bytes to a float32 mono array at [-1, 1] using stdlib `wave`
+    (no ffmpeg dependency). The client always sends 16 kHz mono int16 PCM."""
+    with wave.open(io.BytesIO(audio), "rb") as w:
+        sr, ch, sw = w.getframerate(), w.getnchannels(), w.getsampwidth()
+        frames = w.readframes(w.getnframes())
+    if sw != 2:
+        raise ValueError(f"unsupported WAV sample width {sw} (expected 16-bit)")
+    arr = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    if ch > 1:
+        arr = arr.reshape(-1, ch).mean(axis=1)
+    if sr != 16000:
+        log.warning("unexpected WAV sample rate %d (expected 16000)", sr)
+    return arr
+
+
+def _transcribe_local(audio: bytes, language: str | None) -> str:
+    """Transcribe WAV bytes with local mlx-whisper. Feeds a decoded float32
+    array (not a file path) so ASR never shells out to ffmpeg."""
+    audio_arr = _wav_to_array(audio)
     kwargs = {
         "path_or_hf_repo": WHISPER_MODEL,
         # CRITICAL: a temperature-fallback tuple + NOT conditioning on previous
@@ -221,7 +242,7 @@ def _transcribe_local(tmp_path: str, language: str | None) -> str:
         kwargs["initial_prompt"] = prompt
     if language:
         kwargs["language"] = language
-    return mlx_whisper.transcribe(tmp_path, **kwargs)["text"].strip()
+    return mlx_whisper.transcribe(audio_arr, **kwargs)["text"].strip()
 
 
 def _transcribe_remote(audio: bytes, filename: str, language: str | None) -> str:
@@ -423,21 +444,11 @@ async def _run_asr(audio: bytes, filename: str | None, language: str | None):
     t_asr = time.time()
     raw = ""
     if _WHISPER_LOCAL:
-        tmp_path = None
         try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                tmp.write(audio)
-                tmp_path = tmp.name
-            raw = await asyncio.to_thread(_transcribe_local, tmp_path, language)
+            raw = await asyncio.to_thread(_transcribe_local, audio, language)
         except Exception as e:  # noqa: BLE001
             log.warning("local ASR failed (%s); falling back to remote", e)
             raw = ""
-        finally:
-            if tmp_path:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
     if not raw:
         try:
             raw = _transcribe_remote(audio, filename or "audio.wav", language)
@@ -670,18 +681,7 @@ async def retranscribe(id: int):
     con.close()
     if not row or row[0] is None:
         raise HTTPException(status_code=404, detail="no stored audio for that id")
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp.write(row[0])
-            tmp_path = tmp.name
-        raw = await asyncio.to_thread(_transcribe_local, tmp_path, None)
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+    raw = await asyncio.to_thread(_transcribe_local, row[0], None)
     corrected = apply_vocab(raw)
     text = corrected
     if POLISH_ENABLED and _model is not None:

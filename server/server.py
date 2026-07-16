@@ -22,7 +22,10 @@ Run under launchd (see scripts/) so it auto-starts.
 Env:
     VF_WHISPER_URL   default http://127.0.0.1:8181
     VF_POLISH        default 1 (on, narrow). Set 0 for pure near-verbatim.
-    VF_POLISH_MODEL  default mlx-community/Qwen2.5-7B-Instruct-4bit
+    VF_POLISH_MODEL  default mlx-community/Qwen2.5-7B-Instruct-4bit (fast)
+    VF_PROMPT        default 1 (prompt mode on). Set 0 to disable.
+    VF_PROMPT_MODEL  default mlx-community/Qwen2.5-14B-Instruct-4bit (stronger;
+                     background-loaded; falls back to VF_POLISH_MODEL on failure)
     VF_PORT          default 8790
     VF_API_KEY       optional; if set, require header  Authorization: Bearer <key>
     VF_KEEPALIVE_SEC default 240; periodic tiny gen so the model never pages out
@@ -42,7 +45,11 @@ from mlx_lm import load, generate
 
 WHISPER_URL = os.environ.get("VF_WHISPER_URL", "http://127.0.0.1:8181").rstrip("/")
 WHISPER_MODEL = os.environ.get("VF_WHISPER_MODEL", "mlx-community/whisper-large-v3-mlx")
+# Fast model for the high-frequency dictation-polish path.
 POLISH_MODEL = os.environ.get("VF_POLISH_MODEL", "mlx-community/Qwen2.5-7B-Instruct-4bit")
+# Stronger model for the deliberate prompt-engineering path (quality > speed).
+# Falls back to POLISH_MODEL if it can't be loaded.
+PROMPT_MODEL = os.environ.get("VF_PROMPT_MODEL", "mlx-community/Qwen2.5-14B-Instruct-4bit")
 
 # Local (biasable) Whisper. If import/model load fails we fall back to the
 # shared HTTP whisper server, so ASR never goes down.
@@ -109,13 +116,20 @@ POLISH_SYS = (
 # --- Prompt mode (Right-⌘): turn a rough spoken idea into an engineered prompt.
 # Deliberately generative — NOT bound by the dictation faithfulness rules.
 PROMPT_SYS_BASE = (
-    "You are a prompt engineer. Turn the user's rough, spoken request (between "
-    "the markers) into a clear, well-structured prompt they can paste into an AI "
-    "assistant or coding agent. Write it as a direct instruction TO that "
-    "assistant. Capture the speaker's intent faithfully; you may make it explicit "
-    "and well-organized, but do NOT invent requirements, facts, tech choices, or "
-    "scope they did not state or clearly imply. Output ONLY the prompt text — no "
-    "preamble, no explanation, no surrounding quotes or markers."
+    "You are an expert prompt engineer. Turn the user's rough, spoken request "
+    "(between the markers) into a clear, well-structured prompt they can paste "
+    "into an AI assistant or coding agent. Write it as a direct instruction TO "
+    "that assistant. Capture the speaker's intent faithfully; you may make it "
+    "explicit and well-organized, but do NOT invent requirements, facts, tech "
+    "choices, or scope they did not state or clearly imply. Output ONLY the "
+    "prompt text — no preamble, no explanation, no surrounding quotes or markers.\n\n"
+    "Example of the transformation (rough request -> a good CONCISE prompt):\n"
+    "  rough: \"i need a python script that reads a csv and emails me a summary "
+    "every morning\"\n"
+    "  prompt: \"Write a Python script that reads a CSV file, computes a short "
+    "summary of its contents, and emails that summary to me. It should be "
+    "runnable on a daily morning schedule (e.g. via cron). Make the CSV path, "
+    "recipient address, and SMTP settings configurable.\""
 )
 PROMPT_LEVEL = {
     "concise": "\n\nProduce a CONCISE prompt: a single tight paragraph stating "
@@ -124,6 +138,12 @@ PROMPT_LEVEL = {
                 "including ONLY the ones that apply: '**Goal**', '**Context**', "
                 "'**Requirements**', '**Steps**'. Be specific and actionable, but "
                 "do not fabricate details the speaker didn't imply.",
+    "coding": "\n\nProduce a prompt for an AI CODING AGENT, using these markdown "
+              "sections (include only those that apply): '**Task**' (one-sentence "
+              "goal), '**Requirements**' (bulleted, specific behaviors), "
+              "'**Acceptance criteria**' (how to know it's done), '**Notes**' "
+              "(constraints, edge cases). Be precise and testable. Do not specify "
+              "files, languages, or frameworks the speaker didn't mention.",
 }
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -131,9 +151,14 @@ log = logging.getLogger("whispertype")
 
 app = FastAPI(title="WhisperType", version="0.1")
 
-# Resident, always-warm model. Loaded in startup, held for process lifetime.
+# Resident, always-warm models. Loaded in startup, held for process lifetime.
+# _model/_tok = fast dictation-polish model (8B). _prompt_model/_prompt_tok =
+# stronger prompt-engineering model (14B), loaded in the background so a big
+# first-time download doesn't block startup; falls back to _model.
 _model = None
 _tok = None
+_prompt_model = None
+_prompt_tok = None
 
 # Personal vocabulary/dictionary (learning layer). Shape:
 #   {"replacements": {"helo": "hello"}, "terms": ["Kubernetes", "PostgreSQL"],
@@ -302,14 +327,17 @@ def _polish(text: str) -> str:
 
 def _engineer(transcript: str, level: str) -> str:
     """Prompt mode: turn a rough spoken request into an engineered prompt at the
-    given level ('concise' | 'detailed'). Deliberately generative — no faithful-
-    ness guard (expansion/structuring is the point)."""
+    given level ('concise' | 'detailed' | 'coding'). Uses the stronger prompt
+    model. Deliberately generative — no faithfulness guard (structuring is the
+    point)."""
+    model = _prompt_model if _prompt_model is not None else _model
+    tok = _prompt_tok if _prompt_model is not None else _tok
     sys_prompt = PROMPT_SYS_BASE + PROMPT_LEVEL.get(level, PROMPT_LEVEL["concise"])
     msgs = [{"role": "system", "content": sys_prompt},
             {"role": "user", "content": f"<<<REQUEST>>>\n{transcript}\n<<<END>>>"}]
-    prompt = _tok.apply_chat_template(msgs, add_generation_prompt=True)
+    prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
     max_toks = 256 if level == "concise" else 800
-    out = generate(_model, _tok, prompt=prompt, max_tokens=max_toks, verbose=False).strip()
+    out = generate(model, tok, prompt=prompt, max_tokens=max_toks, verbose=False).strip()
     return out.replace("<<<REQUEST>>>", "").replace("<<<END>>>", "").strip()
 
 
@@ -323,15 +351,41 @@ async def _startup():
     global _model, _tok
     _load_vocab()
     _init_db()
-    if LLM_NEEDED:
+    if POLISH_ENABLED:
         t0 = time.time()
-        log.info("loading LLM %s (polish=%s, prompt=%s) ...", POLISH_MODEL, POLISH_ENABLED, PROMPT_ENABLED)
+        log.info("loading polish model %s ...", POLISH_MODEL)
         _model, _tok = load(POLISH_MODEL)
         _polish("warming up the model now")  # force graph compile so first real call is fast
-        log.info("LLM warm in %.1fs", time.time() - t0)
+        log.info("polish model warm in %.1fs", time.time() - t0)
+    if PROMPT_ENABLED:
+        # Background — the 14B may need a one-time ~8GB download; don't block startup.
+        asyncio.create_task(_load_prompt_model())
+    if LLM_NEEDED:
         asyncio.create_task(_keepalive())
     else:
-        log.info("LLM DISABLED (near-verbatim dictation, no prompt mode); model not loaded")
+        log.info("LLM DISABLED (near-verbatim dictation, no prompt mode); models not loaded")
+
+
+async def _load_prompt_model():
+    """Load the stronger prompt-engineering model in the background. Falls back
+    to the fast polish model if it can't be loaded, so prompt mode still works."""
+    global _prompt_model, _prompt_tok
+    t0 = time.time()
+    log.info("loading prompt model %s (background) ...", PROMPT_MODEL)
+    try:
+        _prompt_model, _prompt_tok = await asyncio.to_thread(load, PROMPT_MODEL)
+        await asyncio.to_thread(_engineer, "warm up", "concise")  # force graph compile
+        log.info("prompt model (%s) warm in %.1fs", PROMPT_MODEL, time.time() - t0)
+    except Exception as e:  # noqa: BLE001
+        log.warning("prompt model load failed (%s); falling back to polish model", e)
+        if _model is not None:
+            _prompt_model, _prompt_tok = _model, _tok
+        else:
+            try:
+                _prompt_model, _prompt_tok = await asyncio.to_thread(load, POLISH_MODEL)
+                log.info("prompt fallback: loaded %s", POLISH_MODEL)
+            except Exception as e2:  # noqa: BLE001
+                log.error("prompt fallback load failed: %s", e2)
 
     if _WHISPER_LOCAL:
         try:
@@ -348,11 +402,15 @@ async def _startup():
 
 
 async def _keepalive():
-    """Tiny periodic generation so macOS never pages the resident model out."""
+    """Tiny periodic generation so macOS never pages the resident models out.
+    Pings whichever models are loaded (polish 8B and/or the separate prompt 14B)."""
     while True:
         await asyncio.sleep(KEEPALIVE_SEC)
         try:
-            await asyncio.to_thread(_polish, "keep warm")
+            if _model is not None:
+                await asyncio.to_thread(_polish, "keep warm")
+            if _prompt_model is not None and _prompt_model is not _model:
+                await asyncio.to_thread(_engineer, "keep warm", "concise")
             log.debug("keepalive ok")
         except Exception as e:  # noqa: BLE001
             log.warning("keepalive failed: %s", e)
@@ -391,11 +449,20 @@ async def _run_asr(audio: bytes, filename: str | None, language: str | None):
 
 @app.get("/health")
 async def health():
+    if not PROMPT_ENABLED:
+        prompt_state = "off"
+    elif _prompt_model is None:
+        prompt_state = "loading"
+    elif _prompt_model is _model:
+        prompt_state = "on (fallback: polish model)"
+    else:
+        prompt_state = "on"
     return {
         "status": "ok",
         "polish": "on" if (POLISH_ENABLED and _model is not None) else "off (near-verbatim)",
-        "prompt_mode": "on" if (PROMPT_ENABLED and _model is not None) else "off",
+        "prompt_mode": prompt_state,
         "polish_model": POLISH_MODEL if _model is not None else None,
+        "prompt_model": PROMPT_MODEL if (_prompt_model is not None and _prompt_model is not _model) else None,
         "whisper": WHISPER_MODEL if _WHISPER_LOCAL else f"remote:{WHISPER_URL}",
         "biasing": _WHISPER_LOCAL,
     }
@@ -449,8 +516,10 @@ async def engineer(
     CONCISE and a DETAILED prompt. Returns both so the client can flip instantly.
     Deliberately generative — isolated from the faithful dictation pipeline."""
     _check_auth(authorization)
-    if not PROMPT_ENABLED or _model is None:
+    if not PROMPT_ENABLED:
         raise HTTPException(status_code=503, detail="prompt mode not enabled on server")
+    if _prompt_model is None and _model is None:
+        raise HTTPException(status_code=503, detail="prompt model still loading")
     audio = await file.read()
     raw, asr_ms = await _run_asr(audio, file.filename, language)
     transcript = apply_vocab(raw)   # so your names/jargon are spelled right in the prompt
@@ -459,13 +528,15 @@ async def engineer(
     t_g = time.time()
     concise = await asyncio.to_thread(_engineer, transcript, "concise")
     detailed = await asyncio.to_thread(_engineer, transcript, "detailed")
+    coding = await asyncio.to_thread(_engineer, transcript, "coding")
     gen_ms = int((time.time() - t_g) * 1000)
-    log.info("engineer ok asr=%dms gen=%dms concise=%dch detailed=%dch",
-             asr_ms, gen_ms, len(concise), len(detailed))
+    log.info("engineer ok asr=%dms gen=%dms concise=%dch detailed=%dch coding=%dch",
+             asr_ms, gen_ms, len(concise), len(detailed), len(coding))
     return JSONResponse({
         "raw": raw,
         "concise": concise,
         "detailed": detailed,
+        "coding": coding,
         "timing_ms": {"asr": asr_ms, "gen": gen_ms},
     })
 

@@ -490,10 +490,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             vlog("engineer ok: concise=\(eng.concise.count)ch detailed=\(eng.detailed.count)ch")
             await MainActor.run {
                 self.overlay.hide()
-                guard !eng.concise.isEmpty || !eng.detailed.isEmpty else {
+                guard !eng.concise.isEmpty || !eng.detailed.isEmpty || !eng.coding.isEmpty else {
                     self.overlay.show(.message("No prompt generated")); self.overlay.hide(after: 2); return
                 }
-                self.promptReview.show(concise: eng.concise, detailed: eng.detailed) { [weak self] chosen in
+                self.promptReview.show(concise: eng.concise, detailed: eng.detailed, coding: eng.coding) { [weak self] chosen in
                     guard let self = self else { return }
                     targetApp?.activate(options: [])   // restore focus to where the caret was
                     guard let text = chosen, !text.isEmpty else { return }   // esc → nothing typed

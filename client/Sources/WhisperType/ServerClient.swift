@@ -84,11 +84,12 @@ struct ServerClient {
             .filter { !$0.isEmpty }
     }
 
-    /// Prompt mode result: two engineered prompts from one rough dictation.
+    /// Prompt mode result: engineered prompts from one rough dictation.
     struct Engineered {
         let raw: String
         let concise: String
         let detailed: String
+        let coding: String
     }
 
     /// POST the WAV to /engineer (prompt mode) — returns a concise and a detailed
@@ -120,7 +121,8 @@ struct ServerClient {
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
         return Engineered(raw: obj["raw"] as? String ?? "",
                           concise: obj["concise"] as? String ?? "",
-                          detailed: obj["detailed"] as? String ?? "")
+                          detailed: obj["detailed"] as? String ?? "",
+                          coding: obj["coding"] as? String ?? "")
     }
 
     /// POST the WAV to /WhisperType and return the polished transcript.

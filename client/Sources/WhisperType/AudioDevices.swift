@@ -41,6 +41,50 @@ enum AudioDevices {
         inputs().first { $0.uid == uid }?.id
     }
 
+    /// The device WhisperType should actually capture from:
+    ///  - the user's explicit pin, if set;
+    ///  - otherwise, if the system default input is Bluetooth (AirPods / Beats
+    ///    hand back SILENCE for capture), prefer the built-in mic;
+    ///  - otherwise "" = follow the system default.
+    /// This is the fix for the recurring "captured 0 bytes" bug.
+    static func resolvedInputUID() -> String {
+        let pinned = UserDefaults.standard.string(forKey: defaultsKey) ?? ""
+        if !pinned.isEmpty { return pinned }
+        if let def = defaultInputID() {
+            let t = transportType(def)
+            if (t == kAudioDeviceTransportTypeBluetooth || t == kAudioDeviceTransportTypeBluetoothLE),
+               let builtin = builtInInputUID() {
+                return builtin
+            }
+        }
+        return ""
+    }
+
+    static func builtInInputUID() -> String? {
+        inputs().first { transportType($0.id) == kAudioDeviceTransportTypeBuiltIn }?.uid
+    }
+
+    static func defaultInputID() -> AudioDeviceID? {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
+        var dev: AudioDeviceID = 0
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                         &addr, 0, nil, &size, &dev) == noErr, dev != 0 else { return nil }
+        return dev
+    }
+
+    static func transportType(_ id: AudioDeviceID) -> UInt32 {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
+        var t: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        _ = AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &t)
+        return t
+    }
+
     private static func hasInput(_ id: AudioDeviceID) -> Bool {
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,

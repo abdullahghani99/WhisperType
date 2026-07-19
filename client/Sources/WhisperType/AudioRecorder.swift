@@ -79,13 +79,17 @@ final class AudioRecorder {
     }
 
     private func pinDevice(on input: AVAudioInputNode) {
-        let uid = UserDefaults.standard.string(forKey: AudioDevices.defaultsKey) ?? ""
+        // Resolve avoids a silent Bluetooth default (AirPods/Beats) when unpinned.
+        let uid = AudioDevices.resolvedInputUID()
         if !uid.isEmpty, let devID = AudioDevices.deviceID(forUID: uid), let au = input.audioUnit {
             var dev = devID
             let st = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
                                           kAudioUnitScope_Global, 0, &dev,
                                           UInt32(MemoryLayout<AudioDeviceID>.size))
             if st != noErr { logError("could not pin input device (err \(st))") }
+            else { logError("capturing from device uid=\(uid)") }
+        } else {
+            logError("following system default input")
         }
     }
 

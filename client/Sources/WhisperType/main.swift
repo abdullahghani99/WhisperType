@@ -1,6 +1,7 @@
 import Cocoa
 import AVFoundation
 import ApplicationServices
+import UniformTypeIdentifiers
 
 /// Simple timestamped file log so we can diagnose the live pipeline.
 /// tail -f /tmp/whispertype-client.log
@@ -145,6 +146,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem(title: "Correct last dictation… (teach a fix)",
                                 action: #selector(correctLastDictation), keyEquivalent: "e"))
+        menu.addItem(NSMenuItem(title: "Summarize a recording… (meeting notes)",
+                                action: #selector(summarizeRecording), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Settings & Dictionary…",
                                 action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Test dictation now (5s)",
@@ -173,6 +176,65 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openSettings() {
         settingsWC.show(client: client)
+    }
+
+    /// Meeting mode: pick a recording, transcribe it, and save Markdown notes.
+    @objc private func summarizeRecording() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio, .movie]
+        panel.allowsMultipleSelection = false
+        panel.message = "Pick a meeting or call recording — I'll transcribe it and write notes"
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        overlay.show(.message("Transcribing & summarizing “\(url.lastPathComponent)”… (this can take a while)"))
+        Task {
+            do {
+                let wav = try MeetingCapture.convertToWav16k(url)
+                vlog("meeting: converted \(url.lastPathComponent) -> \(wav.count) wav bytes")
+                let result = try await client.meeting(wav: wav)
+                let base = url.deletingPathExtension().lastPathComponent
+                let md = """
+                # Meeting notes — \(base)
+
+                \(result.notes)
+
+                ---
+
+                ## Full transcript
+
+                \(result.transcript)
+                """
+                let outURL = try saveMeetingNotes(md, base: base, near: url)
+                vlog("meeting: notes saved -> \(outURL.path)")
+                await MainActor.run {
+                    self.overlay.hide()
+                    NSWorkspace.shared.open(outURL)
+                }
+            } catch {
+                vlog("meeting FAILED: \(error)")
+                await MainActor.run {
+                    self.overlay.show(.message("Couldn’t summarize: \(error.localizedDescription)"))
+                    self.overlay.hide(after: 4)
+                }
+            }
+        }
+    }
+
+    /// Write notes next to the recording; fall back to the Desktop if that folder
+    /// isn't writable.
+    private func saveMeetingNotes(_ md: String, base: String, near url: URL) throws -> URL {
+        let name = "\(base) — notes.md"
+        let sibling = url.deletingLastPathComponent().appendingPathComponent(name)
+        do {
+            try md.data(using: .utf8)!.write(to: sibling)
+            return sibling
+        } catch {
+            let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent(name)
+            try md.data(using: .utf8)!.write(to: desktop)
+            return desktop
+        }
     }
 
     /// Teach the server a fix: show the last dictation, let the user edit it,

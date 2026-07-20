@@ -52,6 +52,11 @@ POLISH_MODEL = os.environ.get("VF_POLISH_MODEL", "mlx-community/Qwen2.5-7B-Instr
 # Stronger model for the deliberate prompt-engineering path (quality > speed).
 # Falls back to POLISH_MODEL if it can't be loaded.
 PROMPT_MODEL = os.environ.get("VF_PROMPT_MODEL", "mlx-community/Qwen2.5-14B-Instruct-4bit")
+# Distilled LoRA adapter for the fast polish model — teaches the 8B the strong
+# model's "format-only, never answer/paraphrase" discipline. If present, polish
+# runs on the fast 8B+adapter (14B quality at 8B speed) instead of the 14B.
+POLISH_ADAPTER = os.environ.get("VF_POLISH_ADAPTER",
+                                os.path.join(os.path.dirname(__file__), "lora-polish"))
 
 # Local (biasable) Whisper. If import/model load fails we fall back to the
 # shared HTTP whisper server, so ASR never goes down.
@@ -163,6 +168,7 @@ _model = None
 _tok = None
 _prompt_model = None
 _prompt_tok = None
+_polish_distilled = False   # True when the polish model carries the distilled LoRA adapter
 
 # Personal vocabulary/dictionary (learning layer). Shape:
 #   {"replacements": {"helo": "hello"}, "terms": ["Kubernetes", "PostgreSQL"],
@@ -328,12 +334,11 @@ def _polish_failed(src: str, out: str) -> bool:
 def _polish(text: str) -> str:
     if not text.strip():
         return text
-    # Use the STRONGER prompt model (14B) for polish — it follows the formatting
-    # rules (paragraphs + lists) reliably, whereas the fast 8B duplicated and
-    # summarized lists. Falls back to the 8B if the 14B isn't loaded. (The
-    # distillation model will later give this quality at 8B speed.)
-    model = _prompt_model if _prompt_model is not None else _model
-    tok = _prompt_tok if _prompt_model is not None else _tok
+    # Polish runs on the fast 8B, now carrying the distilled LoRA adapter — it
+    # matches the 14B's format-only discipline (lists, no answering/paraphrasing)
+    # at 8B speed, verified on held-out + trap cases. Falls back to the base 8B
+    # if the adapter didn't load.
+    model, tok = _model, _tok
     # System message (rules + reference examples) + one user message with the
     # transcript wrapped in markers, so the model treats it as DATA to edit, not
     # a message to reply to. NO assistant turns (those made it copy an example).
@@ -377,15 +382,22 @@ def _check_auth(authorization: str | None):
 
 @app.on_event("startup")
 async def _startup():
-    global _model, _tok
+    global _model, _tok, _polish_distilled
     _load_vocab()
     _init_db()
     if POLISH_ENABLED:
         t0 = time.time()
-        log.info("loading polish model %s ...", POLISH_MODEL)
-        _model, _tok = load(POLISH_MODEL)
+        adapter = POLISH_ADAPTER if os.path.exists(os.path.join(POLISH_ADAPTER, "adapters.safetensors")) else None
+        _polish_distilled = adapter is not None
+        log.info("loading polish model %s (adapter=%s) ...", POLISH_MODEL, adapter or "none")
+        try:
+            _model, _tok = load(POLISH_MODEL, adapter_path=adapter) if adapter else load(POLISH_MODEL)
+        except Exception as e:  # noqa: BLE001
+            log.warning("adapter load failed (%s); loading base polish model", e)
+            _model, _tok = load(POLISH_MODEL)
+            _polish_distilled = False
         _polish("warming up the model now")  # force graph compile so first real call is fast
-        log.info("polish model warm in %.1fs", time.time() - t0)
+        log.info("polish model warm in %.1fs (distilled=%s)", time.time() - t0, _polish_distilled)
     if PROMPT_ENABLED:
         # Background — the 14B may need a one-time ~8GB download; don't block startup.
         asyncio.create_task(_load_prompt_model())
@@ -479,6 +491,7 @@ async def health():
     return {
         "status": "ok",
         "polish": "on" if (POLISH_ENABLED and _model is not None) else "off (near-verbatim)",
+        "polish_distilled": _polish_distilled,
         "prompt_mode": prompt_state,
         "polish_model": POLISH_MODEL if _model is not None else None,
         "prompt_model": PROMPT_MODEL if (_prompt_model is not None and _prompt_model is not _model) else None,

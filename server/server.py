@@ -155,6 +155,23 @@ PROMPT_LEVEL = {
               "files, languages, or frameworks the speaker didn't mention.",
 }
 
+# --- Meeting mode: turn a meeting/call transcript into structured notes.
+# Grounded-generative — organizes what was said; must not invent facts.
+MEETING_SYS = (
+    "You are a meeting-notes assistant. You receive a raw transcript of a meeting "
+    "or call (possibly several speakers, not labeled). Produce concise, faithful "
+    "notes in Markdown using these sections, including ONLY those that apply:\n"
+    "**Summary** — 2–4 sentences: what it was about and the outcome.\n"
+    "**Key points** — bulleted, the main things discussed.\n"
+    "**Decisions** — bulleted, explicit decisions made.\n"
+    "**Action items** — bulleted; include the owner and due date ONLY if stated "
+    "(e.g. '- Alex: send the report by Friday').\n"
+    "**Open questions** — bulleted, unresolved items raised.\n\n"
+    "Base everything ONLY on the transcript. Do NOT invent decisions, owners, "
+    "dates, numbers, or facts that aren't there. Omit any section with nothing to "
+    "put in it. Output ONLY the Markdown notes — no preamble."
+)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("whispertype")
 
@@ -375,6 +392,20 @@ def _engineer(transcript: str, level: str) -> str:
     return out.replace("<<<REQUEST>>>", "").replace("<<<END>>>", "").strip()
 
 
+def _meeting_notes(transcript: str) -> str:
+    """Meeting mode: structured notes from a transcript. Uses the stronger model
+    (prompt model) when available. Grounded — instructed not to invent facts."""
+    model = _prompt_model if _prompt_model is not None else _model
+    tok = _prompt_tok if _prompt_model is not None else _tok
+    msgs = [{"role": "system", "content": MEETING_SYS},
+            {"role": "user", "content": f"<<<TRANSCRIPT>>>\n{transcript}\n<<<END>>>"}]
+    prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
+    # Notes are a fraction of the transcript; cap generously but bounded.
+    max_toks = min(1600, max(400, len(transcript.split())))
+    out = generate(model, tok, prompt=prompt, max_tokens=max_toks, verbose=False).strip()
+    return out.replace("<<<TRANSCRIPT>>>", "").replace("<<<END>>>", "").strip()
+
+
 def _check_auth(authorization: str | None):
     if API_KEY and authorization != f"Bearer {API_KEY}":
         raise HTTPException(status_code=401, detail="invalid or missing API key")
@@ -570,6 +601,36 @@ async def engineer(
         "detailed": detailed,
         "coding": coding,
         "timing_ms": {"asr": asr_ms, "gen": gen_ms},
+    })
+
+
+@app.post("/meeting")
+async def meeting(
+    file: UploadFile = File(...),
+    language: str | None = Form(None),
+    notes: bool = Form(True),
+    authorization: str | None = Header(None),
+):
+    """Meeting mode: transcribe a (long) meeting/call recording and produce
+    structured Markdown notes. Additive and isolated from the dictation path.
+    The transcript is a single blob (no speaker labels — diarization is a later
+    tier). Long audio may take a while; the client should use a long timeout."""
+    _check_auth(authorization)
+    audio = await file.read()
+    raw, asr_ms = await _run_asr(audio, file.filename, language)
+    transcript = apply_vocab(raw)
+    if not transcript.strip():
+        raise HTTPException(status_code=422, detail="no speech detected")
+    notes_text, notes_ms = "", 0
+    if notes and _model is not None:
+        t = time.time()
+        notes_text = await asyncio.to_thread(_meeting_notes, transcript)
+        notes_ms = int((time.time() - t) * 1000)
+    log.info("meeting ok asr=%dms notes=%dms transcript_chars=%d", asr_ms, notes_ms, len(transcript))
+    return JSONResponse({
+        "transcript": transcript,
+        "notes": notes_text,
+        "timing_ms": {"asr": asr_ms, "notes": notes_ms},
     })
 
 

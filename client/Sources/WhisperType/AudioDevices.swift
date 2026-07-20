@@ -47,23 +47,14 @@ enum AudioDevices {
     ///    hand back SILENCE for capture), prefer the built-in mic;
     ///  - otherwise "" = follow the system default.
     /// This is the fix for the recurring "captured 0 bytes" bug.
+    /// Respect the user's explicit mic choice; otherwise follow the system
+    /// default. Deliberately simple — do NOT override the user's device (an
+    /// earlier "prefer built-in / ignore Bluetooth" heuristic broke a working
+    /// Bluetooth-headset setup: Bluetooth mics DO work for capture). If a device
+    /// genuinely returns silence, the client surfaces that and the user picks
+    /// another in Settings.
     static func resolvedInputUID() -> String {
-        let pinned = UserDefaults.standard.string(forKey: defaultsKey) ?? ""
-        // Respect an explicit pin ONLY if it's not a Bluetooth mic. Bluetooth
-        // headphone mics (AirPods/Beats) hand back silence for capture, so a
-        // pinned BT device is virtually always a mistake — ignore it and fall
-        // through to the reliable built-in mic.
-        if !pinned.isEmpty, let id = deviceID(forUID: pinned), !isBluetooth(transportType(id)) {
-            return pinned
-        }
-        // Unpinned, or pinned-to-Bluetooth: prefer the built-in mic; only if the
-        // machine has none (e.g. a Mac Studio/mini) do we follow the system default.
-        if let builtin = builtInInputUID() { return builtin }
-        return ""
-    }
-
-    private static func isBluetooth(_ t: UInt32) -> Bool {
-        t == kAudioDeviceTransportTypeBluetooth || t == kAudioDeviceTransportTypeBluetoothLE
+        UserDefaults.standard.string(forKey: defaultsKey) ?? ""
     }
 
     static func builtInInputUID() -> String? {

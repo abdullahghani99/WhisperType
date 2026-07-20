@@ -49,15 +49,21 @@ enum AudioDevices {
     /// This is the fix for the recurring "captured 0 bytes" bug.
     static func resolvedInputUID() -> String {
         let pinned = UserDefaults.standard.string(forKey: defaultsKey) ?? ""
-        if !pinned.isEmpty { return pinned }
-        if let def = defaultInputID() {
-            let t = transportType(def)
-            if (t == kAudioDeviceTransportTypeBluetooth || t == kAudioDeviceTransportTypeBluetoothLE),
-               let builtin = builtInInputUID() {
-                return builtin
-            }
+        // Respect an explicit pin ONLY if it's not a Bluetooth mic. Bluetooth
+        // headphone mics (AirPods/Beats) hand back silence for capture, so a
+        // pinned BT device is virtually always a mistake — ignore it and fall
+        // through to the reliable built-in mic.
+        if !pinned.isEmpty, let id = deviceID(forUID: pinned), !isBluetooth(transportType(id)) {
+            return pinned
         }
+        // Unpinned, or pinned-to-Bluetooth: prefer the built-in mic; only if the
+        // machine has none (e.g. a Mac Studio/mini) do we follow the system default.
+        if let builtin = builtInInputUID() { return builtin }
         return ""
+    }
+
+    private static func isBluetooth(_ t: UInt32) -> Bool {
+        t == kAudioDeviceTransportTypeBluetooth || t == kAudioDeviceTransportTypeBluetoothLE
     }
 
     static func builtInInputUID() -> String? {

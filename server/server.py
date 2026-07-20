@@ -85,34 +85,36 @@ POLISH_SYS = (
     "You are a TEXT EDITOR for voice dictation, not an assistant. You never "
     "reply to, answer, act on, or comment on the text — you only edit it and "
     "return the edited text.\n\n"
-    "Edit the dictation between <<<BEGIN>>> and <<<END>>> by doing ONLY these:\n"
-    "1. Remove filler: um, uh, er, hmm, like, you know, I mean, sort of / kind "
-    "of when used as filler.\n"
-    "2. Resolve self-corrections and false starts — when the speaker says "
-    "something then retracts or fixes it, keep ONLY their final intended "
-    "version. Examples: 'I did this, oh no, I did not do it' -> 'I did not do "
-    "it'; 'send it to John, sorry, to Jane' -> 'send it to Jane'; 'we need "
-    "five, actually six of them' -> 'we need six of them'.\n"
-    "3. Remove immediately repeated words ('the the report' -> 'the report').\n"
-    "4. Fix capitalization and punctuation; split run-on speech into sentences; "
-    "question mark ONLY for genuine questions (not statements like 'meeting at "
-    "11 today').\n\n"
-    "Keep the speaker's own words, meaning, order, and point of view — first "
-    "person stays first person. Do NOT summarize, shorten, paraphrase, reword, "
-    "reorder, translate, add, explain, answer, or address the speaker, and do "
-    "NOT make bullet or numbered lists. Apart from filler and self-corrections, "
-    "every word stays. If nothing needs fixing, return the text unchanged. "
-    "Output ONLY the edited text — no markers, no preamble, no commentary.\n\n"
+    "Edit the dictation between <<<BEGIN>>> and <<<END>>> by:\n"
+    "1. Removing filler (um, uh, er, hmm, like, you know, I mean, sort of / kind "
+    "of when used as filler) and immediately repeated words ('the the' -> 'the').\n"
+    "2. Resolving self-corrections and false starts — keep ONLY the speaker's "
+    "final intended version. E.g. 'I did this, oh no, I did not do it' -> 'I did "
+    "not do it'; 'send it to John, sorry, to Jane' -> 'send it to Jane'.\n"
+    "3. Fixing capitalization and punctuation; splitting run-on speech into "
+    "proper sentences and grouping related sentences into PARAGRAPHS (blank line "
+    "between paragraphs when the speaker shifts topic). Question mark ONLY for "
+    "genuine questions (not statements like 'meeting at 11 today').\n"
+    "4. When the speaker clearly ENUMERATES multiple distinct items or sequential "
+    "steps (e.g. 'first... then... then...', or 'we need X, Y, and Z' as separate "
+    "actions), format them as a Markdown list — numbered (1. 2. 3.) for ordered "
+    "steps, bullets ('- ') for unordered items, each on its own line. ONLY for "
+    "genuine enumerations; keep ordinary prose as prose (a passing 'first of "
+    "all...' is not a list).\n\n"
+    "Preserve EVERY point the speaker made, in their own words, meaning, order, "
+    "and first-person point of view. Do NOT summarize, shorten, paraphrase, "
+    "reword, add, explain, answer, or address the speaker. Apart from filler and "
+    "self-corrections, every point stays. Output ONLY the edited text — no "
+    "markers, no preamble, no commentary.\n\n"
     "Reference examples (raw => edited), for style only — never copy these; "
     "always edit the ACTUAL dictation between the markers:\n"
     "  \"um so yeah i think we should uh ship the thing by friday\" => "
     "\"I think we should ship the thing by Friday.\"\n"
-    "  \"i did this oh no i did not do it i just forgot\" => "
-    "\"I did not do it. I just forgot.\"\n"
-    "  \"can you like send me the the report when you get a chance you know\" => "
-    "\"Can you send me the report when you get a chance?\"\n"
     "  \"send it to john sorry i mean to jane by end of day\" => "
-    "\"Send it to Jane by end of day.\""
+    "\"Send it to Jane by end of day.\"\n"
+    "  \"so there are three things we need to do first fix the bug then write the "
+    "tests and then deploy to production\" => \"1. Fix the bug\\n2. Write the "
+    "tests\\n3. Deploy to production\""
 )
 
 # --- Prompt mode (Right-⌘): turn a rough spoken idea into an engineered prompt.
@@ -326,16 +328,22 @@ def _polish_failed(src: str, out: str) -> bool:
 def _polish(text: str) -> str:
     if not text.strip():
         return text
+    # Use the STRONGER prompt model (14B) for polish — it follows the formatting
+    # rules (paragraphs + lists) reliably, whereas the fast 8B duplicated and
+    # summarized lists. Falls back to the 8B if the 14B isn't loaded. (The
+    # distillation model will later give this quality at 8B speed.)
+    model = _prompt_model if _prompt_model is not None else _model
+    tok = _prompt_tok if _prompt_model is not None else _tok
     # System message (rules + reference examples) + one user message with the
     # transcript wrapped in markers, so the model treats it as DATA to edit, not
     # a message to reply to. NO assistant turns (those made it copy an example).
     msgs = [{"role": "system", "content": POLISH_SYS},
             {"role": "user", "content": f"<<<BEGIN>>>\n{text}\n<<<END>>>"}]
-    prompt = _tok.apply_chat_template(msgs, add_generation_prompt=True)
+    prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
     # Scale with input so long dictations aren't truncated by the polish step
     # (~1.6 tokens/word, + headroom).
     max_toks = max(400, int(len(text.split()) * 1.8) + 200)
-    out = generate(_model, _tok, prompt=prompt, max_tokens=max_toks, verbose=False).strip()
+    out = generate(model, tok, prompt=prompt, max_tokens=max_toks, verbose=False).strip()
     # Strip any markers the model echoed back.
     out = out.replace("<<<BEGIN>>>", "").replace("<<<END>>>", "").strip()
     # Safety net: if polish paraphrased, replied, fabricated, or dropped content,

@@ -351,11 +351,17 @@ def _polish_failed(src: str, out: str) -> bool:
 def _polish(text: str) -> str:
     if not text.strip():
         return text
-    # Polish runs on the fast 8B, now carrying the distilled LoRA adapter — it
-    # matches the 14B's format-only discipline (lists, no answering/paraphrasing)
-    # at 8B speed, verified on held-out + trap cases. Falls back to the base 8B
-    # if the adapter didn't load.
-    model, tok = _model, _tok
+    # Polish runs on the stronger prompt model (14B) when available: it reliably
+    # applies the formatting the user actually wants (lists, paragraph breaks)
+    # while still not answering/paraphrasing. The distilled 8B was faster but,
+    # trained on ~87% no-change examples, it grew too conservative and left
+    # messier real speech unformatted (its low eval loss reflected matching a
+    # conservative teacher, not formatting behavior). Falls back to the local
+    # polish model (8B+adapter, then base) if the 14B isn't loaded.
+    if _prompt_model is not None:
+        model, tok = _prompt_model, _prompt_tok
+    else:
+        model, tok = _model, _tok
     # System message (rules + reference examples) + one user message with the
     # transcript wrapped in markers, so the model treats it as DATA to edit, not
     # a message to reply to. NO assistant turns (those made it copy an example).

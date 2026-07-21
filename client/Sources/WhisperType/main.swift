@@ -64,6 +64,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         vlog("=== WhisperType client launched ===")
+        // Single instance only: if another WhisperType is already running (e.g. the
+        // login-agent copy plus a manual launch), bow out so there's never two.
+        let bid = Bundle.main.bundleIdentifier ?? "app.whispertype.client"
+        if NSRunningApplication.runningApplications(withBundleIdentifier: bid).count > 1 {
+            vlog("another instance already running — exiting")
+            NSApp.terminate(nil)
+            return
+        }
         NSApp.setActivationPolicy(.accessory)
         setupClient()
         setupMenu()

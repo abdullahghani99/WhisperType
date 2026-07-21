@@ -37,6 +37,9 @@ pkill -f "$DEST" 2>/dev/null || true
 sleep 1
 rm -rf "$DEST"
 cp -R "$APP" "$DEST"
+# Keep only ONE app: /Applications is canonical; remove the local build copy so
+# there aren't two WhisperTypes floating around.
+rm -rf "$APP"
 
 echo "==> enabling auto-start at login"
 mkdir -p "$HOME/Library/LaunchAgents"
@@ -51,10 +54,8 @@ cat > "$PLIST" <<PL
 </dict></plist>
 PL
 launchctl unload "$PLIST" 2>/dev/null || true
-launchctl load "$PLIST"
+launchctl load "$PLIST"   # RunAtLoad launches it now (and at every login)
 
-echo "==> launching"
-open "$DEST"
 echo "==> done. WhisperType is in /Applications and will start at login."
 echo "   First run: grant Microphone (prompted) and Accessibility"
 echo "   (System Settings ▸ Privacy & Security ▸ Accessibility), then it's ready."

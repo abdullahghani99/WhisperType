@@ -18,9 +18,10 @@ BIN_PATH="$(swift build -c release --show-bin-path)/$BIN_NAME"
 
 echo "==> assembling $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_PATH" "$APP/Contents/MacOS/$BIN_NAME"
 cp Info.plist "$APP/Contents/Info.plist"
+[ -f icon/AppIcon.icns ] && cp icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # Prefer a stable, trusted identity so TCC (Accessibility/Microphone) grants
 # persist across rebuilds. Order: Apple Development > self-signed "WhisperType

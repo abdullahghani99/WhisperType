@@ -37,6 +37,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var promptMode = false
     private var promptComboUsed = false
 
+    // Live meeting recorder (system audio + mic). Isolated from dictation.
+    private let meetingRecorder = MeetingRecorder()
+    private var meetingItem: NSMenuItem?
+
     private let rightOptionKeyCode: UInt16 = 61
     private let rightCommandKeyCode: UInt16 = 54
 
@@ -156,6 +160,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                 action: #selector(correctLastDictation), keyEquivalent: "e"))
         menu.addItem(NSMenuItem(title: "Summarize a recording… (meeting notes)",
                                 action: #selector(summarizeRecording), keyEquivalent: ""))
+        let mtg = NSMenuItem(title: "Start meeting recording (live)",
+                             action: #selector(toggleMeeting), keyEquivalent: "")
+        menu.addItem(mtg)
+        meetingItem = mtg
         menu.addItem(NSMenuItem(title: "Settings & Dictionary…",
                                 action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Test dictation now (5s)",
@@ -228,6 +236,73 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
     }
+
+    /// Start/stop live meeting recording (system audio + mic).
+    @objc private func toggleMeeting() {
+        if meetingRecorder.isRecording { stopMeeting() } else { startMeeting() }
+    }
+
+    private func startMeeting() {
+        Task {
+            do {
+                try await meetingRecorder.start()
+                await MainActor.run {
+                    self.overlay.show(.message("🔴 Recording meeting… open the menu ▸ “Stop meeting & summarize” to finish"))
+                    self.overlay.hide(after: 5)
+                }
+            } catch {
+                vlog("meeting start FAILED: \(error)")
+                await MainActor.run {
+                    self.overlay.show(.message("Couldn’t start recording — grant Screen Recording in System Settings ▸ Privacy & Security, then try again"))
+                    self.overlay.hide(after: 5)
+                }
+            }
+        }
+    }
+
+    private func stopMeeting() {
+        overlay.show(.message("Transcribing & summarizing the meeting… (this can take a while)"))
+        Task {
+            let wav = await meetingRecorder.stop()
+            guard wav.count > 8_000 else {
+                await MainActor.run {
+                    self.overlay.show(.message("No meeting audio captured — check Screen Recording permission"))
+                    self.overlay.hide(after: 4)
+                }
+                return
+            }
+            do {
+                let result = try await client.meeting(wav: wav)
+                let stamp = Self.meetingStamp.string(from: Date())
+                let md = """
+                # Meeting notes — \(stamp)
+
+                \(result.notes)
+
+                ---
+
+                ## Full transcript
+
+                \(result.transcript)
+                """
+                let outURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("WhisperType Meeting \(stamp).md")
+                try md.data(using: .utf8)!.write(to: outURL)
+                vlog("meeting: notes saved -> \(outURL.path)")
+                await MainActor.run { self.overlay.hide(); NSWorkspace.shared.open(outURL) }
+            } catch {
+                vlog("meeting summarize FAILED: \(error)")
+                await MainActor.run {
+                    self.overlay.show(.message("Couldn’t summarize: \(error.localizedDescription)"))
+                    self.overlay.hide(after: 4)
+                }
+            }
+        }
+    }
+
+    private static let meetingStamp: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HHmm"; return f
+    }()
 
     /// Write notes next to the recording; fall back to the Desktop if that folder
     /// isn't writable.
@@ -309,7 +384,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         // Refresh the cache from the server when the main menu opens.
-        if menu !== historyMenu { Task { await refreshHistory() } }
+        if menu !== historyMenu {
+            Task { await refreshHistory() }
+            meetingItem?.title = meetingRecorder.isRecording
+                ? "Stop meeting & summarize"
+                : "Start meeting recording (live)"
+        }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {

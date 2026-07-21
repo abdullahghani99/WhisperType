@@ -57,6 +57,11 @@ PROMPT_MODEL = os.environ.get("VF_PROMPT_MODEL", "mlx-community/Qwen2.5-14B-Inst
 # runs on the fast 8B+adapter (14B quality at 8B speed) instead of the 14B.
 POLISH_ADAPTER = os.environ.get("VF_POLISH_ADAPTER",
                                 os.path.join(os.path.dirname(__file__), "lora-polish"))
+# Speaker diarization runs in an ISOLATED venv (heavy torch deps kept away from
+# the live server). Set both to enable "who said what" in meeting mode; if the
+# venv/script is missing, /meeting gracefully falls back to an unlabeled transcript.
+DIARIZE_PY = os.environ.get("VF_DIARIZE_PY", os.path.expanduser("~/pyannote-venv/bin/python"))
+DIARIZE_SCRIPT = os.environ.get("VF_DIARIZE_SCRIPT", os.path.join(os.path.dirname(__file__), "diarize.py"))
 
 # Local (biasable) Whisper. If import/model load fails we fall back to the
 # shared HTTP whisper server, so ASR never goes down.
@@ -270,6 +275,61 @@ def _transcribe_local(audio: bytes, language: str | None) -> str:
     return mlx_whisper.transcribe(audio_arr, **kwargs)["text"].strip()
 
 
+def _transcribe_local_segments(audio: bytes, language: str | None):
+    """Like _transcribe_local but returns Whisper's timestamped segments
+    [(start, end, text), ...] — needed to merge speaker labels for diarization."""
+    audio_arr = _wav_to_array(audio)
+    kwargs = {
+        "path_or_hf_repo": WHISPER_MODEL,
+        "temperature": (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+        "condition_on_previous_text": False,
+        "compression_ratio_threshold": 2.4,
+        "no_speech_threshold": 0.6,
+    }
+    prompt = _whisper_prompt()
+    if prompt:
+        kwargs["initial_prompt"] = prompt
+    if language:
+        kwargs["language"] = language
+    res = mlx_whisper.transcribe(audio_arr, **kwargs)
+    segs = [(s.get("start", 0.0), s.get("end", 0.0), (s.get("text") or "").strip())
+            for s in res.get("segments", [])]
+    return res.get("text", "").strip(), segs
+
+
+def _label_transcript(segments, turns) -> str:
+    """Merge Whisper segments with pyannote speaker turns → a speaker-labeled
+    transcript. Each segment gets the speaker whose turn overlaps it most.
+    Consecutive segments from the same speaker are grouped under one label."""
+    if not segments:
+        return ""
+
+    def speaker_for(start, end):
+        best, best_ov = None, 0.0
+        for t in turns:
+            ov = max(0.0, min(end, t["end"]) - max(start, t["start"]))
+            if ov > best_ov:
+                best_ov, best = ov, t["speaker"]
+        return best
+
+    # Stable, friendly names: SPEAKER_00 -> "Speaker 1" in first-appearance order.
+    lines, order, cur_spk, buf = [], {}, None, []
+    for (s, e, text) in segments:
+        if not text:
+            continue
+        spk = speaker_for(s, e) or cur_spk or "SPEAKER_00"
+        if spk not in order:
+            order[spk] = f"Speaker {len(order) + 1}"
+        if spk != cur_spk and buf:
+            lines.append(f"**{order[cur_spk]}:** " + " ".join(buf))
+            buf = []
+        cur_spk = spk
+        buf.append(text)
+    if buf and cur_spk is not None:
+        lines.append(f"**{order[cur_spk]}:** " + " ".join(buf))
+    return "\n\n".join(lines)
+
+
 def _transcribe_remote(audio: bytes, filename: str, language: str | None) -> str:
     files = {"file": (filename or "audio.wav", audio)}
     data = {"response_format": "json"}
@@ -410,6 +470,33 @@ def _meeting_notes(transcript: str) -> str:
     max_toks = min(1600, max(400, len(transcript.split())))
     out = generate(model, tok, prompt=prompt, max_tokens=max_toks, verbose=False).strip()
     return out.replace("<<<TRANSCRIPT>>>", "").replace("<<<END>>>", "").strip()
+
+
+def _diarize(wav_bytes: bytes):
+    """Run speaker diarization in the isolated venv (subprocess). Returns the list
+    of speaker turns, or [] if diarization is unavailable/failed (caller falls
+    back to an unlabeled transcript). Audio stays local — written to a temp file
+    only for the subprocess, then removed."""
+    import subprocess, tempfile
+    if not (os.path.exists(DIARIZE_PY) and os.path.exists(DIARIZE_SCRIPT)):
+        return []
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            f.write(wav_bytes); tmp = f.name
+        proc = subprocess.run([DIARIZE_PY, DIARIZE_SCRIPT, tmp],
+                              capture_output=True, text=True, timeout=1800)
+        out = json.loads(proc.stdout.strip() or "{}")
+        if out.get("error"):
+            log.warning("diarization error: %s", out["error"])
+        return out.get("turns", [])
+    except Exception as e:  # noqa: BLE001
+        log.warning("diarization subprocess failed: %s", e)
+        return []
+    finally:
+        if tmp:
+            try: os.unlink(tmp)
+            except OSError: pass
 
 
 def _check_auth(authorization: str | None):
@@ -615,28 +702,59 @@ async def meeting(
     file: UploadFile = File(...),
     language: str | None = Form(None),
     notes: bool = Form(True),
+    diarize: bool = Form(True),
     authorization: str | None = Header(None),
 ):
     """Meeting mode: transcribe a (long) meeting/call recording and produce
     structured Markdown notes. Additive and isolated from the dictation path.
-    The transcript is a single blob (no speaker labels — diarization is a later
-    tier). Long audio may take a while; the client should use a long timeout."""
+    When diarization is available (isolated pyannote venv), the transcript is
+    speaker-labeled ('Speaker 1/2/…'); otherwise it's a single unlabeled blob.
+    Long audio may take a while; the client should use a long timeout."""
     _check_auth(authorization)
     audio = await file.read()
-    raw, asr_ms = await _run_asr(audio, file.filename, language)
+
+    # ASR — with segments if we might diarize (needed to merge speaker labels).
+    t_asr = time.time()
+    want_diar = diarize and _WHISPER_LOCAL and os.path.exists(DIARIZE_PY)
+    speakers = 0
+    if want_diar:
+        try:
+            raw, segs = await asyncio.to_thread(_transcribe_local_segments, audio, language)
+        except Exception as e:  # noqa: BLE001
+            log.warning("segment ASR failed (%s); plain ASR", e)
+            raw, _ = await _run_asr(audio, file.filename, language); segs = []
+    else:
+        raw, _ = await _run_asr(audio, file.filename, language); segs = []
+    asr_ms = int((time.time() - t_asr) * 1000)
+
     transcript = apply_vocab(raw)
     if not transcript.strip():
         raise HTTPException(status_code=422, detail="no speech detected")
+
+    # Diarization (optional; graceful fallback to the unlabeled transcript).
+    diar_ms = 0
+    if want_diar and segs:
+        t = time.time()
+        turns = await asyncio.to_thread(_diarize, audio)
+        if turns:
+            labeled = _label_transcript([(s, e, apply_vocab(txt)) for s, e, txt in segs], turns)
+            if labeled:
+                transcript = labeled
+                speakers = len({t_["speaker"] for t_ in turns})
+        diar_ms = int((time.time() - t) * 1000)
+
     notes_text, notes_ms = "", 0
     if notes and _model is not None:
         t = time.time()
         notes_text = await asyncio.to_thread(_meeting_notes, transcript)
         notes_ms = int((time.time() - t) * 1000)
-    log.info("meeting ok asr=%dms notes=%dms transcript_chars=%d", asr_ms, notes_ms, len(transcript))
+    log.info("meeting ok asr=%dms diar=%dms notes=%dms speakers=%d chars=%d",
+             asr_ms, diar_ms, notes_ms, speakers, len(transcript))
     return JSONResponse({
         "transcript": transcript,
         "notes": notes_text,
-        "timing_ms": {"asr": asr_ms, "notes": notes_ms},
+        "speakers": speakers,
+        "timing_ms": {"asr": asr_ms, "diarize": diar_ms, "notes": notes_ms},
     })
 
 

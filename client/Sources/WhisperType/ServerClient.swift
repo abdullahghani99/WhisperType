@@ -92,14 +92,30 @@ struct ServerClient {
         let coding: String
     }
 
-    /// Meeting-mode result: full transcript + structured Markdown notes.
-    struct Meeting {
-        let transcript: String
-        let notes: String
+    /// A meeting job in the list (summary row).
+    struct MeetingSummary: Identifiable {
+        let id: Int
+        let ts: String
+        let title: String
+        let status: String     // processing | done | error
+        let speakers: Int
+        let error: String
+        let chars: Int
     }
 
-    /// POST a (long) meeting recording WAV to /meeting — returns transcript + notes.
-    func meeting(wav: Data) async throws -> Meeting {
+    /// Full meeting result.
+    struct Meeting {
+        let id: Int
+        let status: String
+        let transcript: String
+        let notes: String
+        let speakers: Int
+        let error: String
+    }
+
+    /// Submit a meeting recording for ASYNC processing. Returns the job id
+    /// immediately; poll meetings()/meeting(id) for the durable result.
+    func submitMeeting(wav: Data, title: String) async throws -> Int {
         let boundary = "vf-\(UUID().uuidString)"
         var req = URLRequest(url: baseURL.appendingPathComponent("meeting"))
         req.httpMethod = "POST"
@@ -107,9 +123,13 @@ struct ServerClient {
         if let apiKey = apiKey, !apiKey.isEmpty {
             req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
-        req.timeoutInterval = 1800   // meetings can be long
+        req.timeoutInterval = 120   // just the upload; processing is async server-side
         var body = Data()
         func add(_ s: String) { body.append(s.data(using: .utf8)!) }
+        for (name, val) in [("title", title)] {
+            add("--\(boundary)\r\n")
+            add("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(val)\r\n")
+        }
         add("--\(boundary)\r\n")
         add("Content-Disposition: form-data; name=\"file\"; filename=\"meeting.wav\"\r\n")
         add("Content-Type: audio/wav\r\n\r\n")
@@ -118,13 +138,48 @@ struct ServerClient {
         req.httpBody = body
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? "unknown"
             throw NSError(domain: "whispertype", code: 5,
-                          userInfo: [NSLocalizedDescriptionKey: "server error: \(msg)"])
+                          userInfo: [NSLocalizedDescriptionKey: String(data: data, encoding: .utf8) ?? "upload failed"])
         }
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        return Meeting(transcript: obj["transcript"] as? String ?? "",
-                       notes: obj["notes"] as? String ?? "")
+        return obj["id"] as? Int ?? -1
+    }
+
+    /// List meeting jobs (newest first).
+    func meetings(limit: Int = 50) async throws -> [MeetingSummary] {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("meetings"),
+                                  resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "limit", value: String(limit))]
+        var req = URLRequest(url: comps.url!); req.timeoutInterval = 10
+        let (data, _) = try await URLSession.shared.data(for: req)
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        return (obj["items"] as? [[String: Any]] ?? []).compactMap { d in
+            guard let id = d["id"] as? Int else { return nil }
+            return MeetingSummary(id: id, ts: d["ts"] as? String ?? "",
+                                  title: d["title"] as? String ?? "",
+                                  status: d["status"] as? String ?? "",
+                                  speakers: d["speakers"] as? Int ?? 0,
+                                  error: d["error"] as? String ?? "",
+                                  chars: d["chars"] as? Int ?? 0)
+        }
+    }
+
+    /// Fetch a meeting's full transcript + notes.
+    func meeting(id: Int) async throws -> Meeting {
+        var req = URLRequest(url: baseURL.appendingPathComponent("meeting/\(id)"))
+        req.timeoutInterval = 15
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw NSError(domain: "whispertype", code: 6,
+                          userInfo: [NSLocalizedDescriptionKey: "fetch failed"])
+        }
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        return Meeting(id: obj["id"] as? Int ?? id,
+                       status: obj["status"] as? String ?? "",
+                       transcript: obj["transcript"] as? String ?? "",
+                       notes: obj["notes"] as? String ?? "",
+                       speakers: obj["speakers"] as? Int ?? 0,
+                       error: obj["error"] as? String ?? "")
     }
 
     /// POST the WAV to /engineer (prompt mode) — returns a concise and a detailed

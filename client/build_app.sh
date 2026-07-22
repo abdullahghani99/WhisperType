@@ -12,9 +12,15 @@ cd "$(dirname "$0")"
 APP="WhisperType.app"
 BIN_NAME="WhisperType"
 
-echo "==> swift build (release)"
-swift build -c release
-BIN_PATH="$(swift build -c release --show-bin-path)/$BIN_NAME"
+# Keep the churny build output OUTSIDE the source tree (default: a Caches dir).
+# The project lives in OneDrive; syncing hundreds of MB of build artifacts is
+# what corrupted the checkout, so builds write here instead and never sync.
+SCRATCH="${VF_SCRATCH:-$HOME/Library/Caches/whispertype-build}"
+mkdir -p "$SCRATCH"
+
+echo "==> swift build (release, scratch=$SCRATCH)"
+swift build -c release --scratch-path "$SCRATCH"
+BIN_PATH="$(swift build -c release --scratch-path "$SCRATCH" --show-bin-path)/$BIN_NAME"
 
 echo "==> assembling $APP"
 rm -rf "$APP"

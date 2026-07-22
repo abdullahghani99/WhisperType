@@ -275,9 +275,12 @@ def _transcribe_local(audio: bytes, language: str | None) -> str:
     return mlx_whisper.transcribe(audio_arr, **kwargs)["text"].strip()
 
 
-def _transcribe_local_segments(audio: bytes, language: str | None):
+def _transcribe_local_segments(audio: bytes, language: str | None, translate: bool = False):
     """Like _transcribe_local but returns Whisper's timestamped segments
-    [(start, end, text), ...] — needed to merge speaker labels for diarization."""
+    [(start, end, text), ...] — needed to merge speaker labels for diarization.
+    translate=True uses Whisper's translate task → English, regardless of the
+    spoken language (used by meeting mode so Chinese/other-language meetings come
+    out in English)."""
     audio_arr = _wav_to_array(audio)
     kwargs = {
         "path_or_hf_repo": WHISPER_MODEL,
@@ -286,11 +289,14 @@ def _transcribe_local_segments(audio: bytes, language: str | None):
         "compression_ratio_threshold": 2.4,
         "no_speech_threshold": 0.6,
     }
-    prompt = _whisper_prompt()
-    if prompt:
-        kwargs["initial_prompt"] = prompt
-    if language:
-        kwargs["language"] = language
+    if translate:
+        kwargs["task"] = "translate"
+    else:
+        prompt = _whisper_prompt()
+        if prompt:
+            kwargs["initial_prompt"] = prompt
+        if language:
+            kwargs["language"] = language
     res = mlx_whisper.transcribe(audio_arr, **kwargs)
     segs = [(s.get("start", 0.0), s.get("end", 0.0), (s.get("text") or "").strip())
             for s in res.get("segments", [])]
@@ -697,65 +703,109 @@ async def engineer(
     })
 
 
+def _meeting_set(job_id, **cols):
+    """Update a meeting job row."""
+    if not cols:
+        return
+    con = sqlite3.connect(DB_PATH)
+    try:
+        sets = ", ".join(f"{k}=?" for k in cols)
+        con.execute(f"UPDATE meetings SET {sets} WHERE id=?", (*cols.values(), job_id))
+        con.commit()
+    finally:
+        con.close()
+
+
+async def _process_meeting(job_id: int, audio: bytes, language: str | None,
+                           diarize: bool, translate: bool):
+    """Background worker: transcribe (optionally translate→English) → diarize →
+    notes, writing results to the DURABLE meetings row. Runs detached from the
+    HTTP request, so the result survives even if the client disconnects."""
+    try:
+        want_diar = diarize and _WHISPER_LOCAL and os.path.exists(DIARIZE_PY)
+        t_asr = time.time()
+        if want_diar:
+            try:
+                raw, segs = await asyncio.to_thread(_transcribe_local_segments, audio, language, translate)
+            except Exception as e:  # noqa: BLE001
+                log.warning("segment ASR failed (%s); plain ASR", e)
+                raw, segs = await asyncio.to_thread(_transcribe_local, audio, language), []
+        else:
+            raw, segs = await asyncio.to_thread(_transcribe_local, audio, language), []
+        asr_ms = int((time.time() - t_asr) * 1000)
+        transcript = apply_vocab(raw)
+        if not transcript.strip():
+            _meeting_set(job_id, status="error", error="no speech detected", asr_ms=asr_ms)
+            return
+
+        speakers, diar_ms = 0, 0
+        if want_diar and segs:
+            t = time.time()
+            turns = await asyncio.to_thread(_diarize, audio)
+            if turns:
+                labeled = _label_transcript([(s, e, apply_vocab(txt)) for s, e, txt in segs], turns)
+                if labeled:
+                    transcript = labeled
+                    speakers = len({t_["speaker"] for t_ in turns})
+            diar_ms = int((time.time() - t) * 1000)
+
+        notes_text, notes_ms = "", 0
+        if _model is not None:
+            t = time.time()
+            notes_text = await asyncio.to_thread(_meeting_notes, transcript)
+            notes_ms = int((time.time() - t) * 1000)
+
+        _meeting_set(job_id, status="done", transcript=transcript, notes=notes_text,
+                     speakers=speakers, asr_ms=asr_ms, diar_ms=diar_ms, notes_ms=notes_ms)
+        log.info("meeting job %d done asr=%dms diar=%dms notes=%dms speakers=%d chars=%d",
+                 job_id, asr_ms, diar_ms, notes_ms, speakers, len(transcript))
+    except Exception as e:  # noqa: BLE001
+        log.error("meeting job %d failed: %s", job_id, e)
+        _meeting_set(job_id, status="error", error=str(e))
+
+
 @app.post("/meeting")
 async def meeting(
     file: UploadFile = File(...),
     language: str | None = Form(None),
-    notes: bool = Form(True),
     diarize: bool = Form(True),
+    translate: bool = Form(True),   # meetings default to English output
+    title: str = Form(""),
     authorization: str | None = Header(None),
 ):
-    """Meeting mode: transcribe a (long) meeting/call recording and produce
-    structured Markdown notes. Additive and isolated from the dictation path.
-    When diarization is available (isolated pyannote venv), the transcript is
-    speaker-labeled ('Speaker 1/2/…'); otherwise it's a single unlabeled blob.
-    Long audio may take a while; the client should use a long timeout."""
+    """Submit a meeting recording for ASYNC processing. Returns a job id
+    immediately; the durable result is fetched via /meetings and /meeting/{id}.
+    This decouples long (10+ min) transcription from the client connection, so a
+    result is never lost if the app closes."""
     _check_auth(authorization)
     audio = await file.read()
+    con = sqlite3.connect(DB_PATH)
+    cur = con.execute("INSERT INTO meetings (title, status) VALUES (?, 'processing')", (title,))
+    job_id = cur.lastrowid
+    con.commit(); con.close()
+    asyncio.create_task(_process_meeting(job_id, audio, language, diarize, translate))
+    log.info("meeting job %d queued (%d bytes, translate=%s)", job_id, len(audio), translate)
+    return JSONResponse({"id": job_id, "status": "processing"})
 
-    # ASR — with segments if we might diarize (needed to merge speaker labels).
-    t_asr = time.time()
-    want_diar = diarize and _WHISPER_LOCAL and os.path.exists(DIARIZE_PY)
-    speakers = 0
-    if want_diar:
-        try:
-            raw, segs = await asyncio.to_thread(_transcribe_local_segments, audio, language)
-        except Exception as e:  # noqa: BLE001
-            log.warning("segment ASR failed (%s); plain ASR", e)
-            raw, _ = await _run_asr(audio, file.filename, language); segs = []
-    else:
-        raw, _ = await _run_asr(audio, file.filename, language); segs = []
-    asr_ms = int((time.time() - t_asr) * 1000)
 
-    transcript = apply_vocab(raw)
-    if not transcript.strip():
-        raise HTTPException(status_code=422, detail="no speech detected")
+@app.get("/meetings")
+async def list_meetings(limit: int = 50):
+    con = sqlite3.connect(DB_PATH); con.row_factory = sqlite3.Row
+    rows = con.execute(
+        "SELECT id, ts, title, status, speakers, error, length(transcript) AS chars "
+        "FROM meetings ORDER BY id DESC LIMIT ?", (max(1, min(limit, 200)),)).fetchall()
+    con.close()
+    return {"items": [dict(r) for r in rows]}
 
-    # Diarization (optional; graceful fallback to the unlabeled transcript).
-    diar_ms = 0
-    if want_diar and segs:
-        t = time.time()
-        turns = await asyncio.to_thread(_diarize, audio)
-        if turns:
-            labeled = _label_transcript([(s, e, apply_vocab(txt)) for s, e, txt in segs], turns)
-            if labeled:
-                transcript = labeled
-                speakers = len({t_["speaker"] for t_ in turns})
-        diar_ms = int((time.time() - t) * 1000)
 
-    notes_text, notes_ms = "", 0
-    if notes and _model is not None:
-        t = time.time()
-        notes_text = await asyncio.to_thread(_meeting_notes, transcript)
-        notes_ms = int((time.time() - t) * 1000)
-    log.info("meeting ok asr=%dms diar=%dms notes=%dms speakers=%d chars=%d",
-             asr_ms, diar_ms, notes_ms, speakers, len(transcript))
-    return JSONResponse({
-        "transcript": transcript,
-        "notes": notes_text,
-        "speakers": speakers,
-        "timing_ms": {"asr": asr_ms, "diarize": diar_ms, "notes": notes_ms},
-    })
+@app.get("/meeting/{job_id}")
+async def get_meeting(job_id: int):
+    con = sqlite3.connect(DB_PATH); con.row_factory = sqlite3.Row
+    row = con.execute("SELECT * FROM meetings WHERE id=?", (job_id,)).fetchone()
+    con.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail="no meeting with that id")
+    return dict(row)
 
 
 # ---------------------------------------------------------------------------
@@ -826,6 +876,23 @@ def _init_db():
             source TEXT NOT NULL DEFAULT 'edit',     -- edit | scan
             ts TEXT DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(kind, frm, to_))""")
+        # Meeting jobs — async & DURABLE so a long transcription's result is never
+        # lost if the client disconnects/quits (the whole reason meeting output
+        # vanished before). status: processing | done | error.
+        con.execute("""CREATE TABLE IF NOT EXISTS meetings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT DEFAULT CURRENT_TIMESTAMP,
+            title TEXT DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'processing',
+            transcript TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            speakers INTEGER DEFAULT 0,
+            error TEXT DEFAULT '',
+            asr_ms INTEGER DEFAULT 0, diar_ms INTEGER DEFAULT 0, notes_ms INTEGER DEFAULT 0)""")
+        # A server restart orphans any in-flight job — mark them errored (honest)
+        # rather than leaving them stuck "processing" forever.
+        con.execute("UPDATE meetings SET status='error', error='interrupted by server restart' "
+                    "WHERE status='processing'")
         con.commit()
         con.close()
         log.info("capture store ready at %s", DB_PATH)

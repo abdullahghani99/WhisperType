@@ -52,6 +52,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastDictationId: Int?
     private var lastDictationText: String = ""
     private let settingsWC = SettingsWindowController()
+    private let meetingsWC = MeetingsWindowController()
     private var healthTimer: Timer?
 
     // Optional mouse-button TOGGLE trigger (e.g. a Logitech side/scroll button):
@@ -164,6 +165,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                              action: #selector(toggleMeeting), keyEquivalent: "")
         menu.addItem(mtg)
         meetingItem = mtg
+        menu.addItem(NSMenuItem(title: "Meetings… (transcripts & notes)",
+                                action: #selector(openMeetings), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Settings & Dictionary…",
                                 action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Test dictation now (5s)",
@@ -194,7 +197,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsWC.show(client: client)
     }
 
-    /// Meeting mode: pick a recording, transcribe it, and save Markdown notes.
+    @objc private func openMeetings() {
+        meetingsWC.show(client: client)
+    }
+
+    /// Meeting mode: pick a recording, submit it for async processing, and open
+    /// the Meetings window to watch/collect the result (durable server-side).
     @objc private func summarizeRecording() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio, .movie]
@@ -202,36 +210,24 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.message = "Pick a meeting or call recording — I'll transcribe it and write notes"
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        let base = url.deletingPathExtension().lastPathComponent
 
-        overlay.show(.message("Transcribing & summarizing “\(url.lastPathComponent)”… (this can take a while)"))
+        overlay.show(.message("Uploading “\(url.lastPathComponent)”…"))
         Task {
             do {
                 let wav = try MeetingCapture.convertToWav16k(url)
                 vlog("meeting: converted \(url.lastPathComponent) -> \(wav.count) wav bytes")
-                let result = try await client.meeting(wav: wav)
-                let base = url.deletingPathExtension().lastPathComponent
-                let md = """
-                # Meeting notes — \(base)
-
-                \(result.notes)
-
-                ---
-
-                ## Full transcript
-
-                \(result.transcript)
-                """
-                let outURL = try saveMeetingNotes(md, base: base, near: url)
-                vlog("meeting: notes saved -> \(outURL.path)")
+                let id = try await client.submitMeeting(wav: wav, title: base)
+                vlog("meeting submitted: job \(id)")
                 await MainActor.run {
                     self.overlay.hide()
-                    NSWorkspace.shared.open(outURL)
+                    self.meetingsWC.show(client: self.client)   // watch it process
                 }
             } catch {
-                vlog("meeting FAILED: \(error)")
+                vlog("meeting submit FAILED: \(error)")
                 await MainActor.run {
-                    self.overlay.show(.message("Couldn’t summarize: \(error.localizedDescription)"))
-                    self.overlay.hide(after: 4)
+                    self.overlay.show(.message("Couldn’t read that recording: \(error.localizedDescription)"))
+                    self.overlay.hide(after: 5)
                 }
             }
         }
@@ -261,7 +257,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func stopMeeting() {
-        overlay.show(.message("Transcribing & summarizing the meeting… (this can take a while)"))
+        overlay.show(.message("Finishing recording…"))
         Task {
             let wav = await meetingRecorder.stop()
             guard wav.count > 8_000 else {
@@ -272,39 +268,24 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             let stamp = Self.meetingStamp.string(from: Date())
-            // Save the raw recording to Desktop FIRST, so a long or failed
-            // transcription can never lose the meeting — it can always be re-run
-            // via "Summarize a recording…". (A 44-min meeting was lost once.)
+            // Save the raw recording to Desktop FIRST, so processing can never lose
+            // it (re-runnable via "Summarize a recording…"). A 44-min meeting was
+            // lost once before this safeguard.
             let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask)[0]
             let wavURL = desktop.appendingPathComponent("WhisperType Meeting \(stamp).wav")
             do { try wav.write(to: wavURL); vlog("meeting: audio saved -> \(wavURL.path)") }
             catch { vlog("meeting: could not save audio: \(error)") }
-            await MainActor.run {
-                self.overlay.show(.message("Saved recording. Transcribing & summarizing… (long meetings take several minutes)"))
-            }
             do {
-                let result = try await client.meeting(wav: wav)
-                let md = """
-                # Meeting notes — \(stamp)
-
-                \(result.notes)
-
-                ---
-
-                ## Full transcript
-
-                \(result.transcript)
-                """
-                let outURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask)[0]
-                    .appendingPathComponent("WhisperType Meeting \(stamp).md")
-                try md.data(using: .utf8)!.write(to: outURL)
-                vlog("meeting: notes saved -> \(outURL.path)")
-                await MainActor.run { self.overlay.hide(); NSWorkspace.shared.open(outURL) }
+                // Submit for ASYNC processing — the durable server job survives even
+                // if this app quits; the result appears in the Meetings window.
+                let id = try await client.submitMeeting(wav: wav, title: "Meeting \(stamp)")
+                vlog("meeting submitted: job \(id)")
+                await MainActor.run { self.overlay.hide(); self.meetingsWC.show(client: self.client) }
             } catch {
-                vlog("meeting summarize FAILED: \(error)")
+                vlog("meeting submit FAILED: \(error)")
                 await MainActor.run {
-                    self.overlay.show(.message("Couldn’t summarize: \(error.localizedDescription)"))
-                    self.overlay.hide(after: 4)
+                    self.overlay.show(.message("Recording saved to Desktop, but upload failed: \(error.localizedDescription). Retry via “Summarize a recording…”."))
+                    self.overlay.hide(after: 6)
                 }
             }
         }

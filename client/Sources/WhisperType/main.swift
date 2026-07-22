@@ -51,8 +51,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Last dictation, so "Correct last dictation…" can teach the server a fix.
     private var lastDictationId: Int?
     private var lastDictationText: String = ""
-    private let settingsWC = SettingsWindowController()
-    private let meetingsWC = MeetingsWindowController()
+    private let mainWC = MainWindowController()
     private var healthTimer: Timer?
 
     // Optional mouse-button TOGGLE trigger (e.g. a Logitech side/scroll button):
@@ -93,6 +92,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             forName: .vfPrerollChanged, object: nil, queue: .main) { [weak self] _ in
             self?.recorder.configurePreroll()
             vlog("preroll toggled -> \(UserDefaults.standard.bool(forKey: "vf_preroll"))")
+        }
+
+        // Testability: open the main window automatically (used to screenshot the UI).
+        if ProcessInfo.processInfo.environment["VF_OPEN_MAIN"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.openMain()
+                if let mid = ProcessInfo.processInfo.environment["VF_OPEN_MEETING"], let n = Int(mid) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.mainWC.meetings.open(n) }
+                }
+            }
         }
 
         let trusted = AXIsProcessTrusted()
@@ -165,7 +174,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                              action: #selector(toggleMeeting), keyEquivalent: "")
         menu.addItem(mtg)
         meetingItem = mtg
-        menu.addItem(NSMenuItem(title: "Meetings… (transcripts & notes)",
+        menu.addItem(NSMenuItem(title: "Open WhisperType…",
+                                action: #selector(openMain), keyEquivalent: "0"))
+        menu.addItem(NSMenuItem(title: "Meetings…",
                                 action: #selector(openMeetings), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Settings & Dictionary…",
                                 action: #selector(openSettings), keyEquivalent: ","))
@@ -193,12 +204,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    @objc private func openMain() {
+        mainWC.show(client: client)
+    }
+
     @objc private func openSettings() {
-        settingsWC.show(client: client)
+        mainWC.show(client: client, section: .dictionary)
     }
 
     @objc private func openMeetings() {
-        meetingsWC.show(client: client)
+        mainWC.show(client: client, section: .meetings)
     }
 
     /// Meeting mode: pick a recording, submit it for async processing, and open
@@ -221,7 +236,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 vlog("meeting submitted: job \(id)")
                 await MainActor.run {
                     self.overlay.hide()
-                    self.meetingsWC.show(client: self.client)   // watch it process
+                    self.mainWC.show(client: self.client, section: .meetings)   // watch it process
                 }
             } catch {
                 vlog("meeting submit FAILED: \(error)")
@@ -280,7 +295,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // if this app quits; the result appears in the Meetings window.
                 let id = try await client.submitMeeting(wav: wav, title: "Meeting \(stamp)")
                 vlog("meeting submitted: job \(id)")
-                await MainActor.run { self.overlay.hide(); self.meetingsWC.show(client: self.client) }
+                await MainActor.run { self.overlay.hide(); self.mainWC.show(client: self.client, section: .meetings) }
             } catch {
                 vlog("meeting submit FAILED: \(error)")
                 await MainActor.run {

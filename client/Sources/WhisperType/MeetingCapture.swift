@@ -1,13 +1,49 @@
 import AVFoundation
 import Foundation
 
-/// Converts an arbitrary audio/video recording (m4a, mp3, mp4, wav, mov…) into
-/// the 16 kHz mono 16-bit PCM WAV the server's ASR expects — entirely in-process
-/// via AVFoundation (no ffmpeg). Used by meeting mode's "Summarize a recording…".
+/// Converts an arbitrary audio/video recording (m4a, mp3, mp4, mov…) into the
+/// 16 kHz mono 16-bit PCM WAV the server's ASR expects. Used by meeting mode's
+/// "Summarize a recording…".
+///
+/// Prefers ffmpeg when present (on this Mac) because AVAssetReader fails partway
+/// through oddly-muxed files — notably Teams .mp4 recordings, where it aborted
+/// after ~7 min with "reader status 3". ffmpeg pushes through such files and
+/// recovers far more audio. Falls back to the in-process AVFoundation path if
+/// ffmpeg isn't installed.
 enum MeetingCapture {
     enum ConvertError: Error { case noAudioTrack, readFailed(String) }
 
+    private static let ffmpegPaths = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
+
     static func convertToWav16k(_ url: URL) throws -> Data {
+        if let ff = ffmpegPaths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+            if let wav = try? convertViaFfmpeg(url, ffmpeg: ff), wav.count > 44 {
+                return wav
+            }
+            // fall through to AVFoundation if ffmpeg produced nothing usable
+        }
+        return try convertViaAVFoundation(url)
+    }
+
+    /// Resilient decode via ffmpeg → 16 kHz mono s16le WAV on stdout.
+    private static func convertViaFfmpeg(_ url: URL, ffmpeg: String) throws -> Data {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: ffmpeg)
+        p.arguments = ["-nostdin", "-v", "error",
+                       "-err_detect", "ignore_err", "-fflags", "+discardcorrupt",
+                       "-i", url.path, "-ac", "1", "-ar", "16000",
+                       "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"]
+        let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
+        // Read the pipe on a background queue so a large output can't deadlock.
+        var data = Data()
+        let g = DispatchGroup(); g.enter()
+        let h = out.fileHandleForReading
+        DispatchQueue.global().async { data = h.readDataToEndOfFile(); g.leave() }
+        try p.run(); p.waitUntilExit(); g.wait()
+        return data
+    }
+
+    private static func convertViaAVFoundation(_ url: URL) throws -> Data {
         let asset = AVURLAsset(url: url)
         guard let track = asset.tracks(withMediaType: .audio).first else {
             throw ConvertError.noAudioTrack

@@ -65,9 +65,9 @@ struct MeetingsView: View {
             // Left: job list
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("Meetings").font(.headline)
+                    Text("\(state.items.count) recorded").font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Refresh") { state.refresh() }
+                    Button("Refresh") { state.refresh() }.controlSize(.small)
                 }.padding([.top, .horizontal], 12)
                 List(state.items) { m in
                     HStack(spacing: 8) {
@@ -89,7 +89,6 @@ struct MeetingsView: View {
             // Right: detail
             detail.frame(minWidth: 420)
         }
-        .frame(width: 820, height: 560)
         .onAppear { state.refresh() }
     }
 
@@ -112,8 +111,21 @@ struct MeetingsView: View {
                         .foregroundStyle(Color.vfAccent)
                 }
                 ScrollView {
-                    Text(previewText(m)).font(.system(.callout, design: .default))
-                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 12) {
+                        if !m.notes.isEmpty {
+                            Text(rendered(m.notes)).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if !m.transcript.isEmpty {
+                            Divider()
+                            Text("FULL TRANSCRIPT").font(.caption).foregroundStyle(.secondary)
+                            Text(rendered(m.transcript)).font(.callout).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if m.notes.isEmpty && m.transcript.isEmpty && m.status != "processing" {
+                            Text("(no content)").foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }.padding(14)
         } else {
@@ -126,9 +138,11 @@ struct MeetingsView: View {
         }
     }
 
-    private func previewText(_ m: ServerClient.Meeting) -> String {
-        if m.notes.isEmpty && m.transcript.isEmpty { return "(no content yet)" }
-        return m.notes + "\n\n────────────\nFULL TRANSCRIPT\n────────────\n\n" + m.transcript
+    /// Render Markdown (bold, bullets) while preserving line breaks, so notes
+    /// show properly instead of literal ** and - characters.
+    private func rendered(_ s: String) -> AttributedString {
+        (try? AttributedString(markdown: s, options: .init(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
     }
 
     private func subtitle(_ m: ServerClient.MeetingSummary) -> String {

@@ -17,6 +17,7 @@ final class SettingsState: ObservableObject {
     @Published var status: String = ""
     @Published var micDevices: [AudioInputDevice] = []
     @Published var suggestions: [ServerClient.Suggestion] = []
+    @Published var serverOK: Bool = false
     @Published var selectedMicUID: String = UserDefaults.standard.string(forKey: AudioDevices.defaultsKey) ?? ""
     @Published var prerollEnabled: Bool = UserDefaults.standard.bool(forKey: "vf_preroll") {
         didSet {
@@ -83,6 +84,15 @@ final class SettingsState: ObservableObject {
         }
     }
 
+    /// Ping the server so the main window can show a connected/■ status dot.
+    func pingServer() {
+        guard let client = client else { return }
+        Task {
+            let ok = (try? await client.health()) != nil
+            await MainActor.run { self.serverOK = ok }
+        }
+    }
+
     // MARK: - Learning (suggestions derived from your corrections + history)
 
     func loadSuggestions() {
@@ -139,7 +149,7 @@ struct SettingsView: View {
     }
 }
 
-private struct DictionaryTab: View {
+struct DictionaryTab: View {
     @ObservedObject var state: SettingsState
     @State private var from = ""
     @State private var to = ""
@@ -187,7 +197,7 @@ private struct DictionaryTab: View {
     }
 }
 
-private struct LearningTab: View {
+struct LearningTab: View {
     @ObservedObject var state: SettingsState
 
     var body: some View {
@@ -243,7 +253,7 @@ private struct LearningTab: View {
     }
 }
 
-private struct MicTab: View {
+struct MicTab: View {
     @ObservedObject var state: SettingsState
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -275,7 +285,7 @@ private struct MicTab: View {
     }
 }
 
-private struct HistoryTab: View {
+struct HistoryTab: View {
     @ObservedObject var state: SettingsState
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -300,7 +310,7 @@ private struct HistoryTab: View {
     }
 }
 
-private struct AboutTab: View {
+struct AboutTab: View {
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: "mic.fill").font(.system(size: 34)).foregroundStyle(Color.vfAccent)

@@ -565,21 +565,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func beginRecording(prompt: Bool = false) {
         guard !isRecording else { return }
+        // Enter recording state optimistically and show the overlay immediately —
+        // recorder.start() is now async (engine bring-up is off the main thread so
+        // a slow/Bluetooth mic can't freeze the app). If the mic genuinely fails,
+        // the completion resets state and shows the error.
+        isRecording = true
         promptMode = prompt
         promptComboUsed = false
         recorder.onLevel = { [weak self] level in self?.overlay.state.pushLevel(level) }
-        recorder.start()
-        // Only enter recording state if the mic actually started — otherwise the
-        // state would get stuck "true" and the next click would wrongly STOP.
-        guard recorder.isRecording else {
-            vlog("recorder failed to start (mic unavailable)")
-            overlay.show(.message("Microphone unavailable — check input device / other apps"))
-            overlay.hide(after: 2.5)
-            return
-        }
-        isRecording = true
         overlay.show(.listening)
         vlog("recording: start (prompt=\(prompt))")
+        recorder.start { [weak self] ok in
+            guard let self = self, !ok, self.isRecording else { return }
+            self.isRecording = false
+            vlog("recorder failed to start (mic unavailable)")
+            self.overlay.show(.message("Microphone unavailable — check input device / other apps"))
+            self.overlay.hide(after: 2.5)
+        }
     }
 
     private func endRecording() {

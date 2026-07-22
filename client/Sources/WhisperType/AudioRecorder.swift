@@ -24,7 +24,15 @@ final class AudioRecorder {
     // tap's ring mutations without this. Critical sections are tiny (a Data copy).
     private let bufLock = NSLock()
     private var _isRecording = false
+    private var wantRecording = false   // intent, guarded by bufLock
     var isRecording: Bool { bufLock.lock(); defer { bufLock.unlock() }; return _isRecording }
+
+    // ALL AVAudioEngine work runs here, never on the main thread. Querying the
+    // input format / starting the engine does a synchronous dispatch to the audio
+    // HAL that can BLOCK for a long time when the input device (e.g. a Bluetooth
+    // mic) is transitioning — which froze the whole app ("not responding"). Off
+    // the main thread, a slow device can't freeze the UI.
+    private let engineQueue = DispatchQueue(label: "app.whispertype.client.audio")
 
     var onLevel: ((Float) -> Void)?
     var prerollEnabled: Bool { UserDefaults.standard.bool(forKey: "vf_preroll") }
@@ -42,13 +50,17 @@ final class AudioRecorder {
     }
 
     /// Call at launch (and when the toggle changes) — starts the always-warm
-    /// engine if pre-roll is enabled, else does nothing.
+    /// engine if pre-roll is enabled, else does nothing. Engine work is on
+    /// engineQueue so it can't block the caller (main thread).
     func configurePreroll() {
-        if prerollEnabled {
-            if engine == nil { continuous = true; startEngine() }
-        } else {
-            continuous = false
-            if !isRecording { teardown() }
+        engineQueue.async { [weak self] in
+            guard let self = self else { return }
+            if self.prerollEnabled {
+                if self.engine == nil { self.continuous = true; self.startEngine() }
+            } else {
+                self.continuous = false
+                if !self.isRecording { self.teardown() }
+            }
         }
     }
 
@@ -93,28 +105,45 @@ final class AudioRecorder {
         }
     }
 
-    func start() {
-        guard !isRecording else { return }
-        if continuous {
-            // Engine already running — seed the recording with the pre-roll ring.
-            if engine == nil { startEngine() }
-            bufLock.lock(); pcm = ring; _isRecording = true; bufLock.unlock()
-        } else {
-            startEngine()
-            guard engine != nil else { return }   // mic failed → don't get stuck
-            bufLock.lock(); pcm = Data(); _isRecording = true; bufLock.unlock()
+    /// Begin recording. Non-blocking: engine bring-up happens on engineQueue and
+    /// `completion(true/false)` is called back on the MAIN thread when the mic is
+    /// actually live (or failed). `completion(false)` = mic unavailable.
+    func start(_ completion: @escaping (Bool) -> Void) {
+        bufLock.lock()
+        if _isRecording { bufLock.unlock(); DispatchQueue.main.async { completion(false) }; return }
+        wantRecording = true
+        bufLock.unlock()
+        engineQueue.async { [weak self] in
+            guard let self = self else { return }
+            if self.engine == nil { self.startEngine() }   // may block HERE, but off main
+            let ok = self.engine != nil
+            self.bufLock.lock()
+            let stillWant = self.wantRecording
+            if ok && stillWant {
+                self.pcm = self.continuous ? self.ring : Data()
+                self._isRecording = true
+            }
+            self.bufLock.unlock()
+            // User released before the mic came up → don't strand a running engine.
+            if ok && !stillWant && !self.continuous { self.teardown() }
+            DispatchQueue.main.async { completion(ok && stillWant) }
         }
     }
 
+    /// Stop and return the captured WAV. Fast + non-blocking: the audio bytes are
+    /// already in memory (the tap fills `pcm`), so we return immediately and do
+    /// the potentially-slow engine teardown on engineQueue (off main).
     func stop() -> Data {
         bufLock.lock()
+        wantRecording = false        // cancel a start() still bringing the engine up
         guard _isRecording else { bufLock.unlock(); return Data() }
         _isRecording = false
         let captured = pcm
+        let wasContinuous = continuous
         if continuous { ring = Data() }   // keep engine warm for next pre-roll
         bufLock.unlock()
 
-        if !continuous { teardown() }
+        if !wasContinuous { engineQueue.async { [weak self] in self?.teardown() } }
         if captured.isEmpty { logError("captured 0 bytes (device produced no samples)") }
         return wav(from: captured)
     }

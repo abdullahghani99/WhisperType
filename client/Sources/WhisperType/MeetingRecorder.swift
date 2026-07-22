@@ -145,23 +145,27 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // MARK: mix + wav
     /// Sum two 16 kHz mono int16 streams sample-wise (clip), pad the shorter.
+    /// Writes into ONE preallocated buffer — must stay fast for long meetings.
+    /// (The previous per-sample allocating loop effectively hung on ~40M-sample
+    /// recordings, so a 44-min meeting never reached the upload step.)
     private func mix(_ a: Data, _ b: Data) -> Data {
         let na = a.count / 2, nb = b.count / 2, n = max(na, nb)
         if n == 0 { return Data() }
-        var out = Data(capacity: n * 2)
-        a.withUnsafeBytes { (pa: UnsafeRawBufferPointer) in
-            b.withUnsafeBytes { (pb: UnsafeRawBufferPointer) in
-                let sa = pa.bindMemory(to: Int16.self)
-                let sb = pb.bindMemory(to: Int16.self)
-                for i in 0..<n {
-                    let va = i < na ? Int32(Int16(littleEndian: sa[i])) : 0
-                    let vb = i < nb ? Int32(Int16(littleEndian: sb[i])) : 0
-                    var s = Int16(max(-32768, min(32767, va + vb))).littleEndian
-                    out.append(Data(bytes: &s, count: 2))
+        var out = [Int16](repeating: 0, count: n)
+        out.withUnsafeMutableBufferPointer { o in
+            a.withUnsafeBytes { (pa: UnsafeRawBufferPointer) in
+                b.withUnsafeBytes { (pb: UnsafeRawBufferPointer) in
+                    let sa = pa.bindMemory(to: Int16.self)
+                    let sb = pb.bindMemory(to: Int16.self)
+                    for i in 0..<n {
+                        let va = i < na ? Int32(sa[i]) : 0
+                        let vb = i < nb ? Int32(sb[i]) : 0
+                        o[i] = Int16(max(-32768, min(32767, va + vb)))
+                    }
                 }
             }
         }
-        return out
+        return out.withUnsafeBytes { Data($0) }
     }
 
     private func wav(from pcm: Data) -> Data {

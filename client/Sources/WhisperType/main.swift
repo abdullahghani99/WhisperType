@@ -271,9 +271,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 return
             }
+            let stamp = Self.meetingStamp.string(from: Date())
+            // Save the raw recording to Desktop FIRST, so a long or failed
+            // transcription can never lose the meeting — it can always be re-run
+            // via "Summarize a recording…". (A 44-min meeting was lost once.)
+            let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask)[0]
+            let wavURL = desktop.appendingPathComponent("WhisperType Meeting \(stamp).wav")
+            do { try wav.write(to: wavURL); vlog("meeting: audio saved -> \(wavURL.path)") }
+            catch { vlog("meeting: could not save audio: \(error)") }
+            await MainActor.run {
+                self.overlay.show(.message("Saved recording. Transcribing & summarizing… (long meetings take several minutes)"))
+            }
             do {
                 let result = try await client.meeting(wav: wav)
-                let stamp = Self.meetingStamp.string(from: Date())
                 let md = """
                 # Meeting notes — \(stamp)
 

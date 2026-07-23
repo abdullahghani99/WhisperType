@@ -64,6 +64,16 @@ final class AudioRecorder {
         }
     }
 
+    /// Apply a just-changed input-device selection: rebuild the engine so the new
+    /// pin takes effect immediately (even while the pre-roll engine is warm).
+    func reloadDevice() {
+        engineQueue.async { [weak self] in
+            guard let self = self, !self.isRecording else { return }
+            self.teardown()
+            if self.prerollEnabled { self.continuous = true; self.startEngine() }
+        }
+    }
+
     private func startEngine() {
         let e = AVAudioEngine()
         engine = e
@@ -143,8 +153,23 @@ final class AudioRecorder {
         if continuous { ring = Data() }   // keep engine warm for next pre-roll
         bufLock.unlock()
 
-        if !wasContinuous { engineQueue.async { [weak self] in self?.teardown() } }
-        if captured.isEmpty { logError("captured 0 bytes (device produced no samples)") }
+        let silent = captured.isEmpty
+        if !wasContinuous {
+            engineQueue.async { [weak self] in self?.teardown() }
+        } else if silent {
+            // Warm (pre-roll) engine clung to a device that went silent — the
+            // classic Bluetooth-mic-after-idle failure that produced 0 bytes on
+            // every retry until the mic was manually re-selected. Rebuild the
+            // engine so the NEXT dictation re-establishes/wakes the device.
+            // Auto-recovery: no manual re-selection needed.
+            engineQueue.async { [weak self] in
+                guard let self = self else { return }
+                self.teardown()
+                self.logError("silent capture on warm engine — rebuilt to recover the mic")
+                if self.prerollEnabled { self.startEngine() }
+            }
+        }
+        if silent { logError("captured 0 bytes (device produced no samples)") }
         return wav(from: captured)
     }
 

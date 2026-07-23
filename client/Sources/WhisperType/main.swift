@@ -47,6 +47,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Recent dictations for the menu-bar history dropdown (newest first).
     private let historyMenu = NSMenu(title: "Recent dictations")
     private var recent: [String] = []
+    private let micMenu = NSMenu(title: "Microphone")   // one-click device switch
 
     // Last dictation, so "Correct last dictation…" can teach the server a fix.
     private var lastDictationId: Int?
@@ -164,6 +165,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         historyMenu.delegate = self
         historyItem.submenu = historyMenu
         menu.addItem(historyItem)
+
+        // Microphone submenu — pick your input device in one click (rebuilt on open).
+        let micItem = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
+        micMenu.delegate = self
+        micItem.submenu = micMenu
+        menu.addItem(micItem)
         menu.addItem(.separator())
 
         menu.addItem(NSMenuItem(title: "Correct last dictation… (teach a fix)",
@@ -381,6 +388,33 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Rebuild the Microphone submenu: "System default" + every input device,
+    /// a checkmark on the current pin. Clicking one switches instantly.
+    private func rebuildMicMenu() {
+        micMenu.removeAllItems()
+        let pinned = UserDefaults.standard.string(forKey: AudioDevices.defaultsKey) ?? ""
+        let def = NSMenuItem(title: "System default", action: #selector(selectMic(_:)), keyEquivalent: "")
+        def.target = self; def.representedObject = ""
+        def.state = pinned.isEmpty ? .on : .off
+        micMenu.addItem(def)
+        micMenu.addItem(.separator())
+        for d in AudioDevices.inputs() {
+            let item = NSMenuItem(title: d.name, action: #selector(selectMic(_:)), keyEquivalent: "")
+            item.target = self; item.representedObject = d.uid
+            item.state = (d.uid == pinned) ? .on : .off
+            micMenu.addItem(item)
+        }
+    }
+
+    @objc private func selectMic(_ sender: NSMenuItem) {
+        let uid = (sender.representedObject as? String) ?? ""
+        UserDefaults.standard.set(uid, forKey: AudioDevices.defaultsKey)
+        recorder.reloadDevice()   // apply immediately (rebuilds the warm engine)
+        vlog("mic switched via menu -> \(uid.isEmpty ? "system default" : uid)")
+        overlay.show(.message("Microphone: \(sender.title)"))
+        overlay.hide(after: 1.5)
+    }
+
     @objc private func openAccessibility() {
         NSWorkspace.shared.open(URL(string:
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
@@ -399,6 +433,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === micMenu { rebuildMicMenu(); return }
         guard menu === historyMenu else { return }
         menu.removeAllItems()
         guard !recent.isEmpty else {

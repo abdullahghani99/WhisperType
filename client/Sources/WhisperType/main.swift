@@ -1,7 +1,9 @@
 import Cocoa
+import SwiftUI
 import AVFoundation
 import ApplicationServices
 import UniformTypeIdentifiers
+import WhisperTypeKit
 
 /// Simple timestamped file log so we can diagnose the live pipeline.
 /// tail -f /tmp/whispertype-client.log
@@ -26,23 +28,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var client: ServerClient!
     private var globalMonitor: Any?
     private var localMonitor: Any?
-    private var keyDownMonitor: Any?
     private var isRecording = false
 
-    // Prompt mode (Right-⌘): dictate a rough idea → engineered prompt in a review
-    // overlay. `promptMode` marks the in-flight recording; `promptComboUsed` flags
-    // that another key was pressed during the ⌘ hold (i.e. it was a ⌘-shortcut,
-    // not dictation) so we discard it.
+    // Prompt mode: dictate a rough idea → engineered prompt in a review overlay.
+    // Mode (dictation vs. prompt) now lives on the dock (`dockController.state.mode`)
+    // rather than a second hotkey; `promptMode` marks the in-flight recording so
+    // `endRecording()` knows which path to take.
     private let promptReview = PromptReviewController()
     private var promptMode = false
-    private var promptComboUsed = false
 
     // Live meeting recorder (system audio + mic). Isolated from dictation.
     private let meetingRecorder = MeetingRecorder()
     private var meetingItem: NSMenuItem?
 
     private let rightOptionKeyCode: UInt16 = 61
-    private let rightCommandKeyCode: UInt16 = 54
 
     // Recent dictations for the menu-bar history dropdown (newest first).
     private let historyMenu = NSMenu(title: "Recent dictations")
@@ -54,6 +53,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastDictationText: String = ""
     private let mainWC = MainWindowController()
     private var healthTimer: Timer?
+
+    // The floating dock: always present, shown at launch (normal path), and
+    // wired to recording/mic/mode/status below. VF_OPEN_DOCK reuses this same
+    // instance with stub closures for screenshot verification.
+    private let dockController = DockController()
 
     // Optional mouse-button TOGGLE trigger (e.g. a Logitech side/scroll button):
     // click to start, click again to stop. Coexists with Right-Option (hold).
@@ -77,11 +81,47 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSApp.terminate(nil)
             return
         }
+        // Preview harness (screenshot verification of DockView) — short-circuit.
+        if ProcessInfo.processInfo.environment["VF_DOCK_PREVIEW"] == "1" {
+            NSApp.setActivationPolicy(.regular)
+            showDockPreview()
+            return
+        }
+        // Testability harness: show the real floating DockController panel
+        // (not the static preview grid) so a screenshot can verify it floats
+        // above other windows, including a Screen Sharing/VNC window. Stub
+        // closures only — real wiring to AudioRecorder/AppController lands
+        // in a later task.
+        if ProcessInfo.processInfo.environment["VF_OPEN_DOCK"] == "1" {
+            NSApp.setActivationPolicy(.regular)
+            showDockOpen()
+            return
+        }
         NSApp.setActivationPolicy(.accessory)
         setupClient()
         setupMenu()
         requestMicPermission()
         setupHotkey()
+
+        dockController.micDevices = { AudioDevices.inputs().map { ($0.uid, $0.name) } }
+        dockController.onPickMic = { [weak self] uid in
+            guard let self = self else { return }
+            UserDefaults.standard.set(uid, forKey: AudioDevices.defaultsKey)
+            self.recorder.reloadDevice()
+            self.refreshDockMic()
+        }
+        dockController.onToggleMode = { [weak self] in self?.dockController.state.toggleMode() }
+        dockController.onToggleRecord = { [weak self] in
+            guard let self = self else { return }
+            self.isRecording ? self.endRecording() : self.beginRecording(prompt: self.dockController.state.mode == .prompt)
+        }
+        dockController.onMeeting = { [weak self] in self?.toggleMeeting() }
+        dockController.onSettings = { [weak self] in
+            guard let self = self else { return }
+            self.mainWC.show(client: self.client)
+        }
+        refreshDockMic()
+        dockController.show()
 
         Task { await refreshHistory() }   // seed the dropdown from the server
         startHealthMonitor()
@@ -140,9 +180,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let menu = NSMenu()
         menu.delegate = self
-        menu.addItem(NSMenuItem(title: "WhisperType — hold ⌥ (Right Option) to dictate",
+        menu.addItem(NSMenuItem(title: "WhisperType — hold ⌥ (Right Option) to talk",
                                 action: nil, keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "hold ⌘ (Right Command) for prompt mode (engineer a prompt)",
+        menu.addItem(NSMenuItem(title: "Dictation vs. Prompt mode on the dock",
                                 action: nil, keyEquivalent: ""))
 
         // Mouse-button toggle trigger
@@ -384,6 +424,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.statusItem.button?.toolTip = ok
                     ? "WhisperType — server reachable"
                     : "WhisperType — server unreachable"
+                self.dockController.state.serverOK = ok
+                self.refreshDockMic()   // keep the shown default current as mics change
             }
         }
     }
@@ -413,6 +455,70 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         vlog("mic switched via menu -> \(uid.isEmpty ? "system default" : uid)")
         overlay.show(.message("Microphone: \(sender.title)"))
         overlay.hide(after: 1.5)
+        refreshDockMic()
+    }
+
+    /// Reflect the mic actually in use on the dock — the LIVE default device name
+    /// (e.g. "PowerConf"), not a generic "System default", so you always see which
+    /// mic is active. Updated at launch, periodically, and at each recording.
+    private func refreshDockMic() {
+        dockController.state.micName = AudioDevices.currentInputName()
+    }
+
+    private var previewWindow: NSWindow?
+    /// Renders DockView in its states for screenshot verification (VF_DOCK_PREVIEW=1).
+    private func showDockPreview() {
+        let idle = DockState(); idle.serverOK = true
+        let listening = DockState(); listening.begin(); listening.setLevel(0.7); listening.elapsed = 8
+        let controls = DockState(); controls.serverOK = true; controls.micName = "MacBook Pro Mic"
+        let mics: () -> [(uid: String, name: String)] = {
+            [("a", "MacBook Pro Mic"), ("b", "Beats Studio Buds"), ("c", "BlackHole 2ch")]
+        }
+        func mk(_ s: DockState, _ force: Bool) -> DockView {
+            DockView(state: s, forceControls: force, onToggleRecord: {}, onPickMic: { _ in },
+                     onToggleMode: {}, onMeeting: {}, onSettings: {}, micDevices: mics)
+        }
+        func row(_ label: String, _ v: some View) -> some View {
+            HStack(spacing: 18) {
+                Text(label).font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Color(white: 0.45)).frame(width: 90, alignment: .leading)
+                v; Spacer()
+            }
+        }
+        let root = VStack(alignment: .leading, spacing: 26) {
+            row("AT REST", mk(idle, false))
+            row("LISTENING", mk(listening, false))
+            row("EXPANDED", mk(controls, true))
+        }
+        .padding(44)
+        .frame(width: 620)
+        .background(Color(red: 0.93, green: 0.92, blue: 0.90))
+        let host = NSHostingController(rootView: root)
+        let w = NSWindow(contentViewController: host)
+        w.title = "Dock Preview"
+        w.styleMask = [.titled, .closable, .resizable]
+        w.setContentSize(NSSize(width: 660, height: 520))
+        w.center(); w.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        previewWindow = w
+    }
+
+    /// Shows the real `DockController` floating panel with stub closures, so
+    /// a screenshot can confirm it floats above other windows — including a
+    /// Screen Sharing/VNC session (VF_OPEN_DOCK=1). Not wired to the real
+    /// recorder/AppController; that's the normal launch path below.
+    private func showDockOpen() {
+        dockController.state.serverOK = true
+        dockController.micDevices = {
+            [("a", "MacBook Pro Mic"), ("b", "Beats Studio Buds")]
+        }
+        dockController.onToggleRecord = { vlog("[VF_OPEN_DOCK] onToggleRecord (stub)") }
+        dockController.onPickMic = { uid in vlog("[VF_OPEN_DOCK] onPickMic(\(uid)) (stub)") }
+        dockController.onToggleMode = { vlog("[VF_OPEN_DOCK] onToggleMode (stub)") }
+        dockController.onMeeting = { vlog("[VF_OPEN_DOCK] onMeeting (stub)") }
+        dockController.onSettings = { vlog("[VF_OPEN_DOCK] onSettings (stub)") }
+        dockController.show()
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func openAccessibility() {
@@ -501,25 +607,22 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Hotkey (push-to-talk on Right Option)
 
     private func setupHotkey() {
+        // Single hotkey (Right-Option, hold to talk); which mode (dictation vs.
+        // prompt) it records in is decided by `dockController.state.mode`, not
+        // by which key is held.
         let handler: (NSEvent) -> Void = { [weak self] event in
             guard let self = self else { return }
-            if event.keyCode == self.rightOptionKeyCode {           // dictation
-                let pressed = event.modifierFlags.contains(.option)
-                if pressed { self.beginRecording(prompt: false) } else { self.endRecording() }
-            } else if event.keyCode == self.rightCommandKeyCode {   // prompt mode
-                let pressed = event.modifierFlags.contains(.command)
-                if pressed { self.beginRecording(prompt: true) } else { self.endRecording() }
+            guard event.keyCode == self.rightOptionKeyCode else { return }
+            let pressed = event.modifierFlags.contains(.option)
+            if pressed {
+                self.beginRecording(prompt: self.dockController.state.mode == .prompt)
+            } else {
+                self.endRecording()
             }
         }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged], handler: handler)
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { event in
             handler(event); return event
-        }
-        // Combo guard: if any key is pressed during a Right-⌘ hold, it's a
-        // ⌘-shortcut (⌘C, ⌘Tab…), not a prompt dictation — mark it so we discard.
-        keyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { [weak self] _ in
-            guard let self = self, self.isRecording, self.promptMode else { return }
-            self.promptComboUsed = true
         }
 
         setupMouseTap()
@@ -580,7 +683,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let now = Date()
         if now.timeIntervalSince(lastToggle) < 0.25 { return }
         lastToggle = now
-        if isRecording { endRecording() } else { beginRecording() }
+        if isRecording { endRecording() } else { beginRecording(prompt: dockController.state.mode == .prompt) }
     }
 
     @objc private func setMouseTrigger() {
@@ -606,9 +709,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // the completion resets state and shows the error.
         isRecording = true
         promptMode = prompt
-        promptComboUsed = false
-        recorder.onLevel = { [weak self] level in self?.overlay.state.pushLevel(level) }
-        overlay.show(.listening)
+        // The DOCK is the sole live indicator now — do NOT also show the old
+        // overlay pill (that was the "two waveforms" during dictation).
+        recorder.onLevel = { [weak self] level in
+            DispatchQueue.main.async { self?.dockController.state.setLevel(level) }
+        }
+        dockController.state.begin()
+        SoundFeedback.listening()   // light "ting" so you know it's live
         vlog("recording: start (prompt=\(prompt))")
         recorder.start { [weak self] ok in
             guard let self = self, !ok, self.isRecording else { return }
@@ -616,6 +723,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             vlog("recorder failed to start (mic unavailable)")
             self.overlay.show(.message("Microphone unavailable — check input device / other apps"))
             self.overlay.hide(after: 2.5)
+            self.dockController.state.fail("Microphone unavailable")
         }
     }
 
@@ -623,39 +731,48 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard isRecording else { return }
         isRecording = false
         let wasPrompt = promptMode
-        let comboUsed = promptComboUsed
         let wav = recorder.stop()
         vlog("recording: stop, wav bytes=\(wav.count) prompt=\(wasPrompt)")
-
-        // Right-⌘ hold that was actually a ⌘-shortcut → discard silently.
-        if wasPrompt && comboUsed {
-            vlog("prompt hold was a ⌘-shortcut; discarding")
-            overlay.hide()
-            return
-        }
+        dockController.state.finishRecording()
 
         guard wav.count > 8_000 else {
             if wav.count <= 64 {  // header only → the mic produced no samples
                 vlog("no audio captured (mic produced no samples)")
-                overlay.show(.message("No audio captured — check your input device in System Settings ▸ Sound ▸ Input (AirPods/iPhone mics often go silent)"))
-                overlay.hide(after: 4)
+                // FALLBACK: the current mic yielded nothing (a Bluetooth mic asleep,
+                // or a device that isn't the one you're speaking into). Do NOT force
+                // built-in (over Screen Sharing the built-in mic is often silent).
+                // Instead CYCLE to the next real input device, so consecutive tries
+                // land on whichever mic actually has your voice (e.g. the PowerConf).
+                let inputs = AudioDevices.inputs()
+                let current = AudioDevices.resolvedInputUID()
+                if inputs.count > 1 {
+                    let idx = inputs.firstIndex { $0.uid == current } ?? -1
+                    let next = inputs[(idx + 1) % inputs.count]
+                    UserDefaults.standard.set(next.uid, forKey: AudioDevices.defaultsKey)
+                    recorder.reloadDevice()
+                    refreshDockMic()
+                    vlog("no audio — cycled mic to \(next.name) (\(next.uid))")
+                    dockController.state.fail("No audio — trying “\(next.name)”")
+                } else {
+                    dockController.state.fail("No audio captured")
+                }
             } else {
                 vlog("recording too short, ignoring")
-                overlay.hide()
+                dockController.state.returnToIdle()
             }
             return
         }
 
-        // Capture the target app BEFORE any overlay/panel steals focus.
+        // Capture the target app BEFORE the panel steals focus.
         let targetApp = NSWorkspace.shared.frontmostApplication
 
+        // The dock is the sole indicator (finishRecording above → "Polishing…").
+        // No overlay pills here — that was the second pill.
         if wasPrompt {
-            overlay.show(.message("Engineering prompt…"))
             Task { await runPromptMode(wav: wav, targetApp: targetApp) }
             return
         }
 
-        overlay.show(.transcribing)
         Task {
             do {
                 let result = try await client.transcribe(wav: wav)
@@ -666,11 +783,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.lastDictationText = result.text
                 }
                 await insert(result.text)
-                overlay.hide(after: 0.4)
+                await MainActor.run {
+                    self.dockController.state.complete()
+                    SoundFeedback.done()   // soft confirm when your text lands
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        // Guard: a fast back-to-back dictation may have already
+                        // started a new recording — don't clobber it to idle.
+                        if self.dockController.state.phase == .done {
+                            self.dockController.state.returnToIdle()
+                        }
+                    }
+                }
             } catch {
                 vlog("transcribe FAILED: \(error)")
-                overlay.show(.message("Couldn’t reach server: \(error.localizedDescription)"))
-                overlay.hide(after: 4)
+                await MainActor.run { self.dockController.state.fail("Couldn’t reach server") }
             }
         }
     }
@@ -682,9 +808,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let eng = try await client.engineer(wav: wav)
             vlog("engineer ok: concise=\(eng.concise.count)ch detailed=\(eng.detailed.count)ch")
             await MainActor.run {
-                self.overlay.hide()
+                self.dockController.state.complete()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    self.dockController.state.returnToIdle()
+                }
                 guard !eng.concise.isEmpty || !eng.detailed.isEmpty || !eng.coding.isEmpty else {
-                    self.overlay.show(.message("No prompt generated")); self.overlay.hide(after: 2); return
+                    self.dockController.state.fail("No prompt generated"); return
                 }
                 self.promptReview.show(concise: eng.concise, detailed: eng.detailed, coding: eng.coding) { [weak self] chosen in
                     guard let self = self else { return }
@@ -697,10 +826,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         } catch {
             vlog("engineer FAILED: \(error)")
-            await MainActor.run {
-                self.overlay.show(.message("Prompt mode failed: \(error.localizedDescription)"))
-                self.overlay.hide(after: 4)
-            }
+            await MainActor.run { self.dockController.state.fail("Prompt mode failed") }
         }
     }
 

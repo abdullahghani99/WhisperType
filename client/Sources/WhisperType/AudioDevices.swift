@@ -72,6 +72,20 @@ enum AudioDevices {
         return dev
     }
 
+    /// Human-readable name of the mic currently in use: the pinned device if one
+    /// is set, otherwise the live system-default input (so the dock can show
+    /// "PowerConf" rather than a generic "System default").
+    static func currentInputName() -> String {
+        let pinned = UserDefaults.standard.string(forKey: defaultsKey) ?? ""
+        if !pinned.isEmpty, let name = inputs().first(where: { $0.uid == pinned })?.name {
+            return name
+        }
+        if let id = defaultInputID(), let name = stringProp(id, kAudioObjectPropertyName) {
+            return name
+        }
+        return "System default"
+    }
+
     static func transportType(_ id: AudioDeviceID) -> UInt32 {
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyTransportType,

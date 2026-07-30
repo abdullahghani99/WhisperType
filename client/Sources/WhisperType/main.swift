@@ -305,12 +305,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do {
                 try await meetingRecorder.start()
                 await MainActor.run {
+                    self.dockController.state.meetingRecording = true
                     self.overlay.show(.message("🔴 Recording meeting… open the menu ▸ “Stop meeting & summarize” to finish"))
                     self.overlay.hide(after: 5)
                 }
             } catch {
                 vlog("meeting start FAILED: \(error)")
                 await MainActor.run {
+                    self.dockController.state.meetingRecording = false
                     self.overlay.show(.message("Couldn’t start recording — grant Screen Recording in System Settings ▸ Privacy & Security, then try again"))
                     self.overlay.hide(after: 5)
                 }
@@ -736,32 +738,22 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dockController.state.finishRecording()
 
         guard wav.count > 8_000 else {
-            if wav.count <= 64 {  // header only → the mic produced no samples
-                vlog("no audio captured (mic produced no samples)")
-                // FALLBACK: the current mic yielded nothing (a Bluetooth mic asleep,
-                // or a device that isn't the one you're speaking into). Do NOT force
-                // built-in (over Screen Sharing the built-in mic is often silent).
-                // Instead CYCLE to the next real input device, so consecutive tries
-                // land on whichever mic actually has your voice (e.g. the PowerConf).
-                let inputs = AudioDevices.inputs()
-                let current = AudioDevices.resolvedInputUID()
-                if inputs.count > 1 {
-                    let idx = inputs.firstIndex { $0.uid == current } ?? -1
-                    let next = inputs[(idx + 1) % inputs.count]
-                    UserDefaults.standard.set(next.uid, forKey: AudioDevices.defaultsKey)
-                    recorder.reloadDevice()
-                    refreshDockMic()
-                    vlog("no audio — cycled mic to \(next.name) (\(next.uid))")
-                    dockController.state.fail("No audio — trying “\(next.name)”")
-                } else {
-                    dockController.state.fail("No audio captured")
-                }
+            if wav.count <= 64 {  // header only → EVERY mic produced no samples
+                // Multi-capture already recorded from every plausible input device
+                // in parallel and kept the loudest — so silence here means none of
+                // them heard anything (all muted, unplugged, or no mic granted).
+                // There's nothing left to cycle to; just report it (auto-clears).
+                vlog("no audio captured (all input devices were silent)")
+                dockController.state.fail("No audio — check your mic isn’t muted")
             } else {
                 vlog("recording too short, ignoring")
                 dockController.state.returnToIdle()
             }
             return
         }
+
+        // Show which mic actually won this capture (the one you spoke into).
+        if let won = recorder.lastWinningMic { dockController.state.micName = won }
 
         // Capture the target app BEFORE the panel steals focus.
         let targetApp = NSWorkspace.shared.frontmostApplication

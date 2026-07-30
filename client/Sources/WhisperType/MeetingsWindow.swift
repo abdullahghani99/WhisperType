@@ -38,6 +38,26 @@ final class MeetingsState: ObservableObject {
         }
     }
 
+    func rename(_ id: Int, to title: String) {
+        let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let client = client, !clean.isEmpty else { return }
+        Task {
+            try? await client.renameMeeting(id: id, title: clean)
+            await MainActor.run { self.refresh() }
+        }
+    }
+
+    func delete(_ id: Int) {
+        guard let client = client else { return }
+        Task {
+            try? await client.deleteMeeting(id: id)
+            await MainActor.run {
+                if self.selected?.id == id { self.selected = nil }
+                self.refresh()
+            }
+        }
+    }
+
     func markdown(for m: ServerClient.Meeting, title: String) -> String {
         """
         # Meeting notes — \(title)
@@ -83,6 +103,10 @@ struct MeetingsView: View {
                     .background(state.selected?.id == m.id ? Color.vfAccent.opacity(0.12) : .clear)
                     .contentShape(Rectangle())
                     .onTapGesture { state.open(m.id) }
+                    .contextMenu {
+                        Button("Rename…") { promptRename(m) }
+                        Button("Delete", role: .destructive) { confirmDelete(m) }
+                    }
                 }
             }.frame(minWidth: 240, maxWidth: 320)
 
@@ -101,6 +125,10 @@ struct MeetingsView: View {
                     Text(m.speakers > 0 ? "\(m.speakers) speakers" : "Transcript & notes")
                         .font(.headline)
                     Spacer()
+                    if let s = state.items.first(where: { $0.id == m.id }) {
+                        Button("Rename") { promptRename(s) }
+                        Button("Delete") { confirmDelete(s) }
+                    }
                     Button("Save .md to Desktop") { save(m) }
                 }
                 if m.status == "processing" {
@@ -159,6 +187,35 @@ struct MeetingsView: View {
     @ViewBuilder private func statusDot(_ status: String) -> some View {
         let c: Color = status == "done" ? .green : status == "error" ? .red : .orange
         Circle().fill(c).frame(width: 8, height: 8)
+    }
+
+    /// Native rename dialog (a text field in an alert) → server rename.
+    private func promptRename(_ m: ServerClient.MeetingSummary) {
+        let alert = NSAlert()
+        alert.messageText = "Rename meeting"
+        alert.informativeText = "Give this meeting a name that's easy to find."
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.stringValue = m.title
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        if alert.runModal() == .alertFirstButtonReturn {
+            state.rename(m.id, to: field.stringValue)
+        }
+    }
+
+    /// Confirm before permanently deleting a meeting.
+    private func confirmDelete(_ m: ServerClient.MeetingSummary) {
+        let alert = NSAlert()
+        alert.messageText = "Delete this meeting?"
+        alert.informativeText = "“\(m.title.isEmpty ? "Meeting \(m.id)" : m.title)” will be permanently deleted from the server. This can't be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            state.delete(m.id)
+        }
     }
 
     private func save(_ m: ServerClient.Meeting) {

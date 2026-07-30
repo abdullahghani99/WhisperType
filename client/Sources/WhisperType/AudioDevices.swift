@@ -86,6 +86,67 @@ enum AudioDevices {
         return "System default"
     }
 
+    /// The ONE mic to record from, chosen deterministically so macOS flipping the
+    /// system default to AirPods (silent/wrong) can't break dictation:
+    ///   1. the user's explicit pin, if present;
+    ///   2. else the best physical mic by reliability — wired (USB/Thunderbolt/
+    ///      FireWire) > built-in > Bluetooth — with the system default breaking
+    ///      ties within a tier.
+    /// Wired beats Bluetooth every time, so a PowerConf/Plantronics headset always
+    /// wins over sleepy AirPods. To force a specific mic (e.g. AirPods on the move),
+    /// pin it in Settings.
+    static func preferredInput() -> AudioInputDevice? {
+        let physical = inputs().filter {
+            let lower = $0.name.lowercased()
+            return isPhysicalInput($0.id) && !lower.contains("iphone") && !lower.contains("ipad")
+        }
+        let pinned = UserDefaults.standard.string(forKey: defaultsKey) ?? ""
+        if !pinned.isEmpty, let p = physical.first(where: { $0.uid == pinned }) { return p }
+        guard !physical.isEmpty else { return nil }
+        let def = defaultInputID()
+        func rank(_ d: AudioInputDevice) -> Int {
+            switch transportType(d.id) {
+            case kAudioDeviceTransportTypeUSB, kAudioDeviceTransportTypeThunderbolt,
+                 kAudioDeviceTransportTypeFireWire:
+                return 0
+            case kAudioDeviceTransportTypeBuiltIn:
+                return 1
+            case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE:
+                return 2
+            default:
+                return 3
+            }
+        }
+        return physical.min { a, b in
+            let ra = rank(a), rb = rank(b)
+            if ra != rb { return ra < rb }
+            if a.id == def && b.id != def { return true }   // default wins the tie
+            return false
+        }
+    }
+
+    /// True only for a REAL microphone (built-in, USB, Bluetooth, Thunderbolt…).
+    /// Excludes virtual / aggregate / loopback devices (BlackHole, the process's
+    /// own CADefaultDeviceAggregate, "Microsoft Teams Audio", "Screen Recording
+    /// Input"). Opening those in multi-capture is slow AND wedges the audio HAL so
+    /// the NEXT capture returns 0 bytes from everything — the "stuck" bug.
+    static func isPhysicalInput(_ id: AudioDeviceID) -> Bool {
+        switch transportType(id) {
+        case kAudioDeviceTransportTypeBuiltIn,
+             kAudioDeviceTransportTypeUSB,
+             kAudioDeviceTransportTypeBluetooth,
+             kAudioDeviceTransportTypeBluetoothLE,
+             kAudioDeviceTransportTypeThunderbolt,
+             kAudioDeviceTransportTypeFireWire,
+             kAudioDeviceTransportTypePCI,
+             kAudioDeviceTransportTypeHDMI,
+             kAudioDeviceTransportTypeDisplayPort:
+            return true
+        default:   // Virtual, Aggregate, AutoAggregate, AirPlay, Unknown, Continuity
+            return false
+        }
+    }
+
     static func transportType(_ id: AudioDeviceID) -> UInt32 {
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyTransportType,

@@ -116,6 +116,16 @@ public struct DockView: View {
                 .foregroundColor(state.serverOK ? .vfWarmWhite : .vfAmber)
         }
         .frame(width: 34, height: 34)
+        // Red badge while a meeting is capturing — so even collapsed, you can see
+        // recording is live.
+        .overlay(alignment: .topTrailing) {
+            if state.meetingRecording {
+                Circle()
+                    .fill(Color.vfAccent)
+                    .overlay(Circle().stroke(Color.white.opacity(0.6), lineWidth: 1))
+                    .frame(width: 10, height: 10)
+            }
+        }
         .contentShape(Circle())
         .onTapGesture { state.expanded = true }
     }
@@ -264,12 +274,16 @@ public struct DockView: View {
 
             modeSegment
 
+            // Meeting record/stop. Turns into a red STOP icon while capturing so
+            // it's unmistakable whether a meeting is recording (the button used to
+            // stay identical, giving no start/stop feedback).
             Button(action: onMeeting) {
-                Image(systemName: "record.circle")
+                Image(systemName: state.meetingRecording ? "stop.circle.fill" : "record.circle")
                     .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(.vfWarmWhite)   // accent reserved for LIVE cues only
+                    .foregroundColor(state.meetingRecording ? .vfAccent : .vfWarmWhite)
             }
             .buttonStyle(.plain)
+            .help(state.meetingRecording ? "Stop meeting recording" : "Record a meeting")
 
             Button(action: onSettings) {
                 Image(systemName: "slider.horizontal.3")

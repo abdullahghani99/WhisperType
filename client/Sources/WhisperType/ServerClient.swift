@@ -182,6 +182,39 @@ struct ServerClient {
                        error: obj["error"] as? String ?? "")
     }
 
+    /// Rename a meeting.
+    func renameMeeting(id: Int, title: String) async throws {
+        var req = URLRequest(url: baseURL.appendingPathComponent("meeting/\(id)/title"))
+        req.httpMethod = "POST"
+        req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        if let apiKey = apiKey, !apiKey.isEmpty {
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        req.timeoutInterval = 10
+        let enc = title.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? title
+        req.httpBody = "title=\(enc)".data(using: .utf8)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw NSError(domain: "whispertype", code: 7,
+                          userInfo: [NSLocalizedDescriptionKey: String(data: data, encoding: .utf8) ?? "rename failed"])
+        }
+    }
+
+    /// Delete a meeting permanently.
+    func deleteMeeting(id: Int) async throws {
+        var req = URLRequest(url: baseURL.appendingPathComponent("meeting/\(id)"))
+        req.httpMethod = "DELETE"
+        if let apiKey = apiKey, !apiKey.isEmpty {
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        req.timeoutInterval = 10
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw NSError(domain: "whispertype", code: 8,
+                          userInfo: [NSLocalizedDescriptionKey: String(data: data, encoding: .utf8) ?? "delete failed"])
+        }
+    }
+
     /// POST the WAV to /engineer (prompt mode) — returns a concise and a detailed
     /// engineered prompt built from the rough spoken request.
     func engineer(wav: Data) async throws -> Engineered {

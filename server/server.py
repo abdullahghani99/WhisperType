@@ -478,6 +478,77 @@ def _meeting_notes(transcript: str) -> str:
     return out.replace("<<<TRANSCRIPT>>>", "").replace("<<<END>>>", "").strip()
 
 
+def _meeting_title(text: str) -> str:
+    """A short human title (3-6 words) naming what the meeting was about, so it's
+    findable alongside its date. Returns '' on any failure (caller keeps the date
+    title). Grounded — names the actual topic, never invents."""
+    model = _prompt_model if _prompt_model is not None else _model
+    tok = _prompt_tok if _prompt_model is not None else _tok
+    if model is None or not text.strip():
+        return ""
+    sys = ("You write a very short title for a meeting. Reply with ONLY a 3 to 6 word "
+           "title naming the main topic or purpose, in Title Case. No date, no "
+           "quotes, no trailing punctuation, no preamble — just the title.")
+    msgs = [{"role": "system", "content": sys},
+            {"role": "user", "content": f"<<<TRANSCRIPT>>>\n{text[:6000]}\n<<<END>>>"}]
+    prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
+    try:
+        out = generate(model, tok, prompt=prompt, max_tokens=24, verbose=False).strip()
+    except Exception as e:  # noqa: BLE001
+        log.warning("title generation failed: %s", e)
+        return ""
+    out = out.replace("<<<TRANSCRIPT>>>", "").replace("<<<END>>>", "").strip()
+    if not out:
+        return ""
+    out = out.splitlines()[0].strip().strip('"').strip("'").rstrip(".").strip()
+    return out[:80]
+
+
+def _name_speakers(labeled: str) -> str:
+    """Map generic 'Speaker N' labels to real names ONLY where a speaker's name is
+    clearly stated in the conversation (self-introduction, or being addressed by
+    name). Leaves the rest as 'Speaker N'. Never invents a name. Returns the
+    transcript with confident labels replaced."""
+    model = _prompt_model if _prompt_model is not None else _model
+    tok = _prompt_tok if _prompt_model is not None else _tok
+    if model is None or not labeled.strip():
+        return labeled
+    present = sorted(set(re.findall(r"Speaker \d+", labeled)))
+    if not present:
+        return labeled
+    sys = ("You map anonymous speaker labels to real names, but ONLY when a "
+           "speaker's name is clearly stated in the conversation (they introduce "
+           "themselves, or someone clearly addresses them by name). Output STRICT "
+           "JSON: an object mapping the exact label to the name, e.g. "
+           "{\"Speaker 1\": \"Rajesh\"}. Include a label ONLY if you are confident. "
+           "If no names are determinable, output {}. Output JSON only, nothing else.")
+    msgs = [{"role": "system", "content": sys},
+            {"role": "user", "content": f"Labels present: {', '.join(present)}\n\n"
+                                         f"<<<TRANSCRIPT>>>\n{labeled[:8000]}\n<<<END>>>"}]
+    prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
+    try:
+        out = generate(model, tok, prompt=prompt, max_tokens=200, verbose=False).strip()
+    except Exception as e:  # noqa: BLE001
+        log.warning("speaker naming failed: %s", e)
+        return labeled
+    m = re.search(r"\{.*\}", out, flags=re.DOTALL)
+    if not m:
+        return labeled
+    try:
+        mapping = json.loads(m.group(0))
+    except Exception:  # noqa: BLE001
+        return labeled
+    result = labeled
+    for label, name in (mapping or {}).items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if not re.fullmatch(r"Speaker \d+", str(label).strip()):
+            continue
+        nm = name.strip()[:40]
+        result = result.replace(f"**{str(label).strip()}:**", f"**{nm}:**")
+    return result
+
+
 def _diarize(wav_bytes: bytes):
     """Run speaker diarization in the isolated venv (subprocess). Returns the list
     of speaker turns, or [] if diarization is unavailable/failed (caller falls
@@ -745,7 +816,9 @@ async def _process_meeting(job_id: int, audio: bytes, language: str | None,
             if turns:
                 labeled = _label_transcript([(s, e, apply_vocab(txt)) for s, e, txt in segs], turns)
                 if labeled:
-                    transcript = labeled
+                    # Give speakers their real names where they introduce
+                    # themselves — before notes, so the notes use names too.
+                    transcript = await asyncio.to_thread(_name_speakers, labeled)
                     speakers = len({t_["speaker"] for t_ in turns})
             diar_ms = int((time.time() - t) * 1000)
 
@@ -755,8 +828,14 @@ async def _process_meeting(job_id: int, audio: bytes, language: str | None,
             notes_text = await asyncio.to_thread(_meeting_notes, transcript)
             notes_ms = int((time.time() - t) * 1000)
 
-        _meeting_set(job_id, status="done", transcript=transcript, notes=notes_text,
-                     speakers=speakers, asr_ms=asr_ms, diar_ms=diar_ms, notes_ms=notes_ms)
+        # Name the meeting after what was discussed (the client only supplied a
+        # date/time placeholder). Keep a manual title if one was actually typed.
+        auto_title = await asyncio.to_thread(_meeting_title, transcript)
+        cols = dict(status="done", transcript=transcript, notes=notes_text,
+                    speakers=speakers, asr_ms=asr_ms, diar_ms=diar_ms, notes_ms=notes_ms)
+        if auto_title:
+            cols["title"] = auto_title
+        _meeting_set(job_id, **cols)
         log.info("meeting job %d done asr=%dms diar=%dms notes=%dms speakers=%d chars=%d",
                  job_id, asr_ms, diar_ms, notes_ms, speakers, len(transcript))
     except Exception as e:  # noqa: BLE001
@@ -806,6 +885,51 @@ async def get_meeting(job_id: int):
     if row is None:
         raise HTTPException(status_code=404, detail="no meeting with that id")
     return dict(row)
+
+
+@app.post("/meeting/{job_id}/title")
+async def rename_meeting(job_id: int, title: str = Form(...),
+                         authorization: str | None = Header(None)):
+    """Rename a meeting."""
+    _check_auth(authorization)
+    clean = title.strip()[:120]
+    con = sqlite3.connect(DB_PATH)
+    cur = con.execute("UPDATE meetings SET title=? WHERE id=?", (clean, job_id))
+    con.commit(); n = cur.rowcount; con.close()
+    if not n:
+        raise HTTPException(status_code=404, detail="no meeting with that id")
+    return {"id": job_id, "title": clean}
+
+
+@app.delete("/meeting/{job_id}")
+async def delete_meeting(job_id: int, authorization: str | None = Header(None)):
+    """Delete a meeting permanently."""
+    _check_auth(authorization)
+    con = sqlite3.connect(DB_PATH)
+    cur = con.execute("DELETE FROM meetings WHERE id=?", (job_id,))
+    con.commit(); n = cur.rowcount; con.close()
+    if not n:
+        raise HTTPException(status_code=404, detail="no meeting with that id")
+    return {"id": job_id, "deleted": True}
+
+
+@app.post("/meetings/retitle")
+async def retitle_meetings(authorization: str | None = Header(None)):
+    """Backfill content titles for existing meetings still on the default
+    'Meeting <date>' placeholder — so old recordings become findable too."""
+    _check_auth(authorization)
+    con = sqlite3.connect(DB_PATH); con.row_factory = sqlite3.Row
+    rows = con.execute("SELECT id, title, transcript FROM meetings "
+                       "WHERE status='done'").fetchall()
+    con.close()
+    retitled = []
+    for r in rows:
+        if r["transcript"] and re.match(r"^Meeting \d{4}-\d\d-\d\d", r["title"] or ""):
+            auto = await asyncio.to_thread(_meeting_title, r["transcript"])
+            if auto:
+                _meeting_set(r["id"], title=auto)
+                retitled.append({"id": r["id"], "title": auto})
+    return {"retitled": retitled}
 
 
 # ---------------------------------------------------------------------------

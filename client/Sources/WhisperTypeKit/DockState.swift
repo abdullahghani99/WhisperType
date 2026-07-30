@@ -11,6 +11,9 @@ public final class DockState: ObservableObject {
     @Published public var mode: Mode = .dictation
     @Published public var micName: String = "System default"
     @Published public var serverOK: Bool = false
+    /// A meeting is actively being captured (drives the dock's record button and
+    /// resting-pill indicator, so you can always tell recording is running).
+    @Published public var meetingRecording: Bool = false
     @Published public var errorText: String = ""
     /// Whether the control bar is revealed (click to expand). Lives here (not as
     /// SwiftUI @State) so toggling it notifies the controller to RESIZE the

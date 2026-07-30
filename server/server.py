@@ -365,6 +365,46 @@ def apply_vocab(text: str) -> str:
     return text
 
 
+# Whisper, trained on masses of video audio, hallucinates these boilerplate
+# phrases on silent / near-silent / clipped clips (nothing real to transcribe, so
+# it emits the highest-frequency training filler). Two cases: the WHOLE output is
+# filler (drop it → no speech), or filler is glued to the FRONT of real speech
+# (a mic wake-up delay clips the lead-in) → strip just the leading filler.
+_HALLUCINATION_WHOLE = frozenset([
+    "thank you", "thank you very much", "thank you so much",
+    "thank you for watching", "thank you for watching this video",
+    "thanks for watching", "thanks for watching everyone", "please subscribe",
+    "thanks", "you", "bye", "okay", "so",
+])
+# Leading-strip uses only UNAMBIGUOUS video fillers — never bare "thank you"/"you"
+# (those can legitimately start a sentence, e.g. "You should…").
+_HALLUCINATION_LEAD = [
+    "thank you for watching this video", "thanks for watching everyone",
+    "thank you for watching", "thanks for watching", "please subscribe",
+]
+
+
+def _strip_hallucinations(text: str) -> str:
+    """Remove Whisper's silence-filler boilerplate (see above). Conservative:
+    only drops when the ENTIRE output is a known filler, or strips a known video
+    filler from the very start when real content follows."""
+    s = text.strip()
+    if not s:
+        return s
+    norm = re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", s.lower())).strip()
+    if norm in _HALLUCINATION_WHOLE:
+        log.info("dropped Whisper hallucination: %r", s)
+        return ""
+    for p in _HALLUCINATION_LEAD:
+        m = re.match(rf"^{re.escape(p)}[\s.!?,:;\-]*", s, flags=re.IGNORECASE)
+        if m:
+            rest = s[m.end():].strip()
+            if len(rest) >= 12:   # real content remains → keep it, drop the filler
+                log.info("stripped leading Whisper hallucination %r", p)
+                return rest
+    return s
+
+
 _TOKEN_RE = re.compile(r"[a-z0-9']+")
 
 # Very common function words carry little content, so a fabrication that happens
@@ -676,6 +716,7 @@ async def _run_asr(audio: bytes, filename: str | None, language: str | None):
         except Exception as e:  # noqa: BLE001
             log.error("ASR failed: %s", e)
             raise HTTPException(status_code=502, detail=f"ASR backend error: {e}")
+    raw = _strip_hallucinations(raw)   # drop/trim Whisper's silence boilerplate
     return raw, int((time.time() - t_asr) * 1000)
 
 

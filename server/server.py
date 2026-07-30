@@ -370,37 +370,65 @@ def apply_vocab(text: str) -> str:
 # it emits the highest-frequency training filler). Two cases: the WHOLE output is
 # filler (drop it → no speech), or filler is glued to the FRONT of real speech
 # (a mic wake-up delay clips the lead-in) → strip just the leading filler.
-_HALLUCINATION_WHOLE = frozenset([
-    "thank you", "thank you very much", "thank you so much",
+# Video fillers that are NEVER legitimate dictation — always removed.
+_HALLUCINATION_ALWAYS = frozenset([
     "thank you for watching", "thank you for watching this video",
-    "thanks for watching", "thanks for watching everyone", "please subscribe",
+    "thanks for watching", "thanks for watching everyone",
+    "thanks for watching this video", "please subscribe",
+])
+# Phrases you MIGHT actually say. Dropped ONLY when the clip had no real speech
+# energy (true silence → hallucination). If you said it, it's kept.
+_HALLUCINATION_IF_SILENT = frozenset([
+    "thank you", "thank you very much", "thank you so much",
     "thanks", "you", "bye", "okay", "so",
 ])
-# Leading-strip uses only UNAMBIGUOUS video fillers — never bare "thank you"/"you"
-# (those can legitimately start a sentence, e.g. "You should…").
+# Leading-strip: only the unambiguous video fillers, never bare "thank you"/"you".
 _HALLUCINATION_LEAD = [
     "thank you for watching this video", "thanks for watching everyone",
     "thank you for watching", "thanks for watching", "please subscribe",
 ]
 
+_SILENCE_RMS = 0.005   # normalized RMS below this ≈ no speech (only ambient)
 
-def _strip_hallucinations(text: str) -> str:
-    """Remove Whisper's silence-filler boilerplate (see above). Conservative:
-    only drops when the ENTIRE output is a known filler, or strips a known video
-    filler from the very start when real content follows."""
+
+def _audio_rms(wav_bytes: bytes) -> float:
+    """Normalized RMS energy (0..1) of a 16-bit PCM WAV — how loud the clip was.
+    Lets us tell true silence (the hallucination source) from a real, possibly
+    quiet, utterance. Returns 1.0 (= 'has speech', never treated as silence) if it
+    can't parse, so we FAIL SAFE toward keeping your words."""
+    try:
+        import io, wave
+        import numpy as np
+        with wave.open(io.BytesIO(wav_bytes)) as wf:
+            frames = wf.readframes(wf.getnframes())
+        arr = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
+        if arr.size == 0:
+            return 0.0
+        return float(np.sqrt(np.mean((arr / 32768.0) ** 2)))
+    except Exception:  # noqa: BLE001
+        return 1.0
+
+
+def _strip_hallucinations(text: str, has_speech: bool) -> str:
+    """Remove Whisper's silence-filler boilerplate. Never removes a phrase you
+    actually spoke — `has_speech` gates the ambiguous ones (e.g. a real 'thank
+    you' is kept; a hallucinated one on a silent clip is dropped)."""
     s = text.strip()
     if not s:
         return s
     norm = re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", s.lower())).strip()
-    if norm in _HALLUCINATION_WHOLE:
-        log.info("dropped Whisper hallucination: %r", s)
+    if norm in _HALLUCINATION_ALWAYS:
+        log.info("dropped Whisper video-filler: %r", s)
+        return ""
+    if norm in _HALLUCINATION_IF_SILENT and not has_speech:
+        log.info("dropped silence hallucination %r (no speech energy)", s)
         return ""
     for p in _HALLUCINATION_LEAD:
         m = re.match(rf"^{re.escape(p)}[\s.!?,:;\-]*", s, flags=re.IGNORECASE)
         if m:
             rest = s[m.end():].strip()
             if len(rest) >= 12:   # real content remains → keep it, drop the filler
-                log.info("stripped leading Whisper hallucination %r", p)
+                log.info("stripped leading Whisper filler %r", p)
                 return rest
     return s
 
@@ -716,7 +744,10 @@ async def _run_asr(audio: bytes, filename: str | None, language: str | None):
         except Exception as e:  # noqa: BLE001
             log.error("ASR failed: %s", e)
             raise HTTPException(status_code=502, detail=f"ASR backend error: {e}")
-    raw = _strip_hallucinations(raw)   # drop/trim Whisper's silence boilerplate
+    rms = _audio_rms(audio)
+    if rms < _SILENCE_RMS:
+        log.info("low audio energy rms=%.4f raw=%r", rms, raw)
+    raw = _strip_hallucinations(raw, has_speech=rms >= _SILENCE_RMS)
     return raw, int((time.time() - t_asr) * 1000)
 
 

@@ -251,9 +251,11 @@ def _wav_to_array(audio: bytes) -> np.ndarray:
     return arr
 
 
-def _transcribe_local(audio: bytes, language: str | None) -> str:
+def _transcribe_local(audio: bytes, language: str | None) -> tuple[str, float]:
     """Transcribe WAV bytes with local mlx-whisper. Feeds a decoded float32
-    array (not a file path) so ASR never shells out to ffmpeg."""
+    array (not a file path) so ASR never shells out to ffmpeg. Returns
+    (text, no_speech_prob) — the max no-speech probability across segments, so
+    callers can tell a real utterance from a silence hallucination."""
     audio_arr = _wav_to_array(audio)
     kwargs = {
         "path_or_hf_repo": WHISPER_MODEL,
@@ -272,7 +274,11 @@ def _transcribe_local(audio: bytes, language: str | None) -> str:
         kwargs["initial_prompt"] = prompt
     if language:
         kwargs["language"] = language
-    return mlx_whisper.transcribe(audio_arr, **kwargs)["text"].strip()
+    res = mlx_whisper.transcribe(audio_arr, **kwargs)
+    text = (res.get("text") or "").strip()
+    nsp = max((float(s.get("no_speech_prob", 0.0)) for s in res.get("segments", [])),
+              default=0.0)
+    return text, nsp
 
 
 def _transcribe_local_segments(audio: bytes, language: str | None, translate: bool = False):
@@ -388,7 +394,8 @@ _HALLUCINATION_LEAD = [
     "thank you for watching", "thanks for watching", "please subscribe",
 ]
 
-_SILENCE_RMS = 0.005   # normalized RMS below this ≈ no speech (only ambient)
+_SILENCE_RMS = 0.005      # normalized RMS below this ≈ no speech (secondary guard)
+_NO_SPEECH_PROB = 0.5     # Whisper no_speech_prob at/above this ≈ non-speech clip
 
 
 def _audio_rms(wav_bytes: bytes) -> float:
@@ -731,23 +738,27 @@ async def _run_asr(audio: bytes, filename: str | None, language: str | None):
     the shared HTTP whisper server as fallback. Shared by /WhisperType and
     /engineer."""
     t_asr = time.time()
-    raw = ""
+    raw, nsp = "", 0.0
     if _WHISPER_LOCAL:
         try:
-            raw = await asyncio.to_thread(_transcribe_local, audio, language)
+            raw, nsp = await asyncio.to_thread(_transcribe_local, audio, language)
         except Exception as e:  # noqa: BLE001
             log.warning("local ASR failed (%s); falling back to remote", e)
-            raw = ""
+            raw, nsp = "", 0.0
     if not raw:
         try:
             raw = _transcribe_remote(audio, filename or "audio.wav", language)
+            nsp = 0.0   # remote gives no probability → treat as speech (keep)
         except Exception as e:  # noqa: BLE001
             log.error("ASR failed: %s", e)
             raise HTTPException(status_code=502, detail=f"ASR backend error: {e}")
+    # Whisper's own no-speech probability is the reliable silence signal (a mic
+    # noise-floor defeats a raw-energy threshold). RMS is a secondary guard.
     rms = _audio_rms(audio)
-    if rms < _SILENCE_RMS:
-        log.info("low audio energy rms=%.4f raw=%r", rms, raw)
-    raw = _strip_hallucinations(raw, has_speech=rms >= _SILENCE_RMS)
+    silent = (nsp >= _NO_SPEECH_PROB) or (rms < _SILENCE_RMS)
+    if len(raw) <= 30 or silent:
+        log.info("asr signals nsp=%.2f rms=%.4f silent=%s raw=%r", nsp, rms, silent, raw[:40])
+    raw = _strip_hallucinations(raw, has_speech=not silent)
     return raw, int((time.time() - t_asr) * 1000)
 
 
@@ -872,9 +883,9 @@ async def _process_meeting(job_id: int, audio: bytes, language: str | None,
                 raw, segs = await asyncio.to_thread(_transcribe_local_segments, audio, language, translate)
             except Exception as e:  # noqa: BLE001
                 log.warning("segment ASR failed (%s); plain ASR", e)
-                raw, segs = await asyncio.to_thread(_transcribe_local, audio, language), []
+                (raw, _nsp), segs = await asyncio.to_thread(_transcribe_local, audio, language), []
         else:
-            raw, segs = await asyncio.to_thread(_transcribe_local, audio, language), []
+            (raw, _nsp), segs = await asyncio.to_thread(_transcribe_local, audio, language), []
         asr_ms = int((time.time() - t_asr) * 1000)
         transcript = apply_vocab(raw)
         if not transcript.strip():
@@ -1150,7 +1161,7 @@ async def retranscribe(id: int):
     con.close()
     if not row or row[0] is None:
         raise HTTPException(status_code=404, detail="no stored audio for that id")
-    raw = await asyncio.to_thread(_transcribe_local, row[0], None)
+    raw, _nsp = await asyncio.to_thread(_transcribe_local, row[0], None)
     corrected = apply_vocab(raw)
     text = corrected
     if POLISH_ENABLED and _model is not None:

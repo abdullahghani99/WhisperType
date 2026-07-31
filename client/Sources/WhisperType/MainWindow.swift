@@ -16,6 +16,10 @@ struct MainView: View {
     @ObservedObject var meetings: MeetingsState
     @ObservedObject var nav: MainNav
 
+    // Bound so the sidebar always defaults to visible (a fresh window shows it)
+    // and the toolbar toggle can bring it back — hiding it can't dead-end.
+    @State private var columns: NavigationSplitViewVisibility = .all
+
     enum Section: String, CaseIterable, Identifiable {
         case meetings = "Meetings"
         case dictionary = "Dictionary"
@@ -37,7 +41,7 @@ struct MainView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columns) {
             List(Section.allCases, selection: $nav.section) { s in
                 Label(s.rawValue, systemImage: s.icon).tag(s)
             }
@@ -47,6 +51,16 @@ struct MainView: View {
             detail
                 .frame(minWidth: 560, minHeight: 520)
                 .navigationTitle(nav.section.rawValue)
+                .toolbar {
+                    ToolbarItem(placement: .navigation) {
+                        Button {
+                            withAnimation { columns = (columns == .detailOnly) ? .all : .detailOnly }
+                        } label: {
+                            Image(systemName: "sidebar.leading")
+                        }
+                        .help("Show or hide the sidebar")
+                    }
+                }
         }
     }
 

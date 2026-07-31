@@ -321,6 +321,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func stopMeeting() {
+        dockController.state.meetingRecording = false   // clear the red indicator immediately
         overlay.show(.message("Finishing recording…"))
         Task {
             let wav = await meetingRecorder.stop()
@@ -332,11 +333,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             let stamp = Self.meetingStamp.string(from: Date())
-            // Save the raw recording to Desktop FIRST, so processing can never lose
-            // it (re-runnable via "Summarize a recording…"). A 44-min meeting was
-            // lost once before this safeguard.
-            let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask)[0]
-            let wavURL = desktop.appendingPathComponent("WhisperType Meeting \(stamp).wav")
+            // Save the raw recording to a proper app folder FIRST, so processing
+            // can never lose it (re-runnable via "Summarize a recording…"). A
+            // 44-min meeting was lost once before this safeguard. Not the Desktop.
+            let wavURL = Self.recordingsDir().appendingPathComponent("WhisperType Meeting \(stamp).wav")
             do { try wav.write(to: wavURL); vlog("meeting: audio saved -> \(wavURL.path)") }
             catch { vlog("meeting: could not save audio: \(error)") }
             do {
@@ -348,7 +348,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } catch {
                 vlog("meeting submit FAILED: \(error)")
                 await MainActor.run {
-                    self.overlay.show(.message("Recording saved to Desktop, but upload failed: \(error.localizedDescription). Retry via “Summarize a recording…”."))
+                    self.overlay.show(.message("Recording saved to your WhisperType recordings folder, but upload failed: \(error.localizedDescription). Retry via “Summarize a recording…”."))
                     self.overlay.hide(after: 6)
                 }
             }
@@ -359,8 +359,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HHmm"; return f
     }()
 
-    /// Write notes next to the recording; fall back to the Desktop if that folder
-    /// isn't writable.
+    /// The proper home for raw meeting recordings — an app folder under
+    /// Application Support, NOT the Desktop. Created on demand.
+    static func recordingsDir() -> URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("WhisperType", isDirectory: true)
+            .appendingPathComponent("Recordings", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Write notes next to the recording; fall back to the recordings folder if
+    /// that folder isn't writable.
     private func saveMeetingNotes(_ md: String, base: String, near url: URL) throws -> URL {
         let name = "\(base) — notes.md"
         let sibling = url.deletingLastPathComponent().appendingPathComponent(name)
@@ -368,10 +378,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             try md.data(using: .utf8)!.write(to: sibling)
             return sibling
         } catch {
-            let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent(name)
-            try md.data(using: .utf8)!.write(to: desktop)
-            return desktop
+            let fallback = Self.recordingsDir().appendingPathComponent(name)
+            try md.data(using: .utf8)!.write(to: fallback)
+            return fallback
         }
     }
 

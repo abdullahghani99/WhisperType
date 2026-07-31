@@ -225,6 +225,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                 action: #selector(openMain), keyEquivalent: "0"))
         menu.addItem(NSMenuItem(title: "Meetings…",
                                 action: #selector(openMeetings), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Show recordings folder",
+                                action: #selector(showRecordingsFolder), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Settings & Dictionary…",
                                 action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Test dictation now (5s)",
@@ -239,6 +241,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
+
+    /// Reveal the meeting-recordings folder in Finder (it lives under ~/Library,
+    /// which Finder hides by default).
+    @objc private func showRecordingsFolder() {
+        NSWorkspace.shared.open(Self.recordingsDir())
+    }
 
     /// Deterministic diagnostic: types a fixed string covering capitals and
     /// shifted punctuation. Focus the target field (local or VNC), then pick this

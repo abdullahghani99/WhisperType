@@ -394,8 +394,12 @@ _HALLUCINATION_LEAD = [
     "thank you for watching", "thanks for watching", "please subscribe",
 ]
 
-_SILENCE_RMS = 0.005      # normalized RMS below this ≈ no speech (secondary guard)
-_NO_SPEECH_PROB = 0.5     # Whisper no_speech_prob at/above this ≈ non-speech clip
+_SILENCE_RMS = 0.008      # normalized RMS below this ≈ no speech (secondary guard)
+# Tuned from real logs: hallucinated "Thank you." shows nsp≈0.18–0.28 (Whisper is
+# "confident" even when inventing it), while genuine speech logs at nsp≈0.03. A
+# 0.15 cut cleanly separates them. Only ever drops a KNOWN filler phrase, so real
+# dictation is untouched regardless.
+_NO_SPEECH_PROB = 0.15    # Whisper no_speech_prob at/above this ≈ non-speech clip
 
 
 def _audio_rms(wav_bytes: bytes) -> float:

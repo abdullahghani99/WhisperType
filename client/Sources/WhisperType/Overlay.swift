@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import WhisperTypeKit
 
 /// Visual state shared between the app and the floating pill UI.
 enum OverlayMode: Equatable {
@@ -22,11 +23,14 @@ final class OverlayState: ObservableObject {
     }
 }
 
-/// Uliverse palette (warm black / warm off-white / red accent used sparingly).
+/// WhisperType palette (warm black / warm off-white / red accent used sparingly).
+/// All values come from VF — no local hex. `vfPaper` uses `VF.Color.ink(dark:
+/// true)` (0xF7F5F3), the nearest token to the old 0xFAFAF9 (a 3-point shift
+/// per channel, imperceptible).
 private extension Color {
-    static let vfInk = Color(red: 0x1A/255, green: 0x17/255, blue: 0x14/255)
-    static let vfPaper = Color(red: 0xFA/255, green: 0xFA/255, blue: 0xF9/255)
-    static let vfAccent = Color(red: 0xE7/255, green: 0x00/255, blue: 0x0B/255)
+    static let vfInk = VF.Color.canvas(dark: true)
+    static let vfPaper = VF.Color.ink(dark: true)
+    static let vfAccent = VF.Color.accent
 }
 
 /// The floating pill, à la Wispr — bottom-centre, waveform while listening.
@@ -76,7 +80,7 @@ struct OverlayView: View {
         .background(
             Capsule(style: .continuous)
                 .fill(Color.vfInk.opacity(0.96))
-                .shadow(color: .black.opacity(0.35), radius: 18, y: 6)
+                .shadow(color: VF.Shadow.layer3.color, radius: 18, y: 6)
         )
         .overlay(Capsule(style: .continuous).stroke(Color.white.opacity(0.06), lineWidth: 1))
         .fixedSize()

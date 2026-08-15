@@ -12,7 +12,8 @@ let package = Package(
         .executableTarget(
             name: "WhisperType",
             dependencies: ["WhisperTypeKit"],
-            path: "Sources/WhisperType"
+            path: "Sources/WhisperType",
+            resources: [.process("Resources")]
         ),
         .testTarget(
             name: "WhisperTypeKitTests",

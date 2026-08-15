@@ -29,6 +29,14 @@ cp "$BIN_PATH" "$APP/Contents/MacOS/$BIN_NAME"
 cp Info.plist "$APP/Contents/Info.plist"
 [ -f icon/AppIcon.icns ] && cp icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
+# SPM emits a resource bundle beside the binary; the fonts live there. Copy the
+# TTFs into Contents/Resources so CTFontManagerRegisterFontsForURL can find them.
+BIN_DIR="$(dirname "$BIN_PATH")"
+find "$BIN_DIR" -name "*.bundle" -maxdepth 1 -print0 2>/dev/null | while IFS= read -r -d '' b; do
+  find "$b" -name "Inter-*.ttf" -exec cp {} "$APP/Contents/Resources/" \; 2>/dev/null || true
+done
+[ -d Sources/WhisperType/Resources ] && cp Sources/WhisperType/Resources/Inter-*.ttf "$APP/Contents/Resources/" 2>/dev/null || true
+
 # Prefer a stable, trusted identity so TCC (Accessibility/Microphone) grants
 # persist across rebuilds. Order: Apple Development > self-signed "WhisperType
 # Dev" > ad-hoc. Ad-hoc changes identity every build and loses permissions.

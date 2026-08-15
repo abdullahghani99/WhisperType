@@ -58,12 +58,41 @@ def main():
         if ch > 1:
             arr = arr.reshape(-1, ch).mean(axis=1)
         wf = torch.from_numpy(arr).unsqueeze(0)  # (channel=1, time)
-        out = pipe({"waveform": wf, "sample_rate": sr})
-        # pyannote 4.x returns DiarizeOutput; the Annotation is .speaker_diarization.
-        diar = getattr(out, "speaker_diarization", out)
+        # Ask for embeddings so the caller can recognise known voices across
+        # meetings. Not every pyannote build supports this, so fall back to a
+        # plain diarization rather than failing the whole meeting.
+        embeddings = {}
+        try:
+            out = pipe({"waveform": wf, "sample_rate": sr}, return_embeddings=True)
+        except TypeError:
+            out = pipe({"waveform": wf, "sample_rate": sr})
+
+        emb_matrix = None
+        if isinstance(out, tuple) and len(out) == 2:
+            diar, emb_matrix = out                       # pyannote 3.x
+        else:
+            diar = getattr(out, "speaker_diarization", out)
+            emb_matrix = getattr(out, "speaker_embeddings", None)   # pyannote 4.x
+
         turns = [{"start": round(seg.start, 2), "end": round(seg.end, 2), "speaker": spk}
                  for seg, _, spk in diar.itertracks(yield_label=True)]
-        print(json.dumps({"turns": turns}))
+
+        if emb_matrix is not None:
+            try:
+                labels = list(diar.labels())
+                for i, spk in enumerate(labels):
+                    if i < len(emb_matrix):
+                        vec = emb_matrix[i]
+                        vec = vec.tolist() if hasattr(vec, "tolist") else list(vec)
+                        # Drop non-finite vectors; a NaN embedding would poison matching.
+                        if all(v == v for v in vec):
+                            embeddings[spk] = [float(v) for v in vec]
+            except Exception as e:  # noqa: BLE001
+                print(json.dumps({"turns": turns, "embeddings": {},
+                                  "warn": f"embeddings unavailable: {e}"}))
+                return
+
+        print(json.dumps({"turns": turns, "embeddings": embeddings}))
     except Exception as e:  # noqa: BLE001
         print(json.dumps({"turns": [], "error": str(e)}))
 

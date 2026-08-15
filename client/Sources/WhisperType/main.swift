@@ -3,6 +3,7 @@ import SwiftUI
 import AVFoundation
 import ApplicationServices
 import UniformTypeIdentifiers
+import CoreText
 import WhisperTypeKit
 
 /// Simple timestamped file log so we can diagnose the live pipeline.
@@ -71,7 +72,26 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         set { UserDefaults.standard.set(newValue, forKey: "vf_mouseToggleButton") }
     }
 
+    /// Register the bundled Inter faces so the design system can use them. Never
+    /// blocks launch: if the resources are missing or registration fails, the
+    /// design system falls back to the system sans and the app renders normally.
+    private func registerFonts() {
+        let names = ["Inter-Regular", "Inter-Medium", "Inter-SemiBold"]
+        var registered = 0
+        for name in names {
+            guard let url = Bundle.main.url(forResource: name, withExtension: "ttf")
+                    ?? Bundle.main.url(forResource: name, withExtension: "ttf", subdirectory: "Resources")
+            else { continue }
+            if CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil) {
+                registered += 1
+            }
+        }
+        VF.Font.interAvailable = (registered == names.count)
+        vlog("fonts: Inter registered=\(registered)/\(names.count) available=\(VF.Font.interAvailable)")
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        registerFonts()
         vlog("=== WhisperType client launched ===")
         // Single instance only: if another WhisperType is already running (e.g. the
         // login-agent copy plus a manual launch), bow out so there's never two.

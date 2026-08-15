@@ -200,6 +200,28 @@ struct ServerClient {
         }
     }
 
+    /// Rename a speaker throughout a meeting. The server also remembers the
+    /// voice, so the same person is recognised in future meetings.
+    func renameSpeaker(id: Int, from: String, to: String) async throws {
+        var req = URLRequest(url: baseURL.appendingPathComponent("meeting/\(id)/speaker"))
+        req.httpMethod = "POST"
+        req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        if let apiKey = apiKey, !apiKey.isEmpty {
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        req.timeoutInterval = 15
+        func enc(_ s: String) -> String {
+            s.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? s
+        }
+        req.httpBody = "frm=\(enc(from))&to=\(enc(to))".data(using: .utf8)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw NSError(domain: "whispertype", code: 9,
+                          userInfo: [NSLocalizedDescriptionKey:
+                                        String(data: data, encoding: .utf8) ?? "speaker rename failed"])
+        }
+    }
+
     /// Delete a meeting permanently.
     func deleteMeeting(id: Int) async throws {
         var req = URLRequest(url: baseURL.appendingPathComponent("meeting/\(id)"))

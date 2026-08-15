@@ -163,18 +163,22 @@ PROMPT_LEVEL = {
 # --- Meeting mode: turn a meeting/call transcript into structured notes.
 # Grounded-generative — organizes what was said; must not invent facts.
 MEETING_SYS = (
-    "You are a meeting-notes assistant. You receive a raw transcript of a meeting "
-    "or call (possibly several speakers, not labeled). Produce concise, faithful "
-    "notes in Markdown using these sections, including ONLY those that apply:\n"
-    "**Summary** — 2–4 sentences: what it was about and the outcome.\n"
-    "**Key points** — bulleted, the main things discussed.\n"
-    "**Decisions** — bulleted, explicit decisions made.\n"
-    "**Action items** — bulleted; include the owner and due date ONLY if stated "
-    "(e.g. '- Alex: send the report by Friday').\n"
-    "**Open questions** — bulleted, unresolved items raised.\n\n"
+    "You write meeting notes for one busy person who was in the room. Write the "
+    "way a sharp colleague would brief them afterwards: specific, concrete, and "
+    "short.\n\n"
+    "Produce Markdown with ONLY the sections that apply:\n"
+    "**Summary** - at most 3 sentences. Lead with what happened and what it "
+    "means. Carry the actual numbers, names and outcomes.\n"
+    "**Decisions** - bulleted, only explicit decisions.\n"
+    "**Action items** - bulleted, owner first (e.g. '- Alex: send the "
+    "reconciliation sheet'). Include a due date ONLY if one was stated.\n"
+    "**Open questions** - bulleted, genuinely unresolved items.\n\n"
+    "Never begin with 'The meeting discussed', 'The primary concern was', 'It "
+    "was agreed that', 'This meeting', or 'Additionally'. Never use the words "
+    "'delve' or 'leverage'. Do not restate the agenda. Do not pad.\n"
     "Base everything ONLY on the transcript. Do NOT invent decisions, owners, "
-    "dates, numbers, or facts that aren't there. Omit any section with nothing to "
-    "put in it. Output ONLY the Markdown notes — no preamble."
+    "dates, numbers, or facts that aren't there. Omit any section with nothing "
+    "to put in it. Output ONLY the Markdown notes - no preamble."
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -309,12 +313,18 @@ def _transcribe_local_segments(audio: bytes, language: str | None, translate: bo
     return res.get("text", "").strip(), segs
 
 
-def _label_transcript(segments, turns) -> str:
+def _label_transcript(segments, turns) -> tuple[str, dict]:
     """Merge Whisper segments with pyannote speaker turns → a speaker-labeled
     transcript. Each segment gets the speaker whose turn overlaps it most.
-    Consecutive segments from the same speaker are grouped under one label."""
+    Consecutive segments from the same speaker are grouped under one label.
+
+    Returns (transcript, order) where `order` maps each raw diarization label to
+    the "Speaker N" the human actually SEES. This mapping is the single source of
+    truth for speaker identity: numbering the speakers anywhere else (over turns,
+    or over the embeddings dict) produces a DIFFERENT numbering, and renaming a
+    speaker would then persist the wrong person's voiceprint."""
     if not segments:
-        return ""
+        return "", {}
 
     def speaker_for(start, end):
         best, best_ov = None, 0.0
@@ -339,7 +349,7 @@ def _label_transcript(segments, turns) -> str:
         buf.append(text)
     if buf and cur_spk is not None:
         lines.append(f"**{order[cur_spk]}:** " + " ".join(buf))
-    return "\n\n".join(lines)
+    return "\n\n".join(lines), order
 
 
 def _transcribe_remote(audio: bytes, filename: str, language: str | None) -> str:
@@ -557,6 +567,25 @@ def _meeting_notes(transcript: str) -> str:
     return out.replace("<<<TRANSCRIPT>>>", "").replace("<<<END>>>", "").strip()
 
 
+def _sentence_case(s: str) -> str:
+    """Sentence case for titles: capitalise the first word, lower the rest, but
+    leave acronyms and product codes (VAT, ISO, AE7) alone. Mirrors
+    VF.sentenceCase on the client so both agree."""
+    words = s.strip().split()
+    out = []
+    for i, w in enumerate(words):
+        letters = [c for c in w if c.isalpha()]
+        if letters and all(c.isupper() for c in letters):
+            out.append(w)          # acronym
+        elif any(c.isdigit() for c in w):
+            out.append(w)          # product code
+        elif i == 0:
+            out.append(w[:1].upper() + w[1:].lower())
+        else:
+            out.append(w.lower())
+    return " ".join(out)
+
+
 def _meeting_title(text: str) -> str:
     """A short human title (3-6 words) naming what the meeting was about, so it's
     findable alongside its date. Returns '' on any failure (caller keeps the date
@@ -580,26 +609,28 @@ def _meeting_title(text: str) -> str:
     if not out:
         return ""
     out = out.splitlines()[0].strip().strip('"').strip("'").rstrip(".").strip()
-    return out[:80]
+    return _sentence_case(out[:80])
 
 
-def _name_speakers(labeled: str) -> str:
+def _name_speakers(labeled: str) -> tuple[str, dict]:
     """Map generic 'Speaker N' labels to real names ONLY where a speaker's name is
     clearly stated in the conversation (self-introduction, or being addressed by
-    name). Leaves the rest as 'Speaker N'. Never invents a name. Returns the
-    transcript with confident labels replaced."""
+    name). Leaves the rest as 'Speaker N'. Never invents a name. Returns
+    (transcript, applied) — the transcript with confident labels replaced, and
+    the {displayed_label: new_name} actually applied, so the caller can keep the
+    per-speaker embeddings keyed by what the human now SEES."""
     model = _prompt_model if _prompt_model is not None else _model
     tok = _prompt_tok if _prompt_model is not None else _tok
     if model is None or not labeled.strip():
-        return labeled
+        return labeled, {}
     present = sorted(set(re.findall(r"Speaker \d+", labeled)))
     if not present:
-        return labeled
+        return labeled, {}
     sys = ("You map anonymous speaker labels to real names, but ONLY when a "
            "speaker's name is clearly stated in the conversation (they introduce "
            "themselves, or someone clearly addresses them by name). Output STRICT "
            "JSON: an object mapping the exact label to the name, e.g. "
-           "{\"Speaker 1\": \"Rajesh\"}. Include a label ONLY if you are confident. "
+           "{\"Speaker 1\": \"Alex\"}. Include a label ONLY if you are confident. "
            "If no names are determinable, output {}. Output JSON only, nothing else.")
     msgs = [{"role": "system", "content": sys},
             {"role": "user", "content": f"Labels present: {', '.join(present)}\n\n"
@@ -609,33 +640,213 @@ def _name_speakers(labeled: str) -> str:
         out = generate(model, tok, prompt=prompt, max_tokens=200, verbose=False).strip()
     except Exception as e:  # noqa: BLE001
         log.warning("speaker naming failed: %s", e)
-        return labeled
+        return labeled, {}
     m = re.search(r"\{.*\}", out, flags=re.DOTALL)
     if not m:
-        return labeled
+        return labeled, {}
     try:
         mapping = json.loads(m.group(0))
     except Exception:  # noqa: BLE001
-        return labeled
-    result = labeled
+        return labeled, {}
+    result, applied = labeled, {}
     for label, name in (mapping or {}).items():
         if not isinstance(name, str) or not name.strip():
             continue
-        if not re.fullmatch(r"Speaker \d+", str(label).strip()):
+        lbl = str(label).strip()
+        if not re.fullmatch(r"Speaker \d+", lbl):
             continue
         nm = name.strip()[:40]
-        result = result.replace(f"**{str(label).strip()}:**", f"**{nm}:**")
-    return result
+        if f"**{lbl}:**" not in result:
+            continue
+        result = result.replace(f"**{lbl}:**", f"**{nm}:**")
+        applied[lbl] = nm
+    return result, applied
+
+
+# Cosine similarity above this means "same voice" ACROSS meetings — different
+# room, different microphone, months apart. Tuned from real meetings — start at
+# 0.75 and adjust from the logged scores, the same way the ASR no_speech_prob
+# threshold was corrected once real data disproved the guess.
+VOICEPRINT_THRESHOLD = float(os.environ.get("VF_VOICEPRINT_THRESHOLD", "0.75"))
+
+# Merging over-split labels is a DIFFERENT question: same recording, same mic,
+# minutes apart, so two fragments of one voice should score far higher than a
+# cross-meeting match. Reusing 0.75 here makes a false merge plausible, and a
+# false merge silently attributes one person's words to another with no undo.
+# Every comparison is logged with its score so this can be tuned from real data.
+MERGE_THRESHOLD = float(os.environ.get("VF_MERGE_THRESHOLD", "0.85"))
+
+
+def _cosine(a, b) -> float:
+    """Cosine similarity of two embedding vectors. Returns 0.0 for empty or
+    mismatched input rather than raising — a bad vector must never fail a
+    meeting."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _merge_oversplit(turns, embeddings, threshold: float = MERGE_THRESHOLD) -> dict:
+    """Map each diarized label to a canonical label, collapsing labels that are
+    really the same voice. Diarization over-splits badly on long calls (one real
+    meeting produced 9 labels for ~4 people), which is what makes the speaker
+    count untrustworthy. Returns {label: canonical_label} covering every label
+    seen in `turns`."""
+    labels = list(dict.fromkeys(t["speaker"] for t in turns))
+    mapping = {l: l for l in labels}
+    if not embeddings:
+        return mapping
+    canonical = []
+    for label in labels:
+        vec = embeddings.get(label)
+        if not vec:
+            canonical.append(label)
+            continue
+        hit, hit_score = None, 0.0
+        for c in canonical:
+            cvec = embeddings.get(c)
+            if not cvec:
+                continue
+            # Log EVERY comparison, not just the matches — a threshold you can
+            # only see hits for is a threshold you cannot tune.
+            score = _cosine(vec, cvec)
+            log.info("merge check %s vs %s score=%.3f threshold=%.2f",
+                     label, c, score, threshold)
+            if score >= threshold:
+                hit, hit_score = c, score
+                break
+        if hit:
+            mapping[label] = hit
+            log.info("merged %s into %s (same voice, score=%.3f)", label, hit, hit_score)
+        else:
+            canonical.append(label)
+    return mapping
+
+
+def _match_voiceprints(embeddings) -> dict:
+    """Map diarized labels to known human names by voice. Only confident matches
+    are returned; everything else stays an anonymous speaker."""
+    if not embeddings:
+        return {}
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    rows = con.execute("SELECT name, embedding FROM voiceprints").fetchall()
+    con.close()
+    known = []
+    for r in rows:
+        try:
+            known.append((r["name"], json.loads(r["embedding"])))
+        except Exception:  # noqa: BLE001
+            continue
+    out = {}
+    for label, vec in embeddings.items():
+        best, best_score = None, 0.0
+        for name, kvec in known:
+            s = _cosine(vec, kvec)
+            if s > best_score:
+                best, best_score = name, s
+        log.info("voiceprint %s best=%s score=%.3f", label, best, best_score)
+        if best and best_score >= VOICEPRINT_THRESHOLD:
+            out[label] = best
+    return out
+
+
+def _store_voiceprint(name: str, vec) -> None:
+    """Remember this voice under this name. A human-set name always wins: the
+    stored vector is refreshed so the voiceprint tracks the person's current
+    microphone."""
+    if not name or not vec:
+        return
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "INSERT INTO voiceprints (name, embedding) VALUES (?, ?) "
+        "ON CONFLICT(name) DO UPDATE SET embedding=excluded.embedding, "
+        "meetings_seen=meetings_seen+1, updated_at=CURRENT_TIMESTAMP",
+        (name.strip()[:40], json.dumps([float(v) for v in vec])))
+    con.commit()
+    con.close()
+
+
+def _display_embeddings(display: dict, embeddings: dict) -> dict:
+    """Re-key raw diarization vectors by the label the human SEES.
+
+    `display` comes from _label_transcript's `order` (plus any names applied on
+    top). Anything the human never saw is DROPPED: a vector with no visible label
+    can only ever be attached to the wrong name, and a wrong voiceprint is
+    written to durable storage and silently reused for every future meeting."""
+    return {display[raw]: vec for raw, vec in embeddings.items()
+            if raw in display and vec}
+
+
+def _rename_in_notes(notes: str, old: str, new: str) -> str:
+    """Word-anchored rename inside meeting notes. The transcript rewrite is
+    anchored on '**name:**'; notes have no such anchor, so a bare substring
+    replace over a durable row with no undo would turn "Alan" into "Alexan" when
+    you rename "Al" to "Alex"."""
+    if not notes or not old:
+        return notes or ""
+    return re.sub(rf"(?<!\w){re.escape(old)}(?!\w)", new, notes)
+
+
+def _save_meeting_embeddings(job_id: int, disp: dict) -> None:
+    """Persist this meeting's per-speaker vectors, keyed by the label the human
+    SEES. In-memory only was a silent lie: after any server restart, renaming a
+    speaker on an older meeting stored nothing while the dialog promised
+    "WhisperType will remember this voice"."""
+    if not disp:
+        return
+    try:
+        con = sqlite3.connect(DB_PATH)
+        con.execute(
+            "INSERT INTO meeting_embeddings (meeting_id, data) VALUES (?, ?) "
+            "ON CONFLICT(meeting_id) DO UPDATE SET data=excluded.data",
+            (job_id, json.dumps({k: [float(v) for v in vec]
+                                 for k, vec in disp.items() if vec})))
+        con.commit()
+        con.close()
+    except Exception as e:  # noqa: BLE001
+        log.warning("meeting %d embedding persist failed: %s", job_id, e)
+
+
+def _load_meeting_embeddings(job_id: int) -> dict:
+    """Displayed-label → vector for a meeting, from the durable table."""
+    try:
+        con = sqlite3.connect(DB_PATH)
+        row = con.execute("SELECT data FROM meeting_embeddings WHERE meeting_id=?",
+                          (job_id,)).fetchone()
+        con.close()
+        return json.loads(row[0]) if row and row[0] else {}
+    except Exception as e:  # noqa: BLE001
+        log.warning("meeting %d embedding load failed: %s", job_id, e)
+        return {}
+
+
+def _forget_meeting_embeddings(job_id: int) -> None:
+    """Biometric vectors must not outlive the meeting the human deleted."""
+    _meeting_embeddings.pop(job_id, None)
+    try:
+        con = sqlite3.connect(DB_PATH)
+        con.execute("DELETE FROM meeting_embeddings WHERE meeting_id=?", (job_id,))
+        con.commit()
+        con.close()
+    except Exception as e:  # noqa: BLE001
+        log.warning("meeting %d embedding delete failed: %s", job_id, e)
 
 
 def _diarize(wav_bytes: bytes):
-    """Run speaker diarization in the isolated venv (subprocess). Returns the list
-    of speaker turns, or [] if diarization is unavailable/failed (caller falls
-    back to an unlabeled transcript). Audio stays local — written to a temp file
-    only for the subprocess, then removed."""
+    """Run speaker diarization in the isolated venv (subprocess). Returns
+    (turns, embeddings) — turns is the list of speaker turns, embeddings maps
+    each speaker label to its voice vector (empty on failure, or if
+    unavailable — caller falls back to an unlabeled transcript). Audio stays
+    local — written to a temp file only for the subprocess, then removed."""
     import subprocess, tempfile
     if not (os.path.exists(DIARIZE_PY) and os.path.exists(DIARIZE_SCRIPT)):
-        return []
+        return [], {}
     tmp = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -645,10 +856,10 @@ def _diarize(wav_bytes: bytes):
         out = json.loads(proc.stdout.strip() or "{}")
         if out.get("error"):
             log.warning("diarization error: %s", out["error"])
-        return out.get("turns", [])
+        return out.get("turns", []), out.get("embeddings", {})
     except Exception as e:  # noqa: BLE001
         log.warning("diarization subprocess failed: %s", e)
-        return []
+        return [], {}
     finally:
         if tmp:
             try: os.unlink(tmp)
@@ -874,6 +1085,13 @@ def _meeting_set(job_id, **cols):
         con.close()
 
 
+# Diarization embeddings for recently processed meetings, keyed by the label the
+# human SEES, so renaming a speaker stores THAT person's voiceprint. This is only
+# a hot cache in front of the durable `meeting_embeddings` table — a miss falls
+# back to the table, so a server restart never silently drops a voice.
+_meeting_embeddings: dict[int, dict] = {}
+
+
 async def _process_meeting(job_id: int, audio: bytes, language: str | None,
                            diarize: bool, translate: bool):
     """Background worker: transcribe (optionally translate→English) → diarize →
@@ -899,14 +1117,46 @@ async def _process_meeting(job_id: int, audio: bytes, language: str | None,
         speakers, diar_ms = 0, 0
         if want_diar and segs:
             t = time.time()
-            turns = await asyncio.to_thread(_diarize, audio)
+            turns, embeddings = await asyncio.to_thread(_diarize, audio)
             if turns:
-                labeled = _label_transcript([(s, e, apply_vocab(txt)) for s, e, txt in segs], turns)
+                # Collapse over-split labels first, so the speaker count is real.
+                merge = _merge_oversplit(turns, embeddings)
+                turns = [{**t, "speaker": merge.get(t["speaker"], t["speaker"])} for t in turns]
+                # Keep only the SURVIVING labels' own vectors. Rebuilding the dict
+                # by rewriting keys let the discarded fragment win (dict order),
+                # so the surviving speaker carried the wrong voice.
+                embeddings = {c: embeddings[c] for c in dict.fromkeys(merge.values())
+                              if c in embeddings}
+
+                labeled, order = _label_transcript(
+                    [(s, e, apply_vocab(txt)) for s, e, txt in segs], turns)
                 if labeled:
-                    # Give speakers their real names where they introduce
-                    # themselves — before notes, so the notes use names too.
-                    transcript = await asyncio.to_thread(_name_speakers, labeled)
+                    # `order` (raw label -> the "Speaker N" actually shown) is the
+                    # ONLY enumeration used from here on. `display` tracks what
+                    # each raw speaker is currently called as names get applied.
+                    display = dict(order)
+                    # Known voices get their real names with no introduction needed.
+                    known = {}
+                    try:
+                        known = _match_voiceprints(embeddings)
+                    except Exception as e:  # noqa: BLE001
+                        # A voiceprint lookup must never destroy a transcript that
+                        # ASR already produced — the audio is not retained.
+                        log.warning("voiceprint matching failed (%s); staying anonymous", e)
+                    for raw_label, name in known.items():
+                        generic = order.get(raw_label)
+                        if generic:
+                            labeled = labeled.replace(f"**{generic}:**", f"**{name}:**")
+                            display[raw_label] = name
+                    # Then let the LLM name anyone who introduced themselves.
+                    transcript, applied = await asyncio.to_thread(_name_speakers, labeled)
+                    for raw_label, shown in list(display.items()):
+                        if shown in applied:
+                            display[raw_label] = applied[shown]
                     speakers = len({t_["speaker"] for t_ in turns})
+                    disp = _display_embeddings(display, embeddings)
+                    _meeting_embeddings[job_id] = disp
+                    _save_meeting_embeddings(job_id, disp)
             diar_ms = int((time.time() - t) * 1000)
 
         notes_text, notes_ms = "", 0
@@ -988,6 +1238,44 @@ async def rename_meeting(job_id: int, title: str = Form(...),
     return {"id": job_id, "title": clean}
 
 
+@app.post("/meeting/{job_id}/speaker")
+async def rename_speaker(job_id: int, frm: str = Form(...), to: str = Form(...),
+                         authorization: str | None = Header(None)):
+    """Rename a speaker throughout a meeting, and remember that voice so the same
+    person is recognised in future meetings without any introduction."""
+    _check_auth(authorization)
+    old, new = frm.strip(), to.strip()[:40]
+    if not old or not new:
+        raise HTTPException(status_code=400, detail="both names are required")
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    row = con.execute("SELECT transcript, notes FROM meetings WHERE id=?", (job_id,)).fetchone()
+    if row is None:
+        con.close()
+        raise HTTPException(status_code=404, detail="no meeting with that id")
+    transcript = (row["transcript"] or "").replace(f"**{old}:**", f"**{new}:**")
+    notes = _rename_in_notes(row["notes"] or "", old, new)
+    con.execute("UPDATE meetings SET transcript=?, notes=? WHERE id=?", (transcript, notes, job_id))
+    con.commit(); con.close()
+
+    # Teach the voice, so next time this person is named from the first line.
+    # The embeddings are keyed by the DISPLAYED label — the same name the human
+    # just clicked — so no second, disagreeing enumeration can pick the wrong
+    # person's vector. Falls back to the durable table after a restart.
+    emb = _meeting_embeddings.get(job_id) or _load_meeting_embeddings(job_id)
+    vec = emb.get(old)
+    if vec:
+        _store_voiceprint(new, vec)
+        # Keep the cache addressable under the new name, so renaming twice works.
+        emb = {**emb, new: vec}
+        emb.pop(old, None)
+        _meeting_embeddings[job_id] = emb
+        _save_meeting_embeddings(job_id, emb)
+    else:
+        log.info("meeting %d: no voiceprint stored for %r (no embedding)", job_id, old)
+    return {"id": job_id, "from": old, "to": new}
+
+
 @app.delete("/meeting/{job_id}")
 async def delete_meeting(job_id: int, authorization: str | None = Header(None)):
     """Delete a meeting permanently."""
@@ -997,6 +1285,8 @@ async def delete_meeting(job_id: int, authorization: str | None = Header(None)):
     con.commit(); n = cur.rowcount; con.close()
     if not n:
         raise HTTPException(status_code=404, detail="no meeting with that id")
+    # Voice vectors are biometric data — they must not outlive the meeting.
+    _forget_meeting_embeddings(job_id)
     return {"id": job_id, "deleted": True}
 
 
@@ -1104,6 +1394,18 @@ def _init_db():
         # rather than leaving them stuck "processing" forever.
         con.execute("UPDATE meetings SET status='error', error='interrupted by server restart' "
                     "WHERE status='processing'")
+        # Per-meeting speaker vectors, keyed by the DISPLAYED label, so renaming a
+        # speaker still teaches the right voice after a server restart. Additive
+        # table (never an ALTER on `meetings`) so an existing store is untouched.
+        con.execute("""CREATE TABLE IF NOT EXISTS meeting_embeddings (
+            meeting_id INTEGER PRIMARY KEY,
+            data TEXT NOT NULL DEFAULT '{}')""")
+        con.execute("""CREATE TABLE IF NOT EXISTS voiceprints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            embedding TEXT NOT NULL,
+            meetings_seen INTEGER DEFAULT 1,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
         con.commit()
         con.close()
         log.info("capture store ready at %s", DB_PATH)

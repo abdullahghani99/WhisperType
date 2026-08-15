@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import WhisperTypeKit
 
 /// The one unified WhisperType window — a light sidebar app that replaces the
 /// scattered Settings/Meetings windows. Sections reuse the existing views, so
@@ -15,6 +16,9 @@ struct MainView: View {
     @ObservedObject var settings: SettingsState
     @ObservedObject var meetings: MeetingsState
     @ObservedObject var nav: MainNav
+
+    @Environment(\.colorScheme) private var scheme
+    private var dark: Bool { scheme == .dark }
 
     // Bound so the sidebar always defaults to visible (a fresh window shows it)
     // and the toolbar toggle can bring it back — hiding it can't dead-end.
@@ -43,13 +47,19 @@ struct MainView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columns) {
             List(Section.allCases, selection: $nav.section) { s in
-                Label(s.rawValue, systemImage: s.icon).tag(s)
+                Label(s.rawValue, systemImage: s.icon)
+                    .font(VF.Font.body)
+                    .foregroundColor(VF.Color.ink(dark: dark))
+                    .tag(s)
             }
+            .scrollContentBackground(.hidden)
+            .background(VF.Color.surfaceHover(dark: dark))
             .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 240)
             .safeAreaInset(edge: .bottom) { statusBar }
         } detail: {
             detail
                 .frame(minWidth: 560, minHeight: 520)
+                .background(VF.Color.canvas(dark: dark))
                 .navigationTitle(nav.section.rawValue)
                 .toolbar {
                     ToolbarItem(placement: .navigation) {
@@ -77,14 +87,17 @@ struct MainView: View {
 
     /// Compact server-health footer in the sidebar.
     private var statusBar: some View {
-        HStack(spacing: 6) {
-            Circle().fill(settings.serverOK ? Color.green : Color.orange)
+        HStack(spacing: VF.Space.sm) {
+            Circle()
+                .fill(settings.serverOK ? VF.Color.healthy(dark: dark) : VF.Color.attention(dark: dark))
                 .frame(width: 7, height: 7)
-            Text(settings.serverOK ? "Server connected" : "Connecting…")
-                .font(.caption2).foregroundStyle(.secondary)
+            Text(settings.serverOK ? "Server connected" : "Connecting\u{2026}")
+                .font(VF.Font.caption)
+                .foregroundColor(VF.Color.muted(dark: dark))
             Spacer()
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
+        .padding(.horizontal, VF.Space.md)
+        .padding(.vertical, VF.Space.sm)
     }
 }
 

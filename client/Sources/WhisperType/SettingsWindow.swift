@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import WhisperTypeKit
 
 extension Notification.Name {
     /// Posted when the pre-roll toggle changes so the recorder can start/stop
@@ -129,8 +130,8 @@ final class SettingsState: ObservableObject {
 }
 
 private extension Color {
-    static let vfInk = Color(red: 0x1A/255, green: 0x17/255, blue: 0x14/255)
-    static let vfAccent = Color(red: 0xE7/255, green: 0x00/255, blue: 0x0B/255)
+    static let vfInk = VF.Color.canvas(dark: true)
+    static let vfAccent = VF.Color.accent
 }
 
 struct SettingsView: View {
@@ -154,15 +155,28 @@ struct DictionaryTab: View {
     @State private var from = ""
     @State private var to = ""
     @State private var newTerm = ""
+    /// Whose action items to promote in meeting notes. Empty = feature off; this
+    /// used to be one person's name hardcoded in the source, which broke the
+    /// feature for every other user of an open-source tool.
+    @AppStorage("vf_myName") private var myName = ""
+
+    @Environment(\.colorScheme) private var scheme
+    private var dark: Bool { scheme == .dark }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            Text("Your name").font(.headline)
+            Text("Used to pick your own action items out of meeting notes. Leave it blank and nothing is highlighted.")
+                .font(VF.Font.caption).foregroundColor(VF.Color.muted(dark: dark))
+            TextField("e.g. Alex", text: $myName).textFieldStyle(.roundedBorder)
+
+            Divider()
             Text("Corrections").font(.headline)
             Text("When Whisper mishears a word, add a fix. Applies instantly to every dictation.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(VF.Font.caption).foregroundColor(VF.Color.muted(dark: dark))
             HStack {
                 TextField("heard (e.g. helo)", text: $from).textFieldStyle(.roundedBorder)
-                Image(systemName: "arrow.right").foregroundStyle(.secondary)
+                Image(systemName: "arrow.right").foregroundColor(VF.Color.muted(dark: dark))
                 TextField("correct (e.g. Kubernetes)", text: $to).textFieldStyle(.roundedBorder)
                 Button("Add") { state.addReplacement(from, to); from = ""; to = "" }
                     .disabled(from.isEmpty || to.isEmpty)
@@ -171,7 +185,7 @@ struct DictionaryTab: View {
             Divider()
             Text("Vocabulary (names & jargon)").font(.headline)
             Text("Terms Whisper should spell correctly and the polisher should keep exact.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(VF.Font.caption).foregroundColor(VF.Color.muted(dark: dark))
             HStack {
                 TextField("add a term (e.g. PostgreSQL)", text: $newTerm).textFieldStyle(.roundedBorder)
                 Button("Add") { state.addTerm(newTerm); newTerm = "" }.disabled(newTerm.isEmpty)
@@ -181,16 +195,16 @@ struct DictionaryTab: View {
                 if !state.replacements.isEmpty {
                     Section("Corrections (\(state.replacements.count))") {
                         ForEach(state.replacements, id: \.0) { r in
-                            HStack { Text(r.0); Image(systemName: "arrow.right").foregroundStyle(.secondary); Text(r.1).bold() }
+                            HStack { Text(r.0); Image(systemName: "arrow.right").foregroundColor(VF.Color.muted(dark: dark)); Text(r.1).bold() }
                         }
                     }
                 }
                 Section("Terms (\(state.terms.count))") {
-                    Text(state.terms.joined(separator: ", ")).font(.callout)
+                    Text(state.terms.joined(separator: ", ")).font(VF.Font.callout)
                 }
             }
             if !state.status.isEmpty {
-                Text(state.status).font(.caption).foregroundStyle(Color.vfAccent)
+                Text(state.status).font(VF.Font.caption).foregroundStyle(Color.vfAccent)
             }
         }
         .padding(16)
@@ -200,6 +214,9 @@ struct DictionaryTab: View {
 struct LearningTab: View {
     @ObservedObject var state: SettingsState
 
+    @Environment(\.colorScheme) private var scheme
+    private var dark: Bool { scheme == .dark }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -208,17 +225,17 @@ struct LearningTab: View {
                 Button("Refresh") { state.loadSuggestions() }
             }
             Text("Fixes WhisperType noticed — from corrections you taught it (“Correct last dictation…”) and names you use often. Approve one to add it to your dictionary; nothing is applied until you do.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(VF.Font.caption).foregroundColor(VF.Color.muted(dark: dark))
 
             if state.suggestions.isEmpty {
                 Spacer()
                 HStack {
                     Spacer()
                     VStack(spacing: 6) {
-                        Image(systemName: "sparkles").font(.system(size: 28)).foregroundStyle(.secondary)
-                        Text("No suggestions yet").foregroundStyle(.secondary)
+                        Image(systemName: "sparkles").font(.system(size: 28)).foregroundColor(VF.Color.muted(dark: dark))
+                        Text("No suggestions yet").foregroundColor(VF.Color.muted(dark: dark))
                         Text("Teach a correction with ⌥⌘E or menu bar ▸ “Correct last dictation…”.")
-                            .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                            .font(VF.Font.caption).foregroundColor(VF.Color.muted(dark: dark)).multilineTextAlignment(.center)
                     }
                     Spacer()
                 }
@@ -227,12 +244,12 @@ struct LearningTab: View {
                 List(state.suggestions) { s in
                     HStack(spacing: 10) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(s.label).font(.callout).bold()
+                            Text(s.label).font(VF.Font.callout).bold()
                             HStack(spacing: 6) {
                                 Text(s.kind == "replacement" ? "correction" : "name")
                                 if s.count > 1 { Text("· seen \(s.count)×") }
                                 if s.source == "scan" { Text("· from history") }
-                            }.font(.caption2).foregroundStyle(.secondary)
+                            }.font(VF.Font.caption).foregroundColor(VF.Color.muted(dark: dark))
                         }
                         Spacer()
                         Button("Approve") { state.approveSuggestion(s) }
@@ -246,7 +263,7 @@ struct LearningTab: View {
                 }
             }
             if !state.status.isEmpty {
-                Text(state.status).font(.caption).foregroundStyle(Color.vfAccent)
+                Text(state.status).font(VF.Font.caption).foregroundStyle(Color.vfAccent)
             }
         }
         .padding(16)
@@ -255,11 +272,15 @@ struct LearningTab: View {
 
 struct MicTab: View {
     @ObservedObject var state: SettingsState
+
+    @Environment(\.colorScheme) private var scheme
+    private var dark: Bool { scheme == .dark }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Microphone").font(.headline)
             Text("Pin a specific mic so WhisperType ignores macOS flipping the default to AirPods / iPhone / virtual devices (which hand back silence).")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(VF.Font.caption).foregroundColor(VF.Color.muted(dark: dark))
             Picker("Input device", selection: Binding(
                 get: { state.selectedMicUID },
                 set: { state.selectMic($0) })) {
@@ -273,13 +294,13 @@ struct MicTab: View {
 
             Divider()
             Toggle("Capture the moment before I start (pre-roll)", isOn: $state.prerollEnabled)
-                .font(.callout)
+                .font(VF.Font.callout)
             Text("Keeps a ~1.5 s rolling buffer so words spoken the instant you press the trigger aren’t clipped by a mic’s wake-up delay (PowerConf / AirPods DSP take ~500 ms to spin up). Trade-off: your pinned mic stays warm while WhisperType runs. Applies immediately.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(VF.Font.caption).foregroundColor(VF.Color.muted(dark: dark))
 
             Spacer()
             Text("Tip: pick your headset or “MacBook Pro Microphone” for the most reliable capture.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(VF.Font.caption).foregroundColor(VF.Color.muted(dark: dark))
         }
         .padding(16)
     }
@@ -296,7 +317,7 @@ struct HistoryTab: View {
             }
             List(Array(state.history.enumerated()), id: \.offset) { _, text in
                 HStack(alignment: .top) {
-                    Text(text).font(.callout).textSelection(.enabled)
+                    Text(text).font(VF.Font.callout).textSelection(.enabled)
                     Spacer()
                     Button {
                         NSPasteboard.general.clearContents()
@@ -311,12 +332,15 @@ struct HistoryTab: View {
 }
 
 struct AboutTab: View {
+    @Environment(\.colorScheme) private var scheme
+    private var dark: Bool { scheme == .dark }
+
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: "mic.fill").font(.system(size: 34)).foregroundStyle(Color.vfAccent)
             Text("WhisperType").font(.title2).bold()
             Text("Hold Right-Option (⌥) to dictate. Runs on your own Mac.\nWorks over Screen Sharing. Private — nothing leaves your network.")
-                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                .font(VF.Font.callout).foregroundColor(VF.Color.muted(dark: dark)).multilineTextAlignment(.center)
         }.padding(30)
     }
 }

@@ -1,19 +1,16 @@
 import SwiftUI
 import WhisperTypeKit
 
-// MARK: - Palette
-//
-// Verbatim Uliverse dock palette. Kept private to this file so DockView is
-// self-contained and drop-in — no shared design-system dependency yet.
-
+// The dock is the floating layer over other apps, so it uses the DARK side of
+// the palette. All values come from VF — no local hex.
 private extension Color {
-    static let vfSurfaceTop = Color(red: 0x28 / 255, green: 0x24 / 255, blue: 0x20 / 255)
-    static let vfSurfaceBottom = Color(red: 0x1A / 255, green: 0x17 / 255, blue: 0x14 / 255)
-    static let vfWarmWhite = Color(red: 0xFA / 255, green: 0xFA / 255, blue: 0xF9 / 255)
-    static let vfMuted = Color(red: 0x92 / 255, green: 0x8A / 255, blue: 0x81 / 255)
-    static let vfAccent = Color(red: 0xE7 / 255, green: 0x00 / 255, blue: 0x0B / 255)
-    static let vfGreen = Color(red: 0x5C / 255, green: 0xB8 / 255, blue: 0x7A / 255)
-    static let vfAmber = Color(red: 0xE0 / 255, green: 0xA6 / 255, blue: 0x3C / 255)
+    static let vfSurfaceTop = VF.Color.surfaceHover(dark: true)
+    static let vfSurfaceBottom = VF.Color.canvas(dark: true)
+    static let vfWarmWhite = VF.Color.ink(dark: true)
+    static let vfMuted = VF.Color.muted(dark: true)
+    static let vfAccent = VF.Color.accent
+    static let vfGreen = VF.Color.healthy(dark: true)
+    static let vfAmber = VF.Color.attention(dark: true)
 }
 
 /// Fixed sine-shaped envelope for the 24-bar waveform: tall in the middle,
@@ -107,9 +104,9 @@ public struct DockView: View {
             // glyph), but light — not the heavy gradient circle. Warm-black,
             // semi-transparent, thin hairline, soft shadow.
             Circle()
-                .fill(Color(red: 0x1A/255, green: 0x17/255, blue: 0x14/255).opacity(0.82))
+                .fill(VF.Color.canvas(dark: true).opacity(0.82))
                 .overlay(Circle().stroke(Color.white.opacity(0.10), lineWidth: 1))
-                .shadow(color: .black.opacity(0.28), radius: 5, x: 0, y: 2)
+                .shadow(color: VF.Shadow.layer2.color, radius: 5, x: 0, y: 2)
                 .frame(width: 30, height: 30)
             Image(systemName: "mic.fill")
                 .font(.system(size: 12, weight: .semibold))
@@ -159,7 +156,7 @@ public struct DockView: View {
                 Capsule()
                     .stroke(Color.white.opacity(0.08), lineWidth: 1)
             )
-            .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 8)
+            .shadow(color: VF.Shadow.layer3.color, radius: 16, x: 0, y: 8)
     }
 
     @ViewBuilder
@@ -184,7 +181,7 @@ public struct DockView: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(.vfWarmWhite)
             Text("Hold \u{2325} to talk")
-                .font(.system(size: 12.5, weight: .medium))
+                .font(VF.Font.callout)
                 .foregroundColor(.vfWarmWhite.opacity(0.9))
             Circle()
                 .fill(state.serverOK ? Color.vfGreen : Color.vfAmber)
@@ -204,7 +201,7 @@ public struct DockView: View {
             waveform
 
             Text(elapsedString)
-                .font(.system(size: 13, weight: .semibold).monospacedDigit())
+                .font(VF.Font.heading.monospacedDigit())
                 .foregroundColor(.vfWarmWhite)
         }
     }
@@ -238,7 +235,7 @@ public struct DockView: View {
 
     private var transcribingContent: some View {
         Text("Polishing\u{2026}")
-            .font(.system(size: 14, weight: .medium))
+            .font(VF.Font.body)
             .foregroundColor(.vfMuted)
             .opacity(transcribingPulse ? 0.35 : 1.0)
             .onAppear {
@@ -256,7 +253,7 @@ public struct DockView: View {
                 .font(.system(size: 14, weight: .medium))
                 .foregroundColor(.vfAccent)
             Text(state.errorText.isEmpty ? "Something went wrong" : state.errorText)
-                .font(.system(size: 14, weight: .medium))
+                .font(VF.Font.body)
                 .foregroundColor(.vfAccent)
                 .lineLimit(1)
         }
@@ -318,7 +315,7 @@ public struct DockView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.vfWarmWhite)
                 Text(state.micName)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(VF.Font.callout)
                     .foregroundColor(.vfWarmWhite)
                     .lineLimit(1)
                     .frame(maxWidth: 130, alignment: .leading)   // keep the bar compact
@@ -348,7 +345,7 @@ public struct DockView: View {
             if !isActive { onToggleMode() }
         } label: {
             Text(title)
-                .font(.system(size: 12, weight: .semibold))
+                .font(VF.Font.caption)
                 .foregroundColor(isActive ? .vfSurfaceBottom : .vfMuted)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)

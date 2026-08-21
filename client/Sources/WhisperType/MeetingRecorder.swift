@@ -26,6 +26,10 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private(set) var micName = ""
     private let sysQ = DispatchQueue(label: "vf.meeting.sys")
     private(set) var isRecording = false
+    /// Both tracks only accumulate once BOTH streams are live, so sample 0 of the
+    /// mic and sample 0 of the system audio are the same instant. mix() aligns by
+    /// index, so a head start on either side shifts one speaker in time.
+    private var capturing = false
 
     private func log(_ s: String) {
         let line = "\(ISO8601DateFormatter().string(from: Date())) [meeting] \(s)\n"
@@ -54,13 +58,20 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         cfg.width = 2; cfg.height = 2          // minimal video (SCK needs a size)
         cfg.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
+        // Bring the MIC up first: its liveness probe takes time, and if system
+        // capture were already running that delay would become a permanent
+        // offset between the two tracks.
+        startMic()
+
         let s = SCStream(filter: filter, configuration: cfg, delegate: self)
         try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: sysQ)
         try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: sysQ)  // ignored; SCK wants it
         try await s.startCapture()
         stream = s
 
-        startMic()
+        // Both streams are live now — discard probe/preroll audio and start the
+        // clock for both tracks at the same instant.
+        lock.lock(); systemPCM = Data(); micPCM = Data(); capturing = true; lock.unlock()
         isRecording = true
         log(micLive ? "recording started (system + mic: \(micName))"
                     : "recording started (system ONLY — no working mic)")
@@ -69,6 +80,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     func stop() async -> Data {
         guard isRecording else { return Data() }
         isRecording = false
+        lock.lock(); capturing = false; lock.unlock()
         try? await stream?.stopCapture()
         stream = nil
         micEngine?.inputNode.removeTap(onBus: 0)
@@ -98,19 +110,22 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         guard st == noErr, let data = abl.mBuffers.mData else { return }
         // SCK delivers float32 PCM; convert to int16 (config already made it 16k mono).
         let isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
-        var pcm = Data()
+        // Convert the whole buffer in one allocation. The previous version built a
+        // fresh 2-byte Data per SAMPLE — ~57 million allocations an hour at 16 kHz,
+        // which is pure allocator churn during a long call.
+        let pcm: Data
         if isFloat {
             let ptr = data.assumingMemoryBound(to: Float32.self)
-            pcm.reserveCapacity(frames * 2)
+            var scratch = [Int16](repeating: 0, count: frames)
             for i in 0..<frames {
                 let v = max(-1.0, min(1.0, ptr[i]))
-                var s = Int16(v * 32767.0).littleEndian
-                pcm.append(Data(bytes: &s, count: 2))
+                scratch[i] = Int16(v * 32767.0).littleEndian
             }
+            pcm = scratch.withUnsafeBufferPointer { Data(buffer: $0) }
         } else {
-            pcm.append(Data(bytes: data, count: Int(abl.mBuffers.mDataByteSize)))
+            pcm = Data(bytes: data, count: Int(abl.mBuffers.mDataByteSize))
         }
-        lock.lock(); systemPCM.append(pcm); lock.unlock()
+        lock.lock(); if capturing { systemPCM.append(pcm) }; lock.unlock()
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -157,11 +172,16 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 input.removeTap(onBus: 0); continue
             }
 
-            // Opening proves nothing — only samples do. Give it a moment to speak.
-            Thread.sleep(forTimeInterval: 0.6)
+            // Opening proves nothing, and neither does a single burst: the
+            // built-in mic on this machine delivers ~0.4s of frames and then
+            // stalls forever. Require delivery to still be GROWING in a second
+            // window, so a device that dies after its first buffer is rejected.
+            Thread.sleep(forTimeInterval: 0.35)
+            probeLock.lock(); let firstWindow = probeFrames; probeLock.unlock()
+            Thread.sleep(forTimeInterval: 0.35)
             probeLock.lock(); let got = probeFrames; probeLock.unlock()
-            if got == 0 {
-                log("mic: skip \(dev.name) (opened but delivered NO samples)")
+            if got == 0 || got <= firstWindow {
+                log("mic: skip \(dev.name) (\(got == 0 ? "delivered NO samples" : "stalled after \(got) frames"))")
                 AudioDevices.markSilent(uid: dev.uid)
                 input.removeTap(onBus: 0); e.stop(); micConverter = nil
                 continue
@@ -192,7 +212,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         guard err == nil, let ch = outBuf.int16ChannelData else { return }
         let n = Int(outBuf.frameLength)
         let d = Data(bytes: ch[0], count: n * 2)
-        lock.lock(); micPCM.append(d); lock.unlock()
+        lock.lock(); if capturing { micPCM.append(d) }; lock.unlock()
     }
 
     // MARK: mix + wav

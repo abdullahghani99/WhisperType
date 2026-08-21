@@ -201,7 +201,26 @@ final class AudioRecorder {
         bufLock.unlock()
 
         q.async { [weak self] in self?.teardownCommitted() }
-        if captured.isEmpty { logError("captured 0 bytes (device produced no samples)") }
+
+        // Opening a device proves nothing; only real samples do. Teach the picker
+        // what this device actually delivered so a broken mic is demoted instead
+        // of being chosen again on every press.
+        //
+        // Byte count alone is not enough: a broken device can stream ZERO-VALUED
+        // buffers, which makes `captured` large while containing no audio at all.
+        // A real mic in a silent room still carries a noise floor, so an
+        // all-zero buffer means the hardware is dead, not that the room is quiet.
+        let silent = captured.count < 8_000 || Self.isAllZero(captured)
+        if silent {
+            if !uid.isEmpty {
+                AudioDevices.markSilent(uid: uid)
+                logError("\(name) produced no usable audio (\(captured.count) bytes) — demoting it and preferring another mic")
+            } else {
+                logError("captured \(captured.count) bytes (device produced no samples)")
+            }
+        } else if !uid.isEmpty {
+            AudioDevices.markWorking(uid: uid)
+        }
         return wav(from: captured)
     }
 
@@ -231,6 +250,17 @@ final class AudioRecorder {
             for i in 0..<count { let s = Double(ch[0][i]) / 32768.0; sum += s * s }
             let level = Float(min(1.0, (sum / Double(count)).squareRoot() * 3.5))
             DispatchQueue.main.async { cb(level) }
+        }
+    }
+
+    /// True when every sample is exactly zero — the signature of a dead device.
+    /// A working mic always carries some noise floor, so this cannot be confused
+    /// with a quiet room.
+    static func isAllZero(_ d: Data) -> Bool {
+        guard !d.isEmpty else { return true }
+        return d.withUnsafeBytes { raw in
+            for b in raw where b != 0 { return false }
+            return true
         }
     }
 

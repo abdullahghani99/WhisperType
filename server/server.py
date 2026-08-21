@@ -667,7 +667,21 @@ def _name_speakers(labeled: str) -> tuple[str, dict]:
 # room, different microphone, months apart. Tuned from real meetings — start at
 # 0.75 and adjust from the logged scores, the same way the ASR no_speech_prob
 # threshold was corrected once real data disproved the guess.
+# Fingerprint of the embedding space these vectors live in. Bump whenever the
+# diarization model changes so old vectors are ignored rather than mis-matched.
+EMBEDDING_MODEL = os.environ.get("VF_EMBEDDING_MODEL", "pyannote/speaker-diarization-3.1")
+# Uploaded meeting audio is spooled here so a server restart cannot lose it.
+SPOOL_DIR = os.environ.get("VF_SPOOL_DIR", os.path.join(os.path.dirname(__file__), "spool"))
+
+
+def _spool_path(job_id: int) -> str:
+    return os.path.join(SPOOL_DIR, f"meeting-{job_id}.wav")
+
+
 VOICEPRINT_THRESHOLD = float(os.environ.get("VF_VOICEPRINT_THRESHOLD", "0.75"))
+# A match must beat the runner-up by this much. Without a margin, two similar
+# voices yield a confident-looking but essentially arbitrary winner.
+VOICEPRINT_MARGIN = float(os.environ.get("VF_VOICEPRINT_MARGIN", "0.05"))
 
 # Merging over-split labels is a DIFFERENT question: same recording, same mic,
 # minutes apart, so two fragments of one voice should score far higher than a
@@ -707,19 +721,31 @@ def _merge_oversplit(turns, embeddings, threshold: float = MERGE_THRESHOLD) -> d
         if not vec:
             canonical.append(label)
             continue
-        hit, hit_score = None, 0.0
+        # Score every canonical speaker and take the BEST, not the first one over
+        # the line. A merge is destructive: it permanently attributes one
+        # person's words to another and there is no UI to split them again — so
+        # it must also clearly beat the runner-up, or stay split.
+        scored = []
         for c in canonical:
             cvec = embeddings.get(c)
             if not cvec:
                 continue
+            score = _cosine(vec, cvec)
             # Log EVERY comparison, not just the matches — a threshold you can
             # only see hits for is a threshold you cannot tune.
-            score = _cosine(vec, cvec)
             log.info("merge check %s vs %s score=%.3f threshold=%.2f",
                      label, c, score, threshold)
-            if score >= threshold:
-                hit, hit_score = c, score
-                break
+            scored.append((score, c))
+        scored.sort(reverse=True)
+        hit, hit_score = None, 0.0
+        if scored:
+            top, top_label = scored[0]
+            second = scored[1][0] if len(scored) > 1 else 0.0
+            if top >= threshold and (top - second) >= VOICEPRINT_MARGIN:
+                hit, hit_score = top_label, top
+            elif top >= threshold:
+                log.info("merge %s -> %s REJECTED as ambiguous (top=%.3f second=%.3f)",
+                         label, top_label, top, second)
         if hit:
             mapping[label] = hit
             log.info("merged %s into %s (same voice, score=%.3f)", label, hit, hit_score)
@@ -735,24 +761,48 @@ def _match_voiceprints(embeddings) -> dict:
         return {}
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
-    rows = con.execute("SELECT name, embedding FROM voiceprints").fetchall()
+    rows = con.execute("SELECT name, embedding, model, dims FROM voiceprints").fetchall()
     con.close()
     known = []
     for r in rows:
         try:
-            known.append((r["name"], json.loads(r["embedding"])))
+            vec_k = json.loads(r["embedding"])
+            # Refuse to compare across embedding spaces or dimensions — the score
+            # would be numerically fine and semantically garbage.
+            row_model = (r["model"] if "model" in r.keys() else "") or ""
+            if row_model and row_model != EMBEDDING_MODEL:
+                log.info("voiceprint %s ignored (model %s != %s)",
+                         r["name"], row_model, EMBEDDING_MODEL)
+                continue
+            known.append((r["name"], vec_k))
         except Exception:  # noqa: BLE001
             continue
-    out = {}
+    # Assign GLOBALLY and ONE-TO-ONE, strongest pair first. Matching each label
+    # independently allowed two different people to both win the same name,
+    # collapsing two humans into one identity in a durable transcript with no way
+    # to separate them. A name is accepted only when it clearly beats the
+    # runner-up: an ambiguous match is worse than an anonymous speaker, because
+    # "Speaker 2" is visibly unknown while a confident wrong name is not.
+    pairs = []
     for label, vec in embeddings.items():
-        best, best_score = None, 0.0
-        for name, kvec in known:
-            s = _cosine(vec, kvec)
-            if s > best_score:
-                best, best_score = name, s
-        log.info("voiceprint %s best=%s score=%.3f", label, best, best_score)
-        if best and best_score >= VOICEPRINT_THRESHOLD:
-            out[label] = best
+        scored = sorted(((_cosine(vec, kvec), name) for name, kvec in known), reverse=True)
+        if not scored:
+            continue
+        best_score, best_name = scored[0]
+        runner_up = scored[1][0] if len(scored) > 1 else 0.0
+        log.info("voiceprint %s best=%s score=%.3f runnerUp=%.3f",
+                 label, best_name, best_score, runner_up)
+        if best_score >= VOICEPRINT_THRESHOLD and (best_score - runner_up) >= VOICEPRINT_MARGIN:
+            pairs.append((best_score, label, best_name))
+
+    out = {}
+    taken_names, taken_labels = set(), set()
+    for score, label, name in sorted(pairs, reverse=True):
+        if label in taken_labels or name in taken_names:
+            log.info("voiceprint %s -> %s rejected (name already assigned)", label, name)
+            continue
+        out[label] = name
+        taken_labels.add(label); taken_names.add(name)
     return out
 
 
@@ -764,10 +814,12 @@ def _store_voiceprint(name: str, vec) -> None:
         return
     con = sqlite3.connect(DB_PATH)
     con.execute(
-        "INSERT INTO voiceprints (name, embedding) VALUES (?, ?) "
+        "INSERT INTO voiceprints (name, embedding, model, dims) VALUES (?, ?, ?, ?) "
         "ON CONFLICT(name) DO UPDATE SET embedding=excluded.embedding, "
+        "model=excluded.model, dims=excluded.dims, "
         "meetings_seen=meetings_seen+1, updated_at=CURRENT_TIMESTAMP",
-        (name.strip()[:40], json.dumps([float(v) for v in vec])))
+        (name.strip()[:40], json.dumps([float(v) for v in vec]),
+         EMBEDDING_MODEL, len(vec)))
     con.commit()
     con.close()
 
@@ -871,11 +923,35 @@ def _check_auth(authorization: str | None):
         raise HTTPException(status_code=401, detail="invalid or missing API key")
 
 
+async def _resume_spooled_jobs():
+    """Re-queue meetings whose audio survived a restart on disk. Without this the
+    spool is just wasted bytes: the upload is safe but nothing ever picks it up."""
+    con = sqlite3.connect(DB_PATH); con.row_factory = sqlite3.Row
+    rows = con.execute("SELECT id, language, diarize, translate FROM meetings "
+                       "WHERE status='processing'").fetchall()
+    con.close()
+    for r in rows:
+        path = _spool_path(r["id"])
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "rb") as f:
+                audio = f.read()
+        except OSError as e:
+            log.error("resume: cannot read spool for job %s: %s", r["id"], e)
+            continue
+        log.info("resuming meeting job %s from spool (%d bytes)", r["id"], len(audio))
+        asyncio.create_task(_process_meeting(
+            r["id"], audio, (r["language"] or None),
+            bool(r["diarize"]), bool(r["translate"])))
+
+
 @app.on_event("startup")
 async def _startup():
     global _model, _tok, _polish_distilled
     _load_vocab()
     _init_db()
+    asyncio.create_task(_resume_spooled_jobs())
     if POLISH_ENABLED:
         t0 = time.time()
         adapter = POLISH_ADAPTER if os.path.exists(os.path.join(POLISH_ADAPTER, "adapters.safetensors")) else None
@@ -1159,20 +1235,41 @@ async def _process_meeting(job_id: int, audio: bytes, language: str | None,
                     _save_meeting_embeddings(job_id, disp)
             diar_ms = int((time.time() - t) * 1000)
 
+        # Processing succeeded — the spooled upload is no longer needed.
+        try:
+            sp = _spool_path(job_id)
+            if os.path.exists(sp):
+                os.unlink(sp)
+        except OSError:
+            pass
+
+        # COMMIT THE TRANSCRIPT FIRST. Notes and titles are conveniences; the
+        # transcript is the irreplaceable artifact and the audio is not retained
+        # server-side. Previously an exception in either optional step reached the
+        # outer handler, which marked the whole job "error" and threw away ASR and
+        # diarization work that had already succeeded — an hour of a real meeting
+        # lost to a summarizer running out of context.
+        _meeting_set(job_id, status="done", transcript=transcript, notes="",
+                     speakers=speakers, asr_ms=asr_ms, diar_ms=diar_ms, notes_ms=0)
+
         notes_text, notes_ms = "", 0
         if _model is not None:
             t = time.time()
-            notes_text = await asyncio.to_thread(_meeting_notes, transcript)
-            notes_ms = int((time.time() - t) * 1000)
+            try:
+                notes_text = await asyncio.to_thread(_meeting_notes, transcript)
+                notes_ms = int((time.time() - t) * 1000)
+                _meeting_set(job_id, notes=notes_text, notes_ms=notes_ms)
+            except Exception as e:  # noqa: BLE001
+                log.error("meeting job %d: notes failed (transcript is safe): %s", job_id, e)
 
         # Name the meeting after what was discussed (the client only supplied a
         # date/time placeholder). Keep a manual title if one was actually typed.
-        auto_title = await asyncio.to_thread(_meeting_title, transcript)
-        cols = dict(status="done", transcript=transcript, notes=notes_text,
-                    speakers=speakers, asr_ms=asr_ms, diar_ms=diar_ms, notes_ms=notes_ms)
-        if auto_title:
-            cols["title"] = auto_title
-        _meeting_set(job_id, **cols)
+        try:
+            auto_title = await asyncio.to_thread(_meeting_title, transcript)
+            if auto_title:
+                _meeting_set(job_id, title=auto_title)
+        except Exception as e:  # noqa: BLE001
+            log.error("meeting job %d: title failed (transcript is safe): %s", job_id, e)
         log.info("meeting job %d done asr=%dms diar=%dms notes=%dms speakers=%d chars=%d",
                  job_id, asr_ms, diar_ms, notes_ms, speakers, len(transcript))
     except Exception as e:  # noqa: BLE001
@@ -1199,6 +1296,20 @@ async def meeting(
     cur = con.execute("INSERT INTO meetings (title, status) VALUES (?, 'processing')", (title,))
     job_id = cur.lastrowid
     con.commit(); con.close()
+
+    # SPOOL THE AUDIO TO DISK BEFORE RETURNING SUCCESS. Previously the only copy
+    # of the upload lived inside an in-process asyncio task: a restart killed the
+    # task, startup marked the row errored, and the recording was gone — despite
+    # the endpoint having already told the client it was safely queued.
+    try:
+        os.makedirs(SPOOL_DIR, exist_ok=True)
+        with open(_spool_path(job_id), "wb") as f:
+            f.write(audio)
+        _meeting_set(job_id, language=language or "", diarize=1 if diarize else 0,
+                     translate=1 if translate else 0)
+    except Exception as e:  # noqa: BLE001
+        log.error("meeting job %d: could not spool audio (%s) — processing in memory only", job_id, e)
+
     asyncio.create_task(_process_meeting(job_id, audio, language, diarize, translate))
     log.info("meeting job %d queued (%d bytes, translate=%s)", job_id, len(audio), translate)
     return JSONResponse({"id": job_id, "status": "processing"})
@@ -1288,6 +1399,30 @@ async def delete_meeting(job_id: int, authorization: str | None = Header(None)):
     # Voice vectors are biometric data — they must not outlive the meeting.
     _forget_meeting_embeddings(job_id)
     return {"id": job_id, "deleted": True}
+
+
+@app.get("/voiceprints")
+async def list_voiceprints():
+    """What voices this server has learned — biometric data should be inspectable."""
+    con = sqlite3.connect(DB_PATH); con.row_factory = sqlite3.Row
+    rows = con.execute("SELECT name, meetings_seen, model, dims, updated_at "
+                       "FROM voiceprints ORDER BY name").fetchall()
+    con.close()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.delete("/voiceprint/{name}")
+async def forget_voiceprint(name: str, authorization: str | None = Header(None)):
+    """Forget a learned voice. Biometric data with no delete path is not
+    acceptable, even on a single-user server."""
+    _check_auth(authorization)
+    con = sqlite3.connect(DB_PATH)
+    cur = con.execute("DELETE FROM voiceprints WHERE name=?", (name,))
+    con.commit(); n = cur.rowcount; con.close()
+    if not n:
+        raise HTTPException(status_code=404, detail="no voiceprint with that name")
+    log.info("voiceprint forgotten: %s", name)
+    return {"name": name, "forgotten": True}
 
 
 @app.post("/meetings/retitle")
@@ -1389,11 +1524,35 @@ def _init_db():
             notes TEXT DEFAULT '',
             speakers INTEGER DEFAULT 0,
             error TEXT DEFAULT '',
-            asr_ms INTEGER DEFAULT 0, diar_ms INTEGER DEFAULT 0, notes_ms INTEGER DEFAULT 0)""")
-        # A server restart orphans any in-flight job — mark them errored (honest)
-        # rather than leaving them stuck "processing" forever.
-        con.execute("UPDATE meetings SET status='error', error='interrupted by server restart' "
-                    "WHERE status='processing'")
+            asr_ms INTEGER DEFAULT 0, diar_ms INTEGER DEFAULT 0, notes_ms INTEGER DEFAULT 0,
+            language TEXT DEFAULT '', diarize INTEGER DEFAULT 1, translate INTEGER DEFAULT 1)""")
+        # CREATE TABLE IF NOT EXISTS does NOT add columns to a table that already
+        # exists, so new columns must be migrated in explicitly. ADD COLUMN is the
+        # one genuinely additive ALTER: it cannot drop or rewrite existing data.
+        def _ensure_column(table: str, column: str, decl: str):
+            info = con.execute(f"PRAGMA table_info({table})").fetchall()
+            if not info:
+                return   # table not created yet — it will be built with this column
+            have = {r[1] for r in info}
+            if column not in have:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+                log.info("db migration: added %s.%s", table, column)
+
+        _ensure_column("meetings", "language", "TEXT DEFAULT ''")
+        _ensure_column("meetings", "diarize", "INTEGER DEFAULT 1")
+        _ensure_column("meetings", "translate", "INTEGER DEFAULT 1")
+        _ensure_column("voiceprints", "model", "TEXT DEFAULT ''")
+        _ensure_column("voiceprints", "dims", "INTEGER DEFAULT 0")
+
+        # A restart orphans any in-flight job. Jobs whose upload was spooled to
+        # disk are RESUMABLE and must not be marked failed — _resume_spooled_jobs()
+        # re-queues them at startup. Only jobs with no surviving audio are errored,
+        # because for those there is genuinely nothing left to process.
+        orphans = con.execute("SELECT id FROM meetings WHERE status='processing'").fetchall()
+        for (oid,) in orphans:
+            if not os.path.exists(_spool_path(oid)):
+                con.execute("UPDATE meetings SET status='error', "
+                            "error='interrupted by server restart' WHERE id=?", (oid,))
         # Per-meeting speaker vectors, keyed by the DISPLAYED label, so renaming a
         # speaker still teaches the right voice after a server restart. Additive
         # table (never an ALTER on `meetings`) so an existing store is untouched.
@@ -1404,6 +1563,13 @@ def _init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
             embedding TEXT NOT NULL,
+            -- Which embedding model produced this vector, and how many dims.
+            -- Cosine similarity between two DIFFERENT embedding spaces is
+            -- meaningless but looks like a normal score, so a pyannote upgrade
+            -- would silently start matching the wrong people. Stored so stale
+            -- vectors can be ignored rather than trusted.
+            model TEXT DEFAULT '',
+            dims INTEGER DEFAULT 0,
             meetings_seen INTEGER DEFAULT 1,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
         con.commit()

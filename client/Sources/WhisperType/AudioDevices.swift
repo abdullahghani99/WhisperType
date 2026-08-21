@@ -95,29 +95,88 @@ enum AudioDevices {
     /// Wired beats Bluetooth every time, so a PowerConf/Plantronics headset always
     /// wins over sleepy AirPods. To force a specific mic (e.g. AirPods on the move),
     /// pin it in Settings.
-    static func preferredInput() -> AudioInputDevice? {
+    // MARK: - Silent-device memory
+    //
+    // A device can open cleanly and then deliver NOTHING: a disconnected USB mic
+    // lingering as a ghost entry, or AirPods that are busy playing audio (their
+    // mic is unavailable in high-quality output mode). Opening successfully is
+    // therefore not proof a mic works — only receiving samples is. We remember
+    // devices that just handed us silence and deprioritise them, so the next
+    // attempt lands on a mic that actually records instead of repeating the
+    // failure.
+    private static var silentUntil: [String: Date] = [:]
+    private static let silentLock = NSLock()
+    /// How long a silent device stays deprioritised. Long enough to get you
+    /// recording now, short enough that replugging the mic restores it.
+    private static let silentPenalty: TimeInterval = 600
+
+    /// Record that this device produced no audio.
+    static func markSilent(uid: String) {
+        guard !uid.isEmpty else { return }
+        silentLock.lock(); silentUntil[uid] = Date().addingTimeInterval(silentPenalty); silentLock.unlock()
+    }
+
+    /// Clear the penalty — the device just recorded successfully.
+    static func markWorking(uid: String) {
+        guard !uid.isEmpty else { return }
+        silentLock.lock(); silentUntil.removeValue(forKey: uid); silentLock.unlock()
+    }
+
+    static func isRecentlySilent(_ uid: String) -> Bool {
+        silentLock.lock(); defer { silentLock.unlock() }
+        guard let until = silentUntil[uid] else { return false }
+        if until < Date() { silentUntil.removeValue(forKey: uid); return false }
+        return true
+    }
+
+    static func preferredInput() -> AudioInputDevice? { preferredInputs().first }
+
+    /// EVERY candidate mic, best first, so the recorder can fall through when one
+    /// refuses to open.
+    ///
+    /// Returning a ranked LIST rather than a single device is load-bearing: a
+    /// disconnected USB mic can linger in CoreAudio as a ghost entry that still
+    /// enumerates but fails `engine.start()` with -10868. Picking only the top
+    /// candidate meant every press selected the same dead device forever — the
+    /// recorder had no way to move on. Now a failing device is simply skipped.
+    static func preferredInputs() -> [AudioInputDevice] {
         let physical = inputs().filter {
             let lower = $0.name.lowercased()
             return isPhysicalInput($0.id) && !lower.contains("iphone") && !lower.contains("ipad")
         }
         let pinned = UserDefaults.standard.string(forKey: defaultsKey) ?? ""
-        if !pinned.isEmpty, let p = physical.first(where: { $0.uid == pinned }) { return p }
-        guard !physical.isEmpty else { return nil }
+        guard !physical.isEmpty else { return [] }
         let def = defaultInputID()
         func rank(_ d: AudioInputDevice) -> Int {
+            // A device that just gave us silence goes to the BACK, whatever its
+            // transport — a dead wired mic must not beat a working built-in one.
+            if isRecentlySilent(d.uid) { return 90 }
+            if !pinned.isEmpty && d.uid == pinned { return -1 }   // the user's choice leads
+            // THE SYSTEM DEFAULT COMES NEXT, whatever its transport.
+            //
+            // This overturns an earlier "wired beats Bluetooth" heuristic that
+            // caused real data loss. macOS has already negotiated the default
+            // with the hardware, and it is the device the human chose in Sound
+            // settings — it is the one most likely to actually deliver samples.
+            // Measured on this machine: a USB speakerphone refused to pin at all
+            // (-10851), the built-in mic emitted 0.4s and then stalled, and only
+            // the default (AirPods) streamed continuously. Preferring transport
+            // over the default picked the two broken devices and avoided the
+            // working one, which is how a meeting recorded zero microphone audio.
+            if d.id == def { return 0 }
             switch transportType(d.id) {
             case kAudioDeviceTransportTypeUSB, kAudioDeviceTransportTypeThunderbolt,
                  kAudioDeviceTransportTypeFireWire:
-                return 0
-            case kAudioDeviceTransportTypeBuiltIn:
                 return 1
-            case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE:
+            case kAudioDeviceTransportTypeBuiltIn:
                 return 2
-            default:
+            case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE:
                 return 3
+            default:
+                return 4
             }
         }
-        return physical.min { a, b in
+        return physical.sorted { a, b in
             let ra = rank(a), rb = rank(b)
             if ra != rb { return ra < rb }
             if a.id == def && b.id != def { return true }   // default wins the tie

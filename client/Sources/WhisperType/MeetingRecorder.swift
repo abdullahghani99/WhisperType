@@ -18,6 +18,12 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private let lock = NSLock()
     private var systemPCM = Data()   // 16 kHz mono int16
     private var micPCM = Data()
+    private var probeFrames = 0
+    private let probeLock = NSLock()
+    /// True only when the mic proved it delivers samples. The caller warns the
+    /// user when this is false — silently recording half a meeting is not OK.
+    private(set) var micLive = false
+    private(set) var micName = ""
     private let sysQ = DispatchQueue(label: "vf.meeting.sys")
     private(set) var isRecording = false
 
@@ -56,7 +62,8 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
         startMic()
         isRecording = true
-        log("recording started (system + mic)")
+        log(micLive ? "recording started (system + mic: \(micName))"
+                    : "recording started (system ONLY — no working mic)")
     }
 
     func stop() async -> Data {
@@ -111,20 +118,65 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     // MARK: mic
+    /// Start the local mic for the meeting mix.
+    ///
+    /// This deliberately does NOT trust the system default input. A disconnected
+    /// USB mic can linger in CoreAudio as the default, open without error, and
+    /// deliver pure silence — which is exactly how a meeting was recorded with
+    /// the other participant audible and the user's own voice entirely missing.
+    /// So: walk the ranked candidates, and PROVE each one delivers samples before
+    /// accepting it. A meeting is not latency-sensitive, so a short liveness
+    /// probe is cheap insurance against losing half a conversation.
     private func startMic() {
-        let e = AVAudioEngine()
-        micEngine = e
-        let input = e.inputNode
-        let inFormat = input.inputFormat(forBus: 0)
-        guard inFormat.channelCount > 0, inFormat.sampleRate > 0,
-              let conv = AVAudioConverter(from: inFormat, to: out16k) else {
-            log("mic unavailable; capturing system audio only"); micEngine = nil; return
+        micLive = false
+        for dev in AudioDevices.preferredInputs() {
+            let e = AVAudioEngine()
+            let input = e.inputNode
+            if let au = input.audioUnit {
+                var id = dev.id
+                let st = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
+                                              kAudioUnitScope_Global, 0, &id,
+                                              UInt32(MemoryLayout<AudioDeviceID>.size))
+                if st != noErr { log("mic: skip \(dev.name) (could not pin, err \(st))"); continue }
+            }
+            let inFormat = input.inputFormat(forBus: 0)
+            guard inFormat.channelCount > 0, inFormat.sampleRate > 0,
+                  let conv = AVAudioConverter(from: inFormat, to: out16k) else {
+                log("mic: skip \(dev.name) (invalid format)"); continue
+            }
+            micConverter = conv
+            probeFrames = 0
+            input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { [weak self] buf, _ in
+                guard let self = self else { return }
+                self.probeLock.lock(); self.probeFrames += Int(buf.frameLength); self.probeLock.unlock()
+                self.appendMic(buf)
+            }
+            do { e.prepare(); try e.start() }
+            catch {
+                log("mic: skip \(dev.name) (engine start failed: \(error))")
+                input.removeTap(onBus: 0); continue
+            }
+
+            // Opening proves nothing — only samples do. Give it a moment to speak.
+            Thread.sleep(forTimeInterval: 0.6)
+            probeLock.lock(); let got = probeFrames; probeLock.unlock()
+            if got == 0 {
+                log("mic: skip \(dev.name) (opened but delivered NO samples)")
+                AudioDevices.markSilent(uid: dev.uid)
+                input.removeTap(onBus: 0); e.stop(); micConverter = nil
+                continue
+            }
+
+            AudioDevices.markWorking(uid: dev.uid)
+            micEngine = e
+            micLive = true
+            micName = dev.name
+            log("mic: capturing from \(dev.name) (\(got) frames in probe)")
+            return
         }
-        micConverter = conv
-        input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { [weak self] buf, _ in
-            self?.appendMic(buf)
-        }
-        do { e.prepare(); try e.start() } catch { log("mic engine start failed: \(error)"); micEngine = nil }
+        micEngine = nil
+        micConverter = nil
+        log("mic: NO working input device — this meeting will record OTHER participants only")
     }
 
     private func appendMic(_ buffer: AVAudioPCMBuffer) {

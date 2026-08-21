@@ -334,8 +334,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try await meetingRecorder.start()
                 await MainActor.run {
                     self.dockController.state.meetingRecording = true
-                    self.overlay.show(.message("🔴 Recording meeting… open the menu ▸ “Stop meeting & summarize” to finish"))
-                    self.overlay.hide(after: 5)
+                    // Tell the truth up front. A meeting that records only the
+                    // other participants is worse than one that fails outright —
+                    // you find out an hour later, when the audio is gone.
+                    if self.meetingRecorder.micLive {
+                        self.overlay.show(.message("🔴 Recording meeting (mic: \(self.meetingRecorder.micName)) — menu ▸ “Stop meeting & summarize” to finish"))
+                        self.overlay.hide(after: 5)
+                    } else {
+                        self.overlay.show(.message("⚠️ Recording, but NO working microphone — only other participants will be captured. Pick a mic in Settings and restart the recording."))
+                        self.overlay.hide(after: 12)
+                    }
                 }
             } catch {
                 vlog("meeting start FAILED: \(error)")

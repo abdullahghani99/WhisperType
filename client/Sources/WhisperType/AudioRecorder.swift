@@ -53,6 +53,7 @@ final class AudioRecorder {
     var onLevel: ((Float) -> Void)?
     /// Name of the mic used for the last capture (for the dock to display).
     private(set) var lastWinningMic: String?
+    private var lastWinningUID: String = ""
 
     init() {
         outFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000,
@@ -118,29 +119,52 @@ final class AudioRecorder {
             guard let self = self else { return }
             self.teardownCommitted()
 
-            let e = AVAudioEngine()
-            let input = e.inputNode
-            guard let dev = AudioDevices.preferredInput() else {
+            // Walk the ranked candidates and keep the FIRST one that actually
+            // opens. A disconnected USB mic can linger in CoreAudio as a ghost
+            // that enumerates fine but fails engine.start() with -10868; without
+            // this fall-through, every press picked that same dead device and
+            // dictation stayed broken until the device was manually re-pinned.
+            let candidates = AudioDevices.preferredInputs()
+            guard !candidates.isEmpty else {
                 self.logError("no physical input device available"); report(false); return
             }
-            if let au = input.audioUnit {
-                var id = dev.id
-                let st = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
-                                              kAudioUnitScope_Global, 0, &id,
-                                              UInt32(MemoryLayout<AudioDeviceID>.size))
-                if st != noErr { self.logError("could not pin \(dev.name) (err \(st))") }
+            var opened: (engine: AVAudioEngine, converter: AVAudioConverter, name: String, uid: String)?
+            for dev in candidates {
+                let e = AVAudioEngine()
+                let input = e.inputNode
+                if let au = input.audioUnit {
+                    var id = dev.id
+                    let st = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
+                                                  kAudioUnitScope_Global, 0, &id,
+                                                  UInt32(MemoryLayout<AudioDeviceID>.size))
+                    if st != noErr {
+                        self.logError("skip \(dev.name): could not pin (err \(st))"); continue
+                    }
+                }
+                let inFormat = input.inputFormat(forBus: 0)   // may BLOCK on a BT transition
+                guard inFormat.channelCount > 0, inFormat.sampleRate > 0,
+                      let conv = AVAudioConverter(from: inFormat, to: self.outFormat) else {
+                    self.logError("skip \(dev.name): invalid format (\(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch)")
+                    continue
+                }
+                input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { [weak self] buf, _ in
+                    self?.append(buf, gen: gen)
+                }
+                do {
+                    e.prepare()
+                    try e.start()                            // may BLOCK on a BT transition
+                    opened = (e, conv, dev.name, dev.uid)
+                    break
+                } catch {
+                    self.logError("skip \(dev.name): engine start failed (\(error))")
+                    input.removeTap(onBus: 0)
+                    continue
+                }
             }
-            let inFormat = input.inputFormat(forBus: 0)     // may BLOCK on a BT transition
-            guard inFormat.channelCount > 0, inFormat.sampleRate > 0,
-                  let conv = AVAudioConverter(from: inFormat, to: self.outFormat) else {
-                self.logError("invalid format on \(dev.name) (\(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch)")
+            guard let (e, conv, devName, devUID) = opened else {
+                self.logError("no input device would open (tried \(candidates.count): \(candidates.map { $0.name }.joined(separator: ", ")))")
                 report(false); return
             }
-            input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { [weak self] buf, _ in
-                self?.append(buf, gen: gen)
-            }
-            do { e.prepare(); try e.start() }               // may BLOCK on a BT transition
-            catch { self.logError("engine start failed on \(dev.name): \(error)"); report(false); return }
 
             // Commit only if this attempt is still current AND the user hasn't
             // released — otherwise a watchdog reset or a fast stop() has moved on.
@@ -148,12 +172,12 @@ final class AudioRecorder {
             let current = (gen == self.generation) && self.wantRecording
             if current {
                 self.engine = e; self.converter = conv
-                self.lastWinningMic = dev.name; self._isRecording = true
+                self.lastWinningMic = devName; self.lastWinningUID = devUID; self._isRecording = true
             }
             self.bufLock.unlock()
 
             if current {
-                self.logError("capturing from \(dev.name)")
+                self.logError("capturing from \(devName)")
                 report(true)
             } else {
                 e.inputNode.removeTap(onBus: 0); e.stop()   // superseded → discard
@@ -172,6 +196,8 @@ final class AudioRecorder {
         _isRecording = false
         let captured = pcm
         let q = engineQueue
+        let uid = lastWinningUID
+        let name = lastWinningMic ?? "mic"
         bufLock.unlock()
 
         q.async { [weak self] in self?.teardownCommitted() }

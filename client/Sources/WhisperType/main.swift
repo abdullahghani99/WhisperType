@@ -405,6 +405,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return dir
     }
 
+    /// Where a dictation's audio waits until the server confirms the transcript.
+    static func pendingDir() -> URL {
+        let dir = recordingsDir().appendingPathComponent("pending", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
     /// Write notes next to the recording; fall back to the recordings folder if
     /// that folder isn't writable.
     private func saveMeetingNotes(_ md: String, base: String, near url: URL) throws -> URL {
@@ -810,9 +817,29 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
+        // SAVE THE AUDIO BEFORE UPLOADING. Meetings have done this for a while;
+        // dictation did not, so a dropped connection destroyed the recording with
+        // no retry and nothing on disk — 71 seconds of speech lost to a transient
+        // network blip. The file is removed as soon as the transcript comes back.
+        let pendingURL = Self.pendingDir()
+            .appendingPathComponent("dictation-\(Int(Date().timeIntervalSince1970)).wav")
+        do { try wav.write(to: pendingURL); vlog("dictation: audio saved -> \(pendingURL.lastPathComponent)") }
+        catch { vlog("dictation: could not save audio: \(error)") }
+
         Task {
             do {
-                let result = try await client.transcribe(wav: wav)
+                // One transparent retry: -1005 "network connection was lost" is a
+                // transient Tailscale/socket drop, and re-sending bytes we already
+                // hold is far better than making the human say it all again.
+                let result: ServerClient.Result
+                do {
+                    result = try await client.transcribe(wav: wav)
+                } catch {
+                    vlog("transcribe attempt 1 failed (\(error)) — retrying once")
+                    try await Task.sleep(nanoseconds: 700_000_000)
+                    result = try await client.transcribe(wav: wav)
+                }
+                try? FileManager.default.removeItem(at: pendingURL)   // landed safely
                 vlog("transcribe ok: id=\(result.id.map(String.init) ?? "nil") raw=\"\(result.raw)\" text=\"\(result.text)\"")
                 await MainActor.run {
                     self.addToHistory(result.text)
@@ -832,8 +859,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                 }
             } catch {
-                vlog("transcribe FAILED: \(error)")
-                await MainActor.run { self.dockController.state.fail("Couldn’t reach server") }
+                vlog("transcribe FAILED after retry: \(error) — audio kept at \(pendingURL.path)")
+                await MainActor.run {
+                    self.dockController.state.fail("Server unreachable — audio saved")
+                    self.overlay.show(.message("Couldn’t reach the server. Your audio is saved in the recordings folder — menu ▸ “Show recordings folder” ▸ pending."))
+                    self.overlay.hide(after: 8)
+                }
             }
         }
     }

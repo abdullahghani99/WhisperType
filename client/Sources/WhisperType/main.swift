@@ -145,6 +145,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         Task { await refreshHistory() }   // seed the dropdown from the server
         startHealthMonitor()
+        // Default pre-roll ON. Without a warm engine every press pays the mic's
+        // wake-up delay, which is why short dictations came back empty while long
+        // ones worked. The trade is that the microphone is live while WhisperType
+        // runs — visible in the macOS recording indicator, and switchable in
+        // Settings ▸ Microphone. Nothing is stored: the pre-roll is 1.5s held in
+        // memory and overwritten continuously.
+        UserDefaults.standard.register(defaults: ["vf_preroll": true])
         recorder.configurePreroll()       // start warm engine if pre-roll is enabled
 
         // Live-apply the pre-roll toggle from Settings without a relaunch:

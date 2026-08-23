@@ -2,6 +2,7 @@ import AVFoundation
 import AudioToolbox
 import CoreAudio
 import Foundation
+import WhisperTypeKit
 
 /// Fires its action at most once — guards the completion against the race
 /// between a normal engine bring-up and the wedge watchdog.
@@ -36,14 +37,23 @@ final class AudioRecorder {
     private var pcm = Data()
 
     private let bufLock = NSLock()
-    private var _isRecording = false
+    /// The tested state machine (WhisperTypeKit). Engine epoch and recording state
+    /// are deliberately separate: a tap outlives many recordings, so it must
+    /// validate against the ENGINE, not against a per-press counter.
+    private let state = CaptureState()
+    /// Pre-roll: ~1.5s at 16k mono int16, preallocated so the audio thread never
+    /// allocates. Only filled while `vf_preroll` is enabled.
+    private let ring = PrerollRing(capacityBytes: 16_000 * 2 * 3 / 2)
     private var wantRecording = false
     // Bumped on every start / stop / watchdog reset. A bring-up commits its
     // engine only if its captured generation still matches — so an attempt that
     // was superseded (by a fast release or a wedge reset) can't mutate state when
     // it finally unblocks.
-    private var generation = 0
-    var isRecording: Bool { bufLock.lock(); defer { bufLock.unlock() }; return _isRecording }
+    /// Per-PRESS attempt counter, used only by the wedge watchdog. Deliberately
+    /// NOT what the tap validates against — conflating the two is what broke
+    /// capture after the first recording.
+    private var attempt = 0
+    var isRecording: Bool { state.isRecording }
 
     // Replaceable: a wedged BT call leaks its thread, so we abandon the whole
     // queue and make a fresh one rather than wait on the stuck one forever.
@@ -67,14 +77,41 @@ final class AudioRecorder {
         }
     }
 
-    // No-ops: a fresh engine per recording re-resolves the mic each time, so a
-    // device change is picked up automatically — nothing to reload/warm.
-    func configurePreroll() {}
-    func reloadDevice() {}
+    /// Keeping the microphone warm removes the device wake-up delay that makes a
+    /// short press come back empty — but it also means the mic is live whenever
+    /// the app is. That is the user's decision, so it stays behind `vf_preroll`.
+    var prerollEnabled: Bool { UserDefaults.standard.bool(forKey: "vf_preroll") }
+
+    /// Apply a change to the pre-roll setting: warm the engine, or shut it down.
+    func configurePreroll() {
+        engineQueue.async { [weak self] in
+            guard let self = self else { return }
+            if self.prerollEnabled {
+                if self.engine == nil { _ = self.bringUpEngine() }
+            } else if !self.state.isRecording {
+                self.teardownCommitted()
+            }
+        }
+    }
+
+    /// The chosen microphone changed — rebuild so the new device takes effect,
+    /// instead of silently continuing to record the old (possibly unplugged) one.
+    func reloadDevice() {
+        engineQueue.async { [weak self] in
+            guard let self = self, !self.state.isRecording else { return }
+            self.teardownCommitted()
+            self.ring.reset()
+            if self.prerollEnabled { _ = self.bringUpEngine() }
+        }
+    }
 
     /// Tear down the currently-committed engine (if any). Called on the engine
     /// queue.
+    /// Tear down the committed engine. Invalidating the epoch FIRST means any
+    /// buffer still in flight from its tap is discarded rather than landing in a
+    /// new recording.
     private func teardownCommitted() {
+        state.invalidateEngine()
         engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
         engine = nil
@@ -86,10 +123,10 @@ final class AudioRecorder {
     /// is live (true) or unavailable/wedged (false).
     func start(_ completion: @escaping (Bool) -> Void) {
         bufLock.lock()
-        if _isRecording { bufLock.unlock(); DispatchQueue.main.async { completion(false) }; return }
+        if state.isRecording { bufLock.unlock(); DispatchQueue.main.async { completion(false) }; return }
         wantRecording = true
-        generation += 1
-        let gen = generation
+        attempt += 1
+        let gen = attempt
         pcm = Data()
         let q = engineQueue
         bufLock.unlock()
@@ -102,10 +139,10 @@ final class AudioRecorder {
         DispatchQueue.main.asyncAfter(deadline: .now() + watchdogTimeout) { [weak self] in
             guard let self = self else { return }
             self.bufLock.lock()
-            let wedged = (gen == self.generation) && !self._isRecording
+            let wedged = (gen == self.attempt) && !self.state.isRecording
             if wedged {
-                self.generation += 1   // invalidate the stuck attempt's future commit
-                self.engineQueue = DispatchQueue(label: "app.whispertype.client.audio.\(self.generation)")
+                self.attempt += 1   // invalidate the stuck attempt
+                self.engineQueue = DispatchQueue(label: "app.whispertype.client.audio.\(self.attempt)")
                 self.wantRecording = false
             }
             self.bufLock.unlock()
@@ -115,75 +152,84 @@ final class AudioRecorder {
             }
         }
 
+        // WARM PATH: the engine is already running (pre-roll on), so the mic is
+        // live and the last ~1.5s is already buffered. Start instantly and seed
+        // from it, so a device wake-up delay cannot eat the first words — the
+        // reason a short press used to come back as a 44-byte header.
+        bufLock.lock()
+        let haveEngine = (engine != nil && converter != nil)
+        bufLock.unlock()
+        if haveEngine, state.beginRecording() {
+            bufLock.lock(); pcm = Data(ring.drain()); bufLock.unlock()
+            logError("capturing from \(lastWinningMic ?? "mic") (warm, \(pcm.count)B pre-roll)")
+            report(true)
+            return
+        }
+
         q.async { [weak self] in
             guard let self = self else { return }
-            self.teardownCommitted()
-
-            // Walk the ranked candidates and keep the FIRST one that actually
-            // opens. A disconnected USB mic can linger in CoreAudio as a ghost
-            // that enumerates fine but fails engine.start() with -10868; without
-            // this fall-through, every press picked that same dead device and
-            // dictation stayed broken until the device was manually re-pinned.
-            let candidates = AudioDevices.preferredInputs()
-            guard !candidates.isEmpty else {
-                self.logError("no physical input device available"); report(false); return
-            }
-            var opened: (engine: AVAudioEngine, converter: AVAudioConverter, name: String, uid: String)?
-            for dev in candidates {
-                let e = AVAudioEngine()
-                let input = e.inputNode
-                if let au = input.audioUnit {
-                    var id = dev.id
-                    let st = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
-                                                  kAudioUnitScope_Global, 0, &id,
-                                                  UInt32(MemoryLayout<AudioDeviceID>.size))
-                    if st != noErr {
-                        self.logError("skip \(dev.name): could not pin (err \(st))"); continue
-                    }
-                }
-                let inFormat = input.inputFormat(forBus: 0)   // may BLOCK on a BT transition
-                guard inFormat.channelCount > 0, inFormat.sampleRate > 0,
-                      let conv = AVAudioConverter(from: inFormat, to: self.outFormat) else {
-                    self.logError("skip \(dev.name): invalid format (\(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch)")
-                    continue
-                }
-                input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { [weak self] buf, _ in
-                    self?.append(buf, gen: gen)
-                }
-                do {
-                    e.prepare()
-                    try e.start()                            // may BLOCK on a BT transition
-                    opened = (e, conv, dev.name, dev.uid)
-                    break
-                } catch {
-                    self.logError("skip \(dev.name): engine start failed (\(error))")
-                    input.removeTap(onBus: 0)
-                    continue
-                }
-            }
-            guard let (e, conv, devName, devUID) = opened else {
-                self.logError("no input device would open (tried \(candidates.count): \(candidates.map { $0.name }.joined(separator: ", ")))")
+            // Ownership: act only on the engine THIS task commits. A superseded
+            // task (after a watchdog queue swap) must never tear down or mutate a
+            // newer engine — that left isRecording true with no engine behind it.
+            guard self.bringUpEngine() != nil else {
+                self.bufLock.lock(); self.wantRecording = false; self.bufLock.unlock()
                 report(false); return
             }
-
-            // Commit only if this attempt is still current AND the user hasn't
-            // released — otherwise a watchdog reset or a fast stop() has moved on.
             self.bufLock.lock()
-            let current = (gen == self.generation) && self.wantRecording
-            if current {
-                self.engine = e; self.converter = conv
-                self.lastWinningMic = devName; self.lastWinningUID = devUID; self._isRecording = true
-            }
+            let stillWant = self.wantRecording
             self.bufLock.unlock()
-
-            if current {
-                self.logError("capturing from \(devName)")
-                report(true)
-            } else {
-                e.inputNode.removeTap(onBus: 0); e.stop()   // superseded → discard
-                report(false)
+            guard stillWant, self.state.beginRecording() else {
+                if !self.prerollEnabled { self.teardownCommitted() }   // released early
+                report(false); return
             }
+            self.bufLock.lock(); self.pcm = Data(self.ring.drain()); self.bufLock.unlock()
+            self.logError("capturing from \(self.lastWinningMic ?? "mic") (cold)")
+            report(true)
         }
+    }
+
+    /// Build and commit an engine on the best microphone that actually opens.
+    /// Returns the committed epoch, or nil if no device would start.
+    /// MUST run on engineQueue.
+    @discardableResult
+    private func bringUpEngine() -> Int? {
+        teardownCommitted()
+        let candidates = AudioDevices.preferredInputs()
+        guard !candidates.isEmpty else { logError("no physical input device available"); return nil }
+        for dev in candidates {
+            let e = AVAudioEngine()
+            let input = e.inputNode
+            if let au = input.audioUnit {
+                var id = dev.id
+                let st = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
+                                              kAudioUnitScope_Global, 0, &id,
+                                              UInt32(MemoryLayout<AudioDeviceID>.size))
+                if st != noErr { logError("skip \(dev.name): could not pin (err \(st))"); continue }
+            }
+            let inFormat = input.inputFormat(forBus: 0)
+            guard inFormat.channelCount > 0, inFormat.sampleRate > 0,
+                  let conv = AVAudioConverter(from: inFormat, to: outFormat) else {
+                logError("skip \(dev.name): invalid format (\(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch)")
+                continue
+            }
+            // Stamp the tap with THIS engine's epoch. It is installed once and
+            // outlives many recordings; the state machine decides per buffer
+            // whether it feeds the recording, the pre-roll, or nothing at all.
+            let epoch = state.commitEngine()
+            input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { [weak self] buf, _ in
+                self?.append(buf, epoch: epoch)
+            }
+            do { e.prepare(); try e.start() }
+            catch {
+                logError("skip \(dev.name): engine start failed (\(error))")
+                input.removeTap(onBus: 0); state.invalidateEngine(); continue
+            }
+            engine = e; converter = conv
+            lastWinningMic = dev.name; lastWinningUID = dev.uid
+            return epoch
+        }
+        logError("no input device would open (tried \(candidates.count))")
+        return nil
     }
 
     /// Stop and return the captured WAV. Fast: the audio is already in memory;
@@ -191,16 +237,24 @@ final class AudioRecorder {
     func stop() -> Data {
         bufLock.lock()
         wantRecording = false
-        generation += 1                 // invalidate any in-flight bring-up
-        guard _isRecording else { bufLock.unlock(); return Data() }
-        _isRecording = false
+        attempt += 1                    // invalidate any in-flight bring-up
+        guard state.isRecording else { bufLock.unlock(); return Data() }
+        state.endRecording()            // engine STAYS committed; tap stays valid
         let captured = pcm
         let q = engineQueue
         let uid = lastWinningUID
         let name = lastWinningMic ?? "mic"
         bufLock.unlock()
 
-        q.async { [weak self] in self?.teardownCommitted() }
+        // Release the microphone unless the human asked us to keep it warm.
+        // Pre-roll removes the device wake-up delay, but it also means the mic is
+        // live whenever the app is — so it stays their choice, not ours.
+        ring.reset()
+        if prerollEnabled {
+            logError("engine kept warm for the next press (pre-roll on)")
+        } else {
+            q.async { [weak self] in self?.teardownCommitted() }
+        }
 
         // Opening a device proves nothing; only real samples do. Teach the picker
         // what this device actually delivered so a broken mic is demoted instead
@@ -210,21 +264,30 @@ final class AudioRecorder {
         // buffers, which makes `captured` large while containing no audio at all.
         // A real mic in a silent room still carries a noise floor, so an
         // all-zero buffer means the hardware is dead, not that the room is quiet.
-        let silent = captured.count < 8_000 || Self.isAllZero(captured)
-        if silent {
+        // Tri-state, unit-tested in WhisperTypeKit: all-zero audio means a dead
+        // device at any length, a short press is evidence of NOTHING, and only a
+        // long non-zero capture proves the mic works.
+        let verdict = CaptureState.classify(byteCount: captured.count,
+                                            allZero: Self.isAllZero(captured))
+        switch verdict {
+        case .silent:
             if !uid.isEmpty {
                 AudioDevices.markSilent(uid: uid)
-                logError("\(name) produced no usable audio (\(captured.count) bytes) — demoting it and preferring another mic")
+                logError("\(name) produced no usable audio (\(captured.count) bytes) — demoting it")
             } else {
                 logError("captured \(captured.count) bytes (device produced no samples)")
             }
-        } else if !uid.isEmpty {
-            AudioDevices.markWorking(uid: uid)
+            // A dead device must not stay warm for the next press.
+            q.async { [weak self] in self?.teardownCommitted() }
+        case .working:
+            if !uid.isEmpty { AudioDevices.markWorking(uid: uid) }
+        case .inconclusive:
+            logError("\(name): \(captured.count) bytes — too short to judge the mic, leaving its standing unchanged")
         }
         return wav(from: captured)
     }
 
-    private func append(_ buffer: AVAudioPCMBuffer, gen: Int) {
+    private func append(_ buffer: AVAudioPCMBuffer, epoch: Int) {
         guard let converter = converter else { return }
         let ratio = outFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1024
@@ -240,10 +303,17 @@ final class AudioRecorder {
         guard count > 0 else { return }
         let d = Data(bytes: ch[0], count: count * MemoryLayout<Int16>.size)
 
-        bufLock.lock()
-        let recording = _isRecording && gen == generation
-        if recording { pcm.append(d) }
-        bufLock.unlock()
+        var recording = false
+        switch state.route(epoch: epoch) {
+        case .recording:
+            bufLock.lock(); pcm.append(d); bufLock.unlock()
+            recording = true
+        case .preroll:
+            // Fixed-capacity ring: no allocation or compaction on the audio thread.
+            if prerollEnabled { ring.append([UInt8](d)) }
+        case .discard:
+            return   // from an engine we have already replaced
+        }
 
         if recording, let cb = onLevel {
             var sum = 0.0

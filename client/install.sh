@@ -50,6 +50,10 @@ cat > "$PLIST" <<PL
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key><array><string>$BIN</string></array>
   <key>RunAtLoad</key><true/>
+  <!-- Relaunch if the app CRASHES, but stay quit when the user quits it.
+       A segfault in the audio device-change listener used to leave WhisperType
+       dead until someone noticed dictation silently doing nothing. -->
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ProcessType</key><string>Interactive</string>
 </dict></plist>
 PL

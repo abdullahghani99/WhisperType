@@ -112,8 +112,16 @@ final class AudioRecorder {
     /// new recording.
     private func teardownCommitted() {
         state.invalidateEngine()
-        engine?.inputNode.removeTap(onBus: 0)
-        engine?.stop()
+        guard let e = engine else { converter = nil; return }
+        // ORDER MATTERS. Stop the engine first, then remove the tap, and only
+        // then drop the reference. Releasing an AVAudioEngine while its IO unit
+        // property listener is still live crashed the app with EXC_BAD_ACCESS in
+        // AVAudioIOUnit::IOUnitPropertyListener — that listener fires on device
+        // changes (AirPods connecting), so it hit exactly when the user switched
+        // headphones. Holding `e` until after stop() keeps it alive across the
+        // callback instead of freeing it underneath one.
+        e.stop()
+        e.inputNode.removeTap(onBus: 0)
         engine = nil
         converter = nil
     }
@@ -204,12 +212,16 @@ final class AudioRecorder {
                 let st = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
                                               kAudioUnitScope_Global, 0, &id,
                                               UInt32(MemoryLayout<AudioDeviceID>.size))
-                if st != noErr { logError("skip \(dev.name): could not pin (err \(st))"); continue }
+                if st != noErr {
+                    logError("skip \(dev.name): could not pin (err \(st))")
+                    e.stop(); continue
+                }
             }
             let inFormat = input.inputFormat(forBus: 0)
             guard inFormat.channelCount > 0, inFormat.sampleRate > 0,
                   let conv = AVAudioConverter(from: inFormat, to: outFormat) else {
                 logError("skip \(dev.name): invalid format (\(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch)")
+                e.stop()          // never abandon an engine un-stopped (see teardown)
                 continue
             }
             // Stamp the tap with THIS engine's epoch. It is installed once and
@@ -222,7 +234,10 @@ final class AudioRecorder {
             do { e.prepare(); try e.start() }
             catch {
                 logError("skip \(dev.name): engine start failed (\(error))")
-                input.removeTap(onBus: 0); state.invalidateEngine(); continue
+                e.stop()
+                input.removeTap(onBus: 0)
+                state.invalidateEngine()
+                continue
             }
             engine = e; converter = conv
             lastWinningMic = dev.name; lastWinningUID = dev.uid

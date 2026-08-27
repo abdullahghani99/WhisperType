@@ -55,6 +55,18 @@ final class AudioRecorder {
     private var attempt = 0
     var isRecording: Bool { state.isRecording }
 
+    /// Is OUR audio engine holding the microphone right now — warm pre-roll
+    /// included, not just active dictation?
+    ///
+    /// Call detection depends on this. `isRecording` is false while the warm
+    /// engine idles, so using it made the app believe another process held the
+    /// mic every second of the day: it "detected a call" at launch, latched, and
+    /// then never fired for the real one.
+    var isEngineRunning: Bool {
+        bufLock.lock(); defer { bufLock.unlock() }
+        return engine != nil
+    }
+
     // Replaceable: a wedged BT call leaks its thread, so we abandon the whole
     // queue and make a fresh one rather than wait on the stuck one forever.
     private var engineQueue = DispatchQueue(label: "app.whispertype.client.audio.0")

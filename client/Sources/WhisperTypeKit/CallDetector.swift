@@ -6,13 +6,21 @@ public struct CallSignals: Equatable {
     public let micInUseBySomeone: Bool
     /// Our own pre-roll/dictation engine is one of those processes.
     public let ourEngineRunning: Bool
-    /// A known conferencing app is running (Teams, Zoom, Meet, Webex, Slack…).
+    /// A real conferencing app is running (Teams, Zoom, Webex, FaceTime).
+    /// Browsers are deliberately excluded: they are always running, so including
+    /// them made "a call" indistinguishable from an ordinary Tuesday.
     public let conferencingAppRunning: Bool
+    /// Audio is coming OUT of a device. This is the signal we do not pollute:
+    /// WhisperType captures but never plays, so unlike the microphone this stays
+    /// honest while our warm engine is running.
+    public let audioPlayingSomewhere: Bool
 
-    public init(micInUseBySomeone: Bool, ourEngineRunning: Bool, conferencingAppRunning: Bool) {
+    public init(micInUseBySomeone: Bool, ourEngineRunning: Bool,
+                conferencingAppRunning: Bool, audioPlayingSomewhere: Bool = false) {
         self.micInUseBySomeone = micInUseBySomeone
         self.ourEngineRunning = ourEngineRunning
         self.conferencingAppRunning = conferencingAppRunning
+        self.audioPlayingSomewhere = audioPlayingSomewhere
     }
 }
 
@@ -52,10 +60,18 @@ public final class CallDetector {
     public func update(_ s: CallSignals) -> CallEvent? {
         lock.lock(); defer { lock.unlock() }
 
-        // Someone OTHER than us is capturing — the only honest evidence of a call.
+        // The microphone cannot be the primary signal any more: our own warm
+        // pre-roll engine holds it for as long as WhisperType runs, so "a mic is in
+        // use" is true every second of the day. Relying on it made the app
+        // "detect a call" at launch, latch, and then stay silent through the real
+        // one.
+        //
+        // A call is a conferencing app that is BOTH capturing and playing. Audio
+        // output is the honest half — WhisperType records but never plays, so it
+        // never contaminates that signal.
         let somebodyElseHasTheMic = s.micInUseBySomeone && !s.ourEngineRunning
-        let micBusyDuringAConference = s.micInUseBySomeone && s.conferencingAppRunning
-        let looksLikeACall = somebodyElseHasTheMic || micBusyDuringAConference
+        let conferenceIsLive = s.conferencingAppRunning && s.audioPlayingSomewhere
+        let looksLikeACall = conferenceIsLive || somebodyElseHasTheMic
 
         if looksLikeACall {
             negatives = 0

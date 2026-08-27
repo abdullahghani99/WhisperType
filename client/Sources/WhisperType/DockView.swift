@@ -137,7 +137,7 @@ public struct DockView: View {
             Circle()
                 .fill(VF.Color.accent)
                 .frame(width: 8, height: 8)
-            Text("Call detected")
+            Text("\(state.callSource) call")
                 .font(VF.Font.callout)
                 .foregroundColor(.vfWarmWhite)
             Button(action: onMeeting) {

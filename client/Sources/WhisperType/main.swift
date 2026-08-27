@@ -166,12 +166,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Ambient meetings: offer to record when a call starts, and stop by
         // itself when it ends. Two meetings were lost to "I forgot to press
         // record" and "I forgot to press stop"; this closes both.
-        callWatcher.isOurEngineRunning = { [weak self] in self?.recorder.isRecording ?? false }
+        callWatcher.isOurEngineRunning = { [weak self] in self?.recorder.isEngineRunning ?? false }
         callWatcher.onCallStarted = { [weak self] in
             guard let self = self else { return }
             // Never interrupt: if a meeting is already recording, say nothing.
             guard !self.meetingRecorder.isRecording else { return }
-            vlog("call detected — offering to record")
+            vlog("call detected via \(self.callWatcher.lastCallSource) — offering to record")
+            self.dockController.state.callSource = self.callWatcher.lastCallSource
             self.dockController.state.callOffer = true
             // The offer is a quiet one. If it is ignored it goes away rather
             // than nagging for the length of the call.
@@ -184,6 +185,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         callWatcher.onCallEnded = { [weak self] in
             guard let self = self else { return }
+            vlog("call ended")
             self.dockController.state.callOffer = false
             guard self.meetingRecorder.isRecording else { return }
             vlog("call ended — stopping the meeting recording automatically")

@@ -6,8 +6,9 @@ import XCTest
 /// normal work or stays silent through the meeting you needed captured.
 final class CallDetectorTests: XCTestCase {
 
-    private func s(mic: Bool, ours: Bool, app: Bool) -> CallSignals {
-        CallSignals(micInUseBySomeone: mic, ourEngineRunning: ours, conferencingAppRunning: app)
+    private func s(mic: Bool, ours: Bool, app: Bool, playing: Bool = false) -> CallSignals {
+        CallSignals(micInUseBySomeone: mic, ourEngineRunning: ours,
+                    conferencingAppRunning: app, audioPlayingSomewhere: playing)
     }
 
     func testNothingHappeningIsNotACall() {
@@ -26,6 +27,17 @@ final class CallDetectorTests: XCTestCase {
         }
     }
 
+    /// THE FAILURE THE USER HIT. Teams sits open all day and our warm engine
+    /// holds the mic all day. Together those must NOT read as a call, or the app
+    /// latches into "in a call" at launch and stays silent through the real one.
+    func testTeamsOpenAllDayWithOurWarmMicIsNotACall() {
+        let d = CallDetector()
+        for _ in 0..<40 {
+            XCTAssertNil(d.update(s(mic: true, ours: true, app: true, playing: false)),
+                         "app open + our own warm mic is an ordinary Tuesday, not a call")
+        }
+    }
+
     func testConferencingAppAloneIsNotACall() {
         // Teams sitting open in the background is not a meeting.
         let d = CallDetector()
@@ -37,40 +49,50 @@ final class CallDetectorTests: XCTestCase {
     func testCallStartsWhenAConferencingAppTakesTheMic() {
         let d = CallDetector()
         var event: CallEvent?
-        for _ in 0..<CallDetector.samplesToStart { event = d.update(s(mic: true, ours: true, app: true)) }
+        for _ in 0..<CallDetector.samplesToStart {
+            event = d.update(s(mic: true, ours: true, app: true, playing: true))
+        }
         XCTAssertEqual(event, .started)
     }
 
     func testStartIsDebouncedSoABriefBlipDoesNotNag() {
         let d = CallDetector()
         // One positive sample must not fire — apps touch the mic momentarily.
-        XCTAssertNil(d.update(s(mic: true, ours: false, app: true)))
-        XCTAssertNil(d.update(s(mic: false, ours: false, app: false)))
+        XCTAssertNil(d.update(s(mic: true, ours: true, app: true, playing: true)))
+        XCTAssertNil(d.update(s(mic: false, ours: true, app: false, playing: false)))
         // ...and the counter resets, so the blip cannot accumulate.
-        XCTAssertNil(d.update(s(mic: true, ours: false, app: true)))
+        XCTAssertNil(d.update(s(mic: true, ours: true, app: true, playing: true)))
     }
 
     func testCallEndsWhenTheMicIsReleased() {
         let d = CallDetector()
-        for _ in 0..<CallDetector.samplesToStart { _ = d.update(s(mic: true, ours: false, app: true)) }
+        for _ in 0..<CallDetector.samplesToStart {
+            _ = d.update(s(mic: true, ours: true, app: true, playing: true))
+        }
         var event: CallEvent?
-        for _ in 0..<CallDetector.samplesToEnd { event = d.update(s(mic: false, ours: false, app: true)) }
-        XCTAssertEqual(event, .ended, "releasing the mic ends the call — this is what auto-stop hangs on")
+        for _ in 0..<CallDetector.samplesToEnd {
+            event = d.update(s(mic: true, ours: true, app: true, playing: false))
+        }
+        XCTAssertEqual(event, .ended, "audio stops flowing when the call ends — auto-stop hangs on this")
     }
 
     func testEndIsDebouncedAcrossAShortDropout() {
         let d = CallDetector()
-        for _ in 0..<CallDetector.samplesToStart { _ = d.update(s(mic: true, ours: false, app: true)) }
+        for _ in 0..<CallDetector.samplesToStart {
+            _ = d.update(s(mic: true, ours: true, app: true, playing: true))
+        }
         // A single missed sample (device switch mid-call) must NOT end the call.
-        XCTAssertNil(d.update(s(mic: false, ours: false, app: true)))
-        XCTAssertNil(d.update(s(mic: true, ours: false, app: true)), "call continues")
+        XCTAssertNil(d.update(s(mic: true, ours: true, app: true, playing: false)))
+        XCTAssertNil(d.update(s(mic: true, ours: true, app: true, playing: true)), "call continues")
     }
 
     func testCallDoesNotStartTwice() {
         let d = CallDetector()
-        for _ in 0..<CallDetector.samplesToStart { _ = d.update(s(mic: true, ours: false, app: true)) }
+        for _ in 0..<CallDetector.samplesToStart {
+            _ = d.update(s(mic: true, ours: true, app: true, playing: true))
+        }
         for _ in 0..<10 {
-            XCTAssertNil(d.update(s(mic: true, ours: false, app: true)), "already in a call")
+            XCTAssertNil(d.update(s(mic: true, ours: true, app: true, playing: true)), "already in a call")
         }
     }
 

@@ -40,6 +40,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // Live meeting recorder (system audio + mic). Isolated from dictation.
     private let meetingRecorder = MeetingRecorder()
+    private let callWatcher = CallWatcher()
     private var meetingItem: NSMenuItem?
 
     private let rightOptionKeyCode: UInt16 = 61
@@ -112,6 +113,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // above other windows, including a Screen Sharing/VNC window. Stub
         // closures only — real wiring to AudioRecorder/AppController lands
         // in a later task.
+        if ProcessInfo.processInfo.environment["VF_CALL_OFFER"] == "1" {
+            // Screenshot harness for the ambient call offer.
+            dockController.show()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                self.dockController.state.callOffer = true
+            }
+            return
+        }
         if ProcessInfo.processInfo.environment["VF_OPEN_DOCK"] == "1" {
             NSApp.setActivationPolicy(.regular)
             showDockOpen()
@@ -153,6 +162,34 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // memory and overwritten continuously.
         UserDefaults.standard.register(defaults: ["vf_preroll": true])
         recorder.configurePreroll()       // start warm engine if pre-roll is enabled
+
+        // Ambient meetings: offer to record when a call starts, and stop by
+        // itself when it ends. Two meetings were lost to "I forgot to press
+        // record" and "I forgot to press stop"; this closes both.
+        callWatcher.isOurEngineRunning = { [weak self] in self?.recorder.isRecording ?? false }
+        callWatcher.onCallStarted = { [weak self] in
+            guard let self = self else { return }
+            // Never interrupt: if a meeting is already recording, say nothing.
+            guard !self.meetingRecorder.isRecording else { return }
+            vlog("call detected — offering to record")
+            self.dockController.state.callOffer = true
+            // The offer is a quiet one. If it is ignored it goes away rather
+            // than nagging for the length of the call.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+                if self.dockController.state.callOffer && !self.meetingRecorder.isRecording {
+                    self.dockController.state.callOffer = false
+                    vlog("call offer expired unanswered")
+                }
+            }
+        }
+        callWatcher.onCallEnded = { [weak self] in
+            guard let self = self else { return }
+            self.dockController.state.callOffer = false
+            guard self.meetingRecorder.isRecording else { return }
+            vlog("call ended — stopping the meeting recording automatically")
+            self.stopMeeting()
+        }
+        callWatcher.start()
 
         // Live-apply the pre-roll toggle from Settings without a relaunch:
         // enabling starts the always-warm engine now; disabling tears it down.
@@ -341,6 +378,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try await meetingRecorder.start()
                 await MainActor.run {
                     self.dockController.state.meetingRecording = true
+                    self.dockController.state.callOffer = false
                     // Tell the truth up front. A meeting that records only the
                     // other participants is worse than one that fails outright —
                     // you find out an hour later, when the audio is gone.

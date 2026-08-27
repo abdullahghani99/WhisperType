@@ -72,7 +72,9 @@ public struct DockView: View {
 
     public var body: some View {
         Group {
-            if state.phase == .idle {
+            if state.callOffer && state.phase == .idle {
+                callOfferBar
+            } else if state.phase == .idle {
                 // Minimal: at rest a tiny mic pill; one CLICK reveals ONLY the
                 // control bar. Click the bar's empty space to collapse.
                 if state.expanded || forceControls {
@@ -125,6 +127,40 @@ public struct DockView: View {
         }
         .contentShape(Circle())
         .onTapGesture { state.expanded = true }
+    }
+
+    /// A call is happening — offer to record it, once, quietly. One click starts;
+    /// ignoring it lets it fade. It never records on its own, because not every
+    /// call is one you want captured.
+    private var callOfferBar: some View {
+        HStack(spacing: VF.Space.md) {
+            Circle()
+                .fill(VF.Color.accent)
+                .frame(width: 8, height: 8)
+            Text("Call detected")
+                .font(VF.Font.callout)
+                .foregroundColor(.vfWarmWhite)
+            Button(action: onMeeting) {
+                Text("Record")
+                    .font(VF.Font.caption)
+                    .foregroundColor(.vfSurfaceBottom)
+                    .padding(.horizontal, VF.Space.md)
+                    .padding(.vertical, VF.Space.xs)
+                    .background(Capsule().fill(Color.vfWarmWhite))
+            }
+            .buttonStyle(.plain)
+            Button(action: { state.callOffer = false }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.vfMuted)
+            }
+            .buttonStyle(.plain)
+            .help("Not this one")
+        }
+        .padding(.horizontal, VF.Space.lg)
+        .frame(height: 44)
+        .fixedSize(horizontal: true, vertical: false)
+        .background(dockSurface)
     }
 
     // MARK: Main capsule

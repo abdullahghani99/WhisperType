@@ -14,6 +14,9 @@ public final class DockState: ObservableObject {
     /// A meeting is actively being captured (drives the dock's record button and
     /// resting-pill indicator, so you can always tell recording is running).
     @Published public var meetingRecording: Bool = false
+    /// A call was detected and we are offering to record it. Never set without a
+    /// real call — a nagging dock is worse than one that stays quiet.
+    @Published public var callOffer: Bool = false
     @Published public var errorText: String = ""
     /// Whether the control bar is revealed (click to expand). Lives here (not as
     /// SwiftUI @State) so toggling it notifies the controller to RESIZE the

@@ -16,6 +16,11 @@ final class DockController {
     /// The fixed bottom-center anchor the dock grows/shrinks around, so expanding
     /// from the tiny idle pill to the full capsule stays centered in place.
     private var anchor: NSPoint?
+    /// Where the dock sits on EACH display. One shared position meant it stayed
+    /// on whichever screen was main at launch — which is why it kept turning up
+    /// off to one side on a multi-monitor desk.
+    private let placement = DockPlacement(store: .standard)
+    private var lastScreenID: String?
 
     var onToggleRecord: () -> Void = {}
     var onPickMic: (String) -> Void = { _ in }
@@ -122,6 +127,36 @@ final class DockController {
         p.setFrame(NSRect(origin: origin, size: size), display: true)
     }
 
+    /// A stable identity for a display, so a remembered position survives sleep,
+    /// re-plugging and reordering.
+    private static func screenID(_ screen: NSScreen) -> String {
+        let n = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        let f = screen.frame
+        return "\(n?.intValue ?? 0)-\(Int(f.width))x\(Int(f.height))"
+    }
+
+    /// The screen the human is actually working on: the one with the cursor.
+    private static func activeScreen() -> NSScreen? {
+        let mouse = NSEvent.mouseLocation
+        return NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
+            ?? NSScreen.main ?? NSScreen.screens.first
+    }
+
+    /// Move the dock to the active display, restoring where it was parked there.
+    func followActiveScreen() {
+        guard let screen = Self.activeScreen() else { return }
+        let id = Self.screenID(screen)
+        guard id != lastScreenID else { return }
+        lastScreenID = id
+        if let p = placement.position(forScreen: id) {
+            anchor = NSPoint(x: p.x, y: p.y)
+        } else {
+            let f = screen.visibleFrame
+            anchor = NSPoint(x: f.midX, y: f.minY + 8)
+        }
+        resizeToFit()
+    }
+
     private func initialAnchor() -> NSPoint {
         if let saved = Self.loadSavedOrigin() { return saved }
         let f = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
@@ -131,8 +166,13 @@ final class DockController {
     /// User dragged the panel — recompute the anchor from its new bottom-center.
     private func userMoved() {
         guard let p = panel else { return }
-        anchor = NSPoint(x: p.frame.midX, y: p.frame.minY)
-        UserDefaults.standard.set(NSStringFromPoint(anchor!), forKey: Self.originDefaultsKey)
+        let a = NSPoint(x: p.frame.midX, y: p.frame.minY)
+        anchor = a
+        if let screen = Self.activeScreen() {
+            let id = Self.screenID(screen)
+            lastScreenID = id
+            placement.remember(x: Double(a.x), y: Double(a.y), forScreen: id)
+        }
     }
 
     private static func loadSavedOrigin() -> NSPoint? {

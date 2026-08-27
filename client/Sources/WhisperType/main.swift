@@ -117,6 +117,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Screenshot harness for the ambient call offer.
             dockController.show()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                let raw = ProcessInfo.processInfo.environment["VF_CALL_APP"] ?? "Microsoft Teams ModuleHost"
+                self.dockController.state.callTitle = CallSource.offerTitle(for: raw)
+                if let app = NSWorkspace.shared.runningApplications.first(where: {
+                    ($0.localizedName ?? "").localizedCaseInsensitiveContains(CallSource.friendlyName(raw))
+                }), let icon = app.icon, let tiff = icon.tiffRepresentation,
+                   let rep = NSBitmapImageRep(data: tiff) {
+                    self.dockController.state.callIconPNG = rep.representation(using: .png, properties: [:])
+                }
                 self.dockController.state.callOffer = true
             }
             return
@@ -169,19 +177,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         callWatcher.isOurEngineRunning = { [weak self] in self?.recorder.isEngineRunning ?? false }
         callWatcher.onCallStarted = { [weak self] in
             guard let self = self else { return }
-            // Never interrupt: if a meeting is already recording, say nothing.
+            // Never interrupt a recording that is already running.
             guard !self.meetingRecorder.isRecording else { return }
-            vlog("call detected via \(self.callWatcher.lastCallSource) — offering to record")
-            self.dockController.state.callSource = self.callWatcher.lastCallSource
+            let raw = self.callWatcher.lastCallSource
+            vlog("call detected via \(raw) — offering to record")
+            self.dockController.state.callTitle = CallSource.offerTitle(for: raw)
+            self.dockController.state.callIconPNG = self.callWatcher.lastCallIconPNG
             self.dockController.state.callOffer = true
-            // The offer is a quiet one. If it is ignored it goes away rather
-            // than nagging for the length of the call.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
-                if self.dockController.state.callOffer && !self.meetingRecorder.isRecording {
-                    self.dockController.state.callOffer = false
-                    vlog("call offer expired unanswered")
-                }
-            }
+            // The offer stays for as long as the call does. A 12-second window
+            // assumed the human was watching the screen at the exact moment a
+            // call began — usually they are looking at the person, or reaching
+            // for headphones. It disappears when the call ends, or when
+            // dismissed, and never nags beyond that.
         }
         callWatcher.onCallEnded = { [weak self] in
             guard let self = self else { return }

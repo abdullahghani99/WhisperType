@@ -17,9 +17,12 @@ public final class DockState: ObservableObject {
     /// A call was detected and we are offering to record it. Never set without a
     /// real call — a nagging dock is worse than one that stays quiet.
     @Published public var callOffer: Bool = false
-    /// What we saw capturing, so the offer can say "Microsoft Teams call" rather
-    /// than a vague "call detected" the human has to take on faith.
-    @Published public var callSource: String = "a call"
+    /// The line the offer shows, already humanised ("Teams call"). Built by
+    /// CallSource so it can never read like a glitch.
+    @Published public var callTitle: String = "Call detected"
+    /// PNG bytes of the calling app's icon. Showing the actual app is what makes
+    /// the offer feel like it belongs to the call rather than to us.
+    @Published public var callIconPNG: Data?
     @Published public var errorText: String = ""
     /// Whether the control bar is revealed (click to expand). Lives here (not as
     /// SwiftUI @State) so toggling it notifies the controller to RESIZE the

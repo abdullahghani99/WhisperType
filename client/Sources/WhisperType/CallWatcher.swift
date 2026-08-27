@@ -14,7 +14,9 @@ final class CallWatcher {
     private let detector = CallDetector()
     private var timer: Timer?
     /// What we saw capturing when the call began (e.g. "Microsoft Teams").
-    private(set) var lastCallSource: String = "a call"
+    private(set) var lastCallSource: String = ""
+    /// The calling app icon, as PNG, for the dock to show.
+    private(set) var lastCallIconPNG: Data?
     /// Asked at each poll: is OUR audio engine holding the mic right now? Without
     /// this the warm pre-roll engine makes every moment look like a call.
     var isOurEngineRunning: () -> Bool = { false }
@@ -59,7 +61,8 @@ final class CallWatcher {
             audioPlayingSomewhere: false)
         switch detector.update(signals) {
         case .started:
-            lastCallSource = others.first ?? "a call"
+            lastCallSource = others.first?.name ?? ""
+            lastCallIconPNG = others.first?.iconPNG
             onCallStarted()
         case .ended:
             onCallEnded()
@@ -71,7 +74,9 @@ final class CallWatcher {
     /// Which processes OTHER than WhisperType are capturing audio right now.
     /// Available since macOS 14.2; if the property is missing we simply never
     /// report a call rather than falling back to a guess that cries wolf.
-    private static func otherProcessesCapturing() -> [String] {
+    struct Capturer { let name: String; let iconPNG: Data? }
+
+    private static func otherProcessesCapturing() -> [Capturer] {
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyProcessObjectList,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -85,16 +90,22 @@ final class CallWatcher {
                                          &addr, 0, nil, &size, &objs) == noErr else { return [] }
 
         let mine = ProcessInfo.processInfo.processIdentifier
-        var names: [String] = []
+        var found: [Capturer] = []
         for o in objs {
             guard readU32(o, kAudioProcessPropertyIsRunningInput) == 1 else { continue }
             guard let raw = readU32(o, kAudioProcessPropertyPID) else { continue }
             let pid = Int32(bitPattern: raw)
             guard pid != mine, pid > 0 else { continue }
-            let name = NSRunningApplication(processIdentifier: pid)?.localizedName ?? "pid \(pid)"
-            names.append(name)
+            let app = NSRunningApplication(processIdentifier: pid)
+            let name = app?.localizedName ?? "pid \(pid)"
+            var png: Data?
+            if let icon = app?.icon, let tiff = icon.tiffRepresentation,
+               let rep = NSBitmapImageRep(data: tiff) {
+                png = rep.representation(using: .png, properties: [:])
+            }
+            found.append(Capturer(name: name, iconPNG: png))
         }
-        return names
+        return found
     }
 
     private static func readU32(_ id: AudioObjectID, _ sel: AudioObjectPropertySelector) -> UInt32? {

@@ -74,6 +74,7 @@ public struct DockView: View {
         Group {
             if state.callOffer && state.phase == .idle {
                 callOfferBar
+                    .animation(.spring(response: 0.34, dampingFraction: 0.82), value: state.callOffer)
             } else if state.phase == .idle {
                 // Minimal: at rest a tiny mic pill; one CLICK reveals ONLY the
                 // control bar. Click the bar's empty space to collapse.
@@ -134,12 +135,26 @@ public struct DockView: View {
     /// call is one you want captured.
     private var callOfferBar: some View {
         HStack(spacing: VF.Space.md) {
-            Circle()
-                .fill(VF.Color.accent)
-                .frame(width: 8, height: 8)
-            Text("\(state.callSource) call")
-                .font(VF.Font.callout)
-                .foregroundColor(.vfWarmWhite)
+            // The calling app's own icon: the offer should feel attached to the
+            // call, not like a notification from somewhere else.
+            if let data = state.callIconPNG, let img = NSImage(data: data) {
+                Image(nsImage: img)
+                    .resizable()
+                    .frame(width: 20, height: 20)
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+            } else {
+                Circle().fill(VF.Color.accent).frame(width: 8, height: 8)
+            }
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(state.callTitle)
+                    .font(VF.Font.callout)
+                    .foregroundColor(.vfWarmWhite)
+                Text("Record it?")
+                    .font(VF.Font.caption)
+                    .foregroundColor(.vfMuted)
+            }
+
             Button(action: onMeeting) {
                 Text("Record")
                     .font(VF.Font.caption)
@@ -149,6 +164,7 @@ public struct DockView: View {
                     .background(Capsule().fill(Color.vfWarmWhite))
             }
             .buttonStyle(.plain)
+
             Button(action: { state.callOffer = false }) {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .semibold))
@@ -158,9 +174,12 @@ public struct DockView: View {
             .help("Not this one")
         }
         .padding(.horizontal, VF.Space.lg)
-        .frame(height: 44)
+        .frame(height: 52)
         .fixedSize(horizontal: true, vertical: false)
         .background(dockSurface)
+        // Arrive gently rather than snapping into existence — the one place a
+        // little motion is earned, because something just happened in the world.
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     // MARK: Main capsule

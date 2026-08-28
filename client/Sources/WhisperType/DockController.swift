@@ -262,14 +262,22 @@ final class DockController {
         return list
     }
 
-    /// The top edge of the Dock in bottom-left coordinates, or nil when it is
-    /// hidden or lives on another display.
+    /// Three genuinely different answers, because they need different responses:
+    /// we can see the Dock and it is up; we can see it and it is not in our way;
+    /// or we cannot see it at all and have to guess.
+    private enum DockProbe {
+        case top(CGFloat)
+        case away
+        case blind
+    }
+
+    /// Where the Dock's top edge is, in bottom-left coordinates.
     ///
     /// The Dock has no window of its own to measure: when auto-hidden it reports
     /// only a full-screen layer, so reading the window list yielded the top of the
     /// SCREEN and flung the pill upward. Accessibility reports the icon list's
     /// real frame -- flush off the bottom edge when hidden, lifted when shown.
-    private func revealedDockTop(on screen: NSScreen) -> CGFloat? {
+    private func dockProbe(on screen: NSScreen) -> DockProbe {
         // One AX round trip per tick. A stale handle (the Dock restarted) simply
         // fails to answer, so re-acquire and try once more rather than paying for
         // a separate liveness probe every tick.
@@ -278,11 +286,36 @@ final class DockController {
             dockList = nil
             frame = acquireDockList().flatMap { Self.axFrame($0) }
         }
-        guard let f = frame else { return nil }
-        let nsTop = Self.primaryHeight() - f.minY
-        guard nsTop > 2 else { return nil }                    // flush off-screen = hidden
-        guard f.midX >= screen.frame.minX, f.midX <= screen.frame.maxX else { return nil }
-        return nsTop
+        guard let f = frame else { return .blind }
+
+        // AX reports top-left origin; convert the WHOLE rect, not just one edge.
+        // Reading only the top meant a left- or right-hand Dock -- whose icon list
+        // runs the height of the display -- was read as a very tall bottom Dock,
+        // sending the pill to 1216pt, near the top of the screen. Measured.
+        let ns = NSRect(x: f.minX, y: Self.primaryHeight() - f.maxY,
+                        width: f.width, height: f.height)
+        guard ns.width > ns.height else { return .away }        // side Dock: not our problem
+        guard ns.midX >= screen.frame.minX, ns.midX <= screen.frame.maxX else { return .away }
+        // Bottom quarter, not "flush to the edge": with Dock magnification the
+        // icon list rides ~10pt above the bottom, and a 4pt tolerance rejected a
+        // real revealed Dock outright. Still excludes a Dock on another display
+        // in a vertically stacked arrangement.
+        guard ns.minY < screen.frame.minY + screen.frame.height * 0.25 else { return .away }
+        guard ns.maxY > screen.frame.minY + 2 else { return .away }    // flush off-screen = hidden
+        return .top(ns.maxY)
+    }
+
+    /// Without Accessibility we cannot see the Dock at all, so fall back to what
+    /// the Dock's own preferences imply. Only reachable before permission is
+    /// granted -- but in exactly that window the pill would otherwise sit under a
+    /// revealed Dock.
+    private static func blindInset(for screen: NSScreen) -> CGFloat {
+        let reserved = screen.visibleFrame.minY - screen.frame.minY
+        if reserved > 4 { return reserved + 12 }               // a pinned Dock reserves space
+        let d = UserDefaults(suiteName: "com.apple.dock")
+        guard d?.bool(forKey: "autohide") == true,
+              (d?.string(forKey: "orientation") ?? "bottom") == "bottom" else { return 14 }
+        return CGFloat(d?.double(forKey: "tilesize") ?? 48) + 34
     }
 
     /// Follow the Dock: rest low when it is hidden, glide up when it appears.
@@ -307,10 +340,14 @@ final class DockController {
 
     private func followDockVisibility() {
         guard let screen = Self.activeScreen() ?? NSScreen.main else { return }
-        let probe = revealedDockTop(on: screen)
-        dockLog("trusted=\(AXIsProcessTrusted()) list=\(dockList != nil) top=\(probe.map { String(Int($0)) } ?? "nil") mouseY=\(Int(NSEvent.mouseLocation.y))")
-        let target = probe.map { $0 + 10 }
-            ?? (screen.visibleFrame.minY + 14)
+        let probe = dockProbe(on: screen)
+        let target: CGFloat
+        switch probe {
+        case .top(let t): target = t + 10
+        case .away:      target = screen.visibleFrame.minY + 14
+        case .blind:     target = screen.frame.minY + Self.blindInset(for: screen)
+        }
+        dockLog("probe=\(probe) target=\(Int(target)) mouseY=\(Int(NSEvent.mouseLocation.y))")
         guard abs(target - lastDockTop) > 1 else { return }
         lastDockTop = target
         anchor = NSPoint(x: anchor?.x ?? screen.visibleFrame.midX, y: target)

@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import SwiftUI
 
 /// Hosting view for an oversized, mostly-transparent panel.
@@ -120,6 +121,11 @@ final class DockController {
     /// fixed spot and one that feels aware of its surroundings.
     private var dockWatchTimer: Timer?
     private var lastDockTop: CGFloat = -1
+    /// The Dock's icon list, held across ticks. Re-reading its position costs
+    /// 0.089ms; re-finding it costs 0.24ms and reading the whole window list
+    /// costs 0.756ms. Caching it is what makes watching the Dock cheap enough
+    /// to simply do every tick instead of guarding it behind heuristics.
+    private var dockList: AXUIElement?
 
     private func shapeKey() -> String {
         "\(state.phase)|\(state.expanded)|\(state.callOffer)|\(state.micName)|\(state.errorText)|\(state.callTitle)|\(Int(state.elapsed))"
@@ -217,33 +223,59 @@ final class DockController {
         resizeToFit()
     }
 
-    /// The top edge of the macOS Dock in bottom-left coordinates, or nil when it
-    /// is hidden. When auto-hide is on, the Dock has no strip window at all —
-    /// only the wallpaper — so its very presence is the reveal signal.
-    static func revealedDockTop() -> CGFloat? {
-        guard let screen = activeScreen() ?? NSScreen.main,
-              let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]
+    /// Global CG coordinates are measured from the top-left of the PRIMARY
+    /// display, so this is the only height that converts them correctly -- using
+    /// the active screen's height is wrong the moment a second display exists.
+    private static func primaryHeight() -> CGFloat {
+        (NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.screens[0]).frame.height
+    }
+
+    private static func axFrame(_ e: AXUIElement) -> CGRect? {
+        var pv: CFTypeRef?, sv: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(e, kAXPositionAttribute as CFString, &pv) == .success,
+              AXUIElementCopyAttributeValue(e, kAXSizeAttribute as CFString, &sv) == .success,
+              let pval = pv, let sval = sv,
+              CFGetTypeID(pval) == AXValueGetTypeID(), CFGetTypeID(sval) == AXValueGetTypeID()
         else { return nil }
-        let screenH = screen.frame.height
-        for w in list {
-            guard (w[kCGWindowOwnerName as String] as? String) == "Dock" else { continue }
-            let name = (w[kCGWindowName as String] as? String) ?? ""
-            if name.hasPrefix("Wallpaper") { continue }
-            let b = (w[kCGWindowBounds as String] as? [String: Any]) ?? [:]
-            let y = (b["Y"] as? Double) ?? 0
-            let wd = (b["Width"] as? Double) ?? 0
-            let ht = (b["Height"] as? Double) ?? 0
-            // The Dock process also owns a FULL-SCREEN desktop layer. Taking that
-            // for the Dock strip computed a "top" equal to the top of the screen
-            // and threw the pill to the top of the display. A real Dock strip is
-            // short: tens of points tall, never most of the screen.
-            guard wd > 100, ht > 20, ht < 220, CGFloat(ht) < screenH * 0.4 else { continue }
-            let nsBottom = screenH - CGFloat(y) - CGFloat(ht)
-            let nsTop = nsBottom + CGFloat(ht)
-            // Only a Dock sitting along the bottom should push us up.
-            if nsBottom < 40 { return nsTop }
-        }
-        return nil
+        var p = CGPoint.zero, sz = CGSize.zero
+        AXValueGetValue(pval as! AXValue, .cgPoint, &p)
+        AXValueGetValue(sval as! AXValue, .cgSize, &sz)
+        return CGRect(origin: p, size: sz)
+    }
+
+    /// Find and cache the Dock's icon list. Re-acquired transparently whenever a
+    /// Dock restart (`killall Dock`, a settings change) invalidates our handle.
+    private func acquireDockList() -> AXUIElement? {
+        if let l = dockList, Self.axFrame(l) != nil { return l }
+        dockList = nil
+        guard AXIsProcessTrusted(),
+              let dock = NSRunningApplication.runningApplications(
+                  withBundleIdentifier: "com.apple.dock").first
+        else { return nil }
+        let app = AXUIElementCreateApplication(dock.processIdentifier)
+        // Never let a wedged Dock stall our main thread.
+        AXUIElementSetMessagingTimeout(app, 0.25)
+        var kids: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXChildrenAttribute as CFString, &kids) == .success,
+              let list = (kids as? [AXUIElement])?.first else { return nil }
+        AXUIElementSetMessagingTimeout(list, 0.25)
+        dockList = list
+        return list
+    }
+
+    /// The top edge of the Dock in bottom-left coordinates, or nil when it is
+    /// hidden or lives on another display.
+    ///
+    /// The Dock has no window of its own to measure: when auto-hidden it reports
+    /// only a full-screen layer, so reading the window list yielded the top of the
+    /// SCREEN and flung the pill upward. Accessibility reports the icon list's
+    /// real frame -- flush off the bottom edge when hidden, lifted when shown.
+    private func revealedDockTop(on screen: NSScreen) -> CGFloat? {
+        guard let list = acquireDockList(), let f = Self.axFrame(list) else { return nil }
+        let nsTop = Self.primaryHeight() - f.minY
+        guard nsTop > 2 else { return nil }                    // flush off-screen = hidden
+        guard f.midX >= screen.frame.minX, f.midX <= screen.frame.maxX else { return nil }
+        return nsTop
     }
 
     /// Follow the Dock: rest low when it is hidden, glide up when it appears.
@@ -256,10 +288,22 @@ final class DockController {
         dockWatchTimer = t
     }
 
+    /// Behind `vf_dock_debug`, so a placement complaint can be diagnosed from a
+    /// log instead of guessed at.
+    private func dockLog(_ s: @autoclosure () -> String) {
+        guard UserDefaults.standard.bool(forKey: "vf_dock_debug") else { return }
+        let line = "\(ISO8601DateFormatter().string(from: Date())) [dock] \(s())\n"
+        if let h = FileHandle(forWritingAtPath: "/tmp/whispertype-client.log") {
+            h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile()
+        }
+    }
+
     private func followDockVisibility() {
         guard let screen = Self.activeScreen() ?? NSScreen.main else { return }
-        let revealed = Self.revealedDockTop()
-        let target = revealed.map { $0 + 10 } ?? (screen.visibleFrame.minY + 14)
+        let probe = revealedDockTop(on: screen)
+        dockLog("trusted=\(AXIsProcessTrusted()) list=\(dockList != nil) top=\(probe.map { String(Int($0)) } ?? "nil") mouseY=\(Int(NSEvent.mouseLocation.y))")
+        let target = probe.map { $0 + 10 }
+            ?? (screen.visibleFrame.minY + 14)
         guard abs(target - lastDockTop) > 1 else { return }
         lastDockTop = target
         anchor = NSPoint(x: anchor?.x ?? screen.visibleFrame.midX, y: target)
@@ -291,30 +335,10 @@ final class DockController {
         guard let screen = screen ?? NSScreen.main else { return .zero }
         let v = screen.visibleFrame
         // Start low; the Dock watcher lifts us the moment the Dock appears.
-        let start = revealedDockTop().map { $0 + 10 } ?? (v.minY + 14)
-        return NSPoint(x: v.midX, y: start)
+        // Start low; the Dock watcher lifts us on its first tick.
+        return NSPoint(x: v.midX, y: v.minY + 14)
     }
 
-    /// How far above the bottom the dock should sit.
-    ///
-    /// `visibleFrame` reserves space for a PINNED Dock, but reserves nothing when
-    /// the Dock auto-hides — so anchoring to it put our pill at the very bottom
-    /// edge, where the Dock slides up and covers it. When the Dock auto-hides at
-    /// the bottom we reserve room for it ourselves.
-    static func bottomInset(for screen: NSScreen) -> CGFloat {
-        let reserved = screen.visibleFrame.minY - screen.frame.minY
-        if reserved > 4 { return reserved + 12 }        // Dock is pinned: clear it
-
-        let dockDefaults = UserDefaults(suiteName: "com.apple.dock")
-        let autohides = dockDefaults?.bool(forKey: "autohide") ?? false
-        let orientation = dockDefaults?.string(forKey: "orientation") ?? "bottom"
-        if autohides && orientation == "bottom" {
-            // Tile size plus padding; the revealed Dock is roughly tile + 26.
-            let tile = dockDefaults?.double(forKey: "tilesize") ?? 48
-            return CGFloat(tile) + 34
-        }
-        return 16
-    }
 
     /// User dragged the panel — recompute the anchor from its new bottom-center.
     private func userMoved() {

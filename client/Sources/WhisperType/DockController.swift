@@ -227,7 +227,7 @@ final class DockController {
     /// display, so this is the only height that converts them correctly -- using
     /// the active screen's height is wrong the moment a second display exists.
     private static func primaryHeight() -> CGFloat {
-        (NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.screens[0]).frame.height
+        NSScreen.screens.first?.frame.height ?? 0     // screens[0] is the primary
     }
 
     private static func axFrame(_ e: AXUIElement) -> CGRect? {
@@ -246,8 +246,7 @@ final class DockController {
     /// Find and cache the Dock's icon list. Re-acquired transparently whenever a
     /// Dock restart (`killall Dock`, a settings change) invalidates our handle.
     private func acquireDockList() -> AXUIElement? {
-        if let l = dockList, Self.axFrame(l) != nil { return l }
-        dockList = nil
+        if let l = dockList { return l }
         guard AXIsProcessTrusted(),
               let dock = NSRunningApplication.runningApplications(
                   withBundleIdentifier: "com.apple.dock").first
@@ -271,7 +270,15 @@ final class DockController {
     /// SCREEN and flung the pill upward. Accessibility reports the icon list's
     /// real frame -- flush off the bottom edge when hidden, lifted when shown.
     private func revealedDockTop(on screen: NSScreen) -> CGFloat? {
-        guard let list = acquireDockList(), let f = Self.axFrame(list) else { return nil }
+        // One AX round trip per tick. A stale handle (the Dock restarted) simply
+        // fails to answer, so re-acquire and try once more rather than paying for
+        // a separate liveness probe every tick.
+        var frame = acquireDockList().flatMap { Self.axFrame($0) }
+        if frame == nil {
+            dockList = nil
+            frame = acquireDockList().flatMap { Self.axFrame($0) }
+        }
+        guard let f = frame else { return nil }
         let nsTop = Self.primaryHeight() - f.minY
         guard nsTop > 2 else { return nil }                    // flush off-screen = hidden
         guard f.midX >= screen.frame.minX, f.midX <= screen.frame.maxX else { return nil }
@@ -281,7 +288,7 @@ final class DockController {
     /// Follow the Dock: rest low when it is hidden, glide up when it appears.
     private func startDockWatch() {
         dockWatchTimer?.invalidate()
-        let t = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        let t = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.followDockVisibility()
         }
         RunLoop.main.add(t, forMode: .common)
@@ -307,12 +314,11 @@ final class DockController {
         guard abs(target - lastDockTop) > 1 else { return }
         lastDockTop = target
         anchor = NSPoint(x: anchor?.x ?? screen.visibleFrame.midX, y: target)
-        // Glide rather than jump: the Dock animates, so we animate with it.
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.18
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            resizeToFit()
-        }
+        // No animation here on purpose: resizeToFit uses setFrame, which
+        // NSAnimationContext does not touch, so wrapping it only looked like
+        // easing. The motion you see is real -- we sample the Dock's OWN
+        // animation often enough to follow it up and down.
+        resizeToFit()
     }
 
     private func initialAnchor() -> NSPoint {

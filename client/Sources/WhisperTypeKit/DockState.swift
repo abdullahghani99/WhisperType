@@ -32,8 +32,23 @@ public final class DockState: ObservableObject {
 
     public init() {}
 
-    public func begin() { phase = .listening; elapsed = 0; level = 0; errorText = "" }
-    public func setLevel(_ v: Float) { if phase == .listening { level = max(0, min(1, v)) } }
+    public func begin() {
+        phase = .listening; elapsed = 0; level = 0; errorText = ""
+        levels = Array(repeating: 0, count: 24)
+    }
+    /// The last N levels, oldest first — so the waveform shows speech TRAVELLING
+    /// across the dock rather than one fixed shape breathing uniformly. Without
+    /// history there is no time in the picture, and the accent bars sat at fixed
+    /// indices meaning nothing.
+    @Published public var levels: [Float] = Array(repeating: 0, count: 24)
+
+    public func setLevel(_ v: Float) {
+        guard phase == .listening else { return }
+        let clamped = max(0, min(1, v))
+        level = clamped
+        levels.removeFirst()
+        levels.append(clamped)
+    }
     public func finishRecording() { if phase == .listening { phase = .transcribing } }
     /// Words inserted by the last dictation, so the success state can say what
     /// actually happened instead of falling back to an instruction hint.

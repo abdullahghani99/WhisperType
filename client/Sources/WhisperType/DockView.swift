@@ -54,6 +54,7 @@ public struct DockView: View {
     let micDevices: () -> [(uid: String, name: String)]
 
     @State private var transcribingPulse = false
+    @State private var hovering = false
     /// Honour the system setting rather than assuming everyone wants movement.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Preview/testability only: force the hover control row visible for
@@ -99,6 +100,12 @@ public struct DockView: View {
         }
         .padding(16)   // room for the capsule's drop shadow
         .fixedSize()
+        // At rest the dock sits over whatever you are reading, so it steps back:
+        // translucent while idle and untouched, fully present the moment you
+        // point at it or it has something to say. This is the difference between
+        // a tool that waits and one that is in the way.
+        .opacity(shellOpacity)
+        .onHover { hovering = $0 }
         // Motion is now safe: the panel is a fixed oversized window, so nothing
         // clips mid-animation. A state change is exactly where motion is earned —
         // this surface changes state six times per dictation, and instant cuts
@@ -112,6 +119,16 @@ public struct DockView: View {
         .onChange(of: state.phase) { newPhase in
             if newPhase != .idle { state.expanded = false }
         }
+    }
+
+    /// Fully present whenever something is happening or the pointer is near;
+    /// quietly out of the way otherwise.
+    private var shellOpacity: Double {
+        if hovering { return 1.0 }
+        if state.phase != .idle { return 1.0 }      // listening, polishing, done, error
+        if state.callOffer || state.meetingRecording { return 1.0 }
+        if state.expanded { return 1.0 }            // you opened it, so you are using it
+        return 0.55
     }
 
     /// The single resting state: JUST the mic glyph — no circle chrome. Bigger and
@@ -289,6 +306,11 @@ public struct DockView: View {
 
             Text(elapsedString)
                 .font(VF.Font.heading.monospacedDigit())
+                // Inter ships proportional figures by default and SwiftUI's
+                // monospacedDigit() is not reliable on a custom face, so 0:11 and
+                // 0:88 render at different widths and the whole dock shifts every
+                // second. A fixed width pins it regardless.
+                .frame(width: 38, alignment: .trailing)
                 .foregroundColor(.vfWarmWhite)
         }
     }
@@ -297,7 +319,7 @@ public struct DockView: View {
         HStack(spacing: 3) {
             ForEach(0 ..< vfWaveformBarCount, id: \.self) { i in
                 Capsule()
-                    .fill(vfWaveformAccentIndices.contains(i)
+                    .fill(i == loudestIndex
                           ? Color.vfAccent
                           : Color.vfWarmWhite.opacity(0.85))
                     .frame(width: 2.5, height: barHeight(at: i))
@@ -307,8 +329,21 @@ public struct DockView: View {
     }
 
     private func barHeight(at index: Int) -> CGFloat {
-        let scale = 0.25 + 0.75 * CGFloat(state.level)
-        return max(2, vfWaveformEnvelope[index] * vfWaveformBarMaxHeight * scale)
+        let history = state.levels
+        let sample = index < history.count ? CGFloat(history[index]) : 0
+        // Envelope keeps it reading as a waveform even in silence; the sample is
+        // what makes it YOUR voice rather than a decoration.
+        let shaped = 0.18 + 0.82 * sample
+        return max(2, vfWaveformEnvelope[index] * vfWaveformBarMaxHeight * shaped)
+    }
+
+    /// The accent follows the loudest bar in the window, so the red is the peak
+    /// of your own voice moving through the dock. It used to sit at fixed
+    /// indices 11 and 12, which made it decoration rather than signal.
+    private var loudestIndex: Int? {
+        let history = state.levels
+        guard let maxV = history.max(), maxV > 0.08 else { return nil }
+        return history.firstIndex(of: maxV)
     }
 
     private var elapsedString: String {

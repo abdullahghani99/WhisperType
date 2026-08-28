@@ -577,7 +577,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Renders DockView in its states for screenshot verification (VF_DOCK_PREVIEW=1).
     private func showDockPreview() {
         let idle = DockState(); idle.serverOK = true
-        let listening = DockState(); listening.begin(); listening.setLevel(0.7); listening.elapsed = 8
+        let listening = DockState(); listening.begin(); listening.elapsed = 8
+        // A real speech envelope so the preview shows the waveform as it actually
+        // behaves — travelling, with the accent on the peak.
+        for v in [0.05, 0.08, 0.15, 0.3, 0.55, 0.8, 0.95, 0.7, 0.5, 0.62, 0.85, 0.6,
+                  0.35, 0.2, 0.28, 0.45, 0.7, 0.55, 0.3, 0.18, 0.1, 0.06, 0.04, 0.03] as [Float] {
+            listening.setLevel(v)
+        }
         let controls = DockState(); controls.serverOK = true; controls.micName = "MacBook Pro Mic"
         let mics: () -> [(uid: String, name: String)] = {
             [("a", "MacBook Pro Mic"), ("b", "Beats Studio Buds"), ("c", "BlackHole 2ch")]

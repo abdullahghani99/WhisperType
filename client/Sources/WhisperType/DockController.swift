@@ -50,7 +50,11 @@ final class DockController {
     func show() {
         if panel == nil { panel = makePanel() }
         if anchor == nil { anchor = initialAnchor() }
-        resizeToFit()
+        let key = shapeKey()
+        if key != lastShape {
+            lastShape = key
+            resizeToFit()
+        }
         panel?.orderFrontRegardless()
     }
 
@@ -105,6 +109,16 @@ final class DockController {
 
     /// Runs on every published change. Cheap and idempotent: manage the elapsed
     /// timer by phase, auto-clear a stuck error, and re-fit when size changed.
+    /// The last shape-affecting state we resized for. `objectWillChange` fires on
+    /// every audio level update — dozens per second — and each one used to run a
+    /// full SwiftUI layout pass plus a window resize on the main thread. Only the
+    /// things that actually change the dock's SIZE should do that.
+    private var lastShape: String = ""
+
+    private func shapeKey() -> String {
+        "\(state.phase)|\(state.expanded)|\(state.callOffer)|\(state.micName)|\(state.errorText)|\(state.callTitle)|\(Int(state.elapsed))"
+    }
+
     private func stateChanged() {
         // Elapsed timer: tick once per second while listening.
         if state.phase == .listening {
@@ -198,9 +212,18 @@ final class DockController {
     }
 
     private func initialAnchor() -> NSPoint {
+        // Positions saved before the panel became a fixed 620pt window were
+        // computed against a capsule that hugged its content, so restoring one
+        // now lands the dock in the wrong place. Retire those once.
+        let migrationKey = "vf_dockAnchorMigratedV2"
+        if !UserDefaults.standard.bool(forKey: migrationKey) {
+            UserDefaults.standard.removeObject(forKey: "vf_dockOrigin")
+            UserDefaults.standard.removeObject(forKey: "vf_dockPositions")
+            UserDefaults.standard.set(true, forKey: migrationKey)
+        }
         if let saved = Self.loadSavedOrigin() { return saved }
         let f = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
-        return NSPoint(x: f.midX, y: f.minY + 8)   // bottom-center, close to the edge
+        return NSPoint(x: f.midX, y: f.minY + 12)   // centred, just clear of the macOS Dock
     }
 
     /// User dragged the panel — recompute the anchor from its new bottom-center.

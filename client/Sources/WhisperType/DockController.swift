@@ -121,10 +121,7 @@ final class DockController {
     /// fixed spot and one that feels aware of its surroundings.
     private var dockWatchTimer: Timer?
     private var lastDockTop: CGFloat = -1
-    /// The Dock's icon list, held across ticks. Re-reading its position costs
-    /// 0.089ms; re-finding it costs 0.24ms and reading the whole window list
-    /// costs 0.756ms. Caching it is what makes watching the Dock cheap enough
-    /// to simply do every tick instead of guarding it behind heuristics.
+    /// Cached: 0.089ms/read, against 0.756ms for a window-list scan.
     private var dockList: AXUIElement?
 
     private func shapeKey() -> String {
@@ -235,6 +232,8 @@ final class DockController {
         guard AXUIElementCopyAttributeValue(e, kAXPositionAttribute as CFString, &pv) == .success,
               AXUIElementCopyAttributeValue(e, kAXSizeAttribute as CFString, &sv) == .success,
               let pval = pv, let sval = sv,
+              // Not `as?`: Swift rejects a conditional downcast to a CF type
+              // ("always succeeds"), so this IS the type check guarding the `as!`.
               CFGetTypeID(pval) == AXValueGetTypeID(), CFGetTypeID(sval) == AXValueGetTypeID()
         else { return nil }
         var p = CGPoint.zero, sz = CGSize.zero
@@ -332,10 +331,7 @@ final class DockController {
     /// log instead of guessed at.
     private func dockLog(_ s: @autoclosure () -> String) {
         guard UserDefaults.standard.bool(forKey: "vf_dock_debug") else { return }
-        let line = "\(ISO8601DateFormatter().string(from: Date())) [dock] \(s())\n"
-        if let h = FileHandle(forWritingAtPath: "/tmp/whispertype-client.log") {
-            h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile()
-        }
+        vlog("[dock] \(s())")
     }
 
     private func followDockVisibility() {

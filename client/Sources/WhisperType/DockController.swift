@@ -202,28 +202,56 @@ final class DockController {
         let id = Self.screenID(screen)
         guard id != lastScreenID else { return }
         lastScreenID = id
-        if let p = placement.position(forScreen: id) {
+        if let p = placement.position(forScreen: id),
+           Self.isOnAScreen(NSPoint(x: p.x, y: p.y)) {
             anchor = NSPoint(x: p.x, y: p.y)
         } else {
-            let f = screen.visibleFrame
-            anchor = NSPoint(x: f.midX, y: f.minY + 8)
+            anchor = Self.defaultAnchor(for: screen)
         }
         resizeToFit()
     }
 
     private func initialAnchor() -> NSPoint {
-        // Positions saved before the panel became a fixed 620pt window were
-        // computed against a capsule that hugged its content, so restoring one
-        // now lands the dock in the wrong place. Retire those once.
-        let migrationKey = "vf_dockAnchorMigratedV2"
-        if !UserDefaults.standard.bool(forKey: migrationKey) {
-            UserDefaults.standard.removeObject(forKey: "vf_dockOrigin")
-            UserDefaults.standard.removeObject(forKey: "vf_dockPositions")
-            UserDefaults.standard.set(true, forKey: migrationKey)
+        // A saved position is only trustworthy if it still lands on a screen that
+        // exists. This one was {3838, 56} from a second display that is no longer
+        // connected, so the dock was clamped hard against the right edge of the
+        // remaining monitor. Validate rather than migrate: unplugging a monitor
+        // should not strand the dock, ever.
+        if let saved = Self.loadSavedOrigin(), Self.isOnAScreen(saved) { return saved }
+        return Self.defaultAnchor(for: Self.activeScreen())
+    }
+
+    /// Is this point actually on a connected display?
+    private static func isOnAScreen(_ p: NSPoint) -> Bool {
+        NSScreen.screens.contains { NSPointInRect(p, $0.frame) }
+    }
+
+    /// Centred, and high enough that the macOS Dock cannot sit on top of it.
+    static func defaultAnchor(for screen: NSScreen?) -> NSPoint {
+        guard let screen = screen ?? NSScreen.main else { return .zero }
+        let v = screen.visibleFrame
+        return NSPoint(x: v.midX, y: v.minY + bottomInset(for: screen))
+    }
+
+    /// How far above the bottom the dock should sit.
+    ///
+    /// `visibleFrame` reserves space for a PINNED Dock, but reserves nothing when
+    /// the Dock auto-hides — so anchoring to it put our pill at the very bottom
+    /// edge, where the Dock slides up and covers it. When the Dock auto-hides at
+    /// the bottom we reserve room for it ourselves.
+    static func bottomInset(for screen: NSScreen) -> CGFloat {
+        let reserved = screen.visibleFrame.minY - screen.frame.minY
+        if reserved > 4 { return reserved + 12 }        // Dock is pinned: clear it
+
+        let dockDefaults = UserDefaults(suiteName: "com.apple.dock")
+        let autohides = dockDefaults?.bool(forKey: "autohide") ?? false
+        let orientation = dockDefaults?.string(forKey: "orientation") ?? "bottom"
+        if autohides && orientation == "bottom" {
+            // Tile size plus padding; the revealed Dock is roughly tile + 26.
+            let tile = dockDefaults?.double(forKey: "tilesize") ?? 48
+            return CGFloat(tile) + 34
         }
-        if let saved = Self.loadSavedOrigin() { return saved }
-        let f = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
-        return NSPoint(x: f.midX, y: f.minY + 12)   // centred, just clear of the macOS Dock
+        return 16
     }
 
     /// User dragged the panel — recompute the anchor from its new bottom-center.

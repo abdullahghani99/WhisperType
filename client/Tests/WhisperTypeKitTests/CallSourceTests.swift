@@ -37,6 +37,13 @@ final class CallSourceTests: XCTestCase {
         XCTAssertFalse(CallSource.offerTitle(for: "Zoom call").contains("call call"))
     }
 
+    /// A background daemon has no app name, so we used to render "pid 3990 call"
+    /// — Apple's Siri speech daemon, which holds the mic all day.
+    func testAProcessIdIsNeverShownAsACall() {
+        XCTAssertEqual(CallSource.offerTitle(for: "pid 3990"), "Call detected")
+        XCTAssertEqual(CallSource.offerTitle(for: "pid 12"), "Call detected")
+    }
+
     func testAppNamesAlreadyEndingInCallAreNotDoubled() {
         XCTAssertEqual(CallSource.offerTitle(for: "Zoom call"), "Zoom call")
     }

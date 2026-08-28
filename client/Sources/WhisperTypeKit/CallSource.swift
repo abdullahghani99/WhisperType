@@ -42,7 +42,9 @@ public enum CallSource {
     /// The line shown in the offer. Never produces "a call call".
     public static func offerTitle(for raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, trimmed.lowercased() != "a call" else { return "Call detected" }
+        guard !trimmed.isEmpty,
+              trimmed.lowercased() != "a call",
+              !trimmed.hasPrefix("pid ") else { return "Call detected" }
         let name = friendlyName(trimmed)
         guard !name.isEmpty else { return "Call detected" }
         return name.lowercased().hasSuffix("call") ? name : "\(name) call"

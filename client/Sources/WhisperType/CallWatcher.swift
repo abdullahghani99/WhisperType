@@ -96,10 +96,18 @@ final class CallWatcher {
             guard let raw = readU32(o, kAudioProcessPropertyPID) else { continue }
             let pid = Int32(bitPattern: raw)
             guard pid != mine, pid > 0 else { continue }
-            let app = NSRunningApplication(processIdentifier: pid)
-            let name = app?.localizedName ?? "pid \(pid)"
+            // Only a real user-facing APPLICATION can be a call. Background
+            // daemons hold the microphone permanently — Apple's corespeechd
+            // (Siri) is always capturing — and counting them meant the dock
+            // offered to record a "pid 3990 call" all day long. Daemons have no
+            // NSRunningApplication and no bundle identifier, so this excludes
+            // them precisely rather than by blocklist.
+            guard let app = NSRunningApplication(processIdentifier: pid),
+                  app.bundleIdentifier != nil,
+                  app.activationPolicy == .regular,
+                  let name = app.localizedName, !name.isEmpty else { continue }
             var png: Data?
-            if let icon = app?.icon, let tiff = icon.tiffRepresentation,
+            if let icon = app.icon, let tiff = icon.tiffRepresentation,
                let rep = NSBitmapImageRep(data: tiff) {
                 png = rep.representation(using: .png, properties: [:])
             }

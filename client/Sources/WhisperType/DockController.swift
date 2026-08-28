@@ -1,5 +1,21 @@
 import AppKit
 import SwiftUI
+
+/// Hosting view for an oversized, mostly-transparent panel.
+///
+/// The panel is fixed at the dock's maximum size and never resized, so the
+/// capsule can animate freely inside it with nothing to clip. The cost is a
+/// large transparent margin that would otherwise swallow clicks meant for the
+/// app underneath, so anything outside the drawn content is passed through.
+final class DockHostingView<Content: View>: NSHostingView<Content> {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let content = fittingSize
+        let box = NSRect(x: (bounds.width - content.width) / 2,
+                         y: (bounds.height - content.height) / 2,
+                         width: content.width, height: content.height)
+        return box.contains(point) ? super.hitTest(point) : nil
+    }
+}
 import Combine
 import WhisperTypeKit
 
@@ -52,7 +68,7 @@ final class DockController {
             onSettings: { [weak self] in self?.onSettings() },
             micDevices: { [weak self] in self?.micDevices() ?? [] }
         )
-        let host = NSHostingView(rootView: view)
+        let host = DockHostingView(rootView: view)
         if #available(macOS 13.0, *) { host.sizingOptions = [.intrinsicContentSize] }
         hosting = host
 
@@ -117,15 +133,39 @@ final class DockController {
     /// Size the panel to the dock's current intrinsic content, anchored so the
     /// bottom-center stays put as it grows/shrinks. No-op when the size is
     /// unchanged, so rapid level updates during recording don't churn setFrame.
+    /// Keep the panel at a FIXED, generous size and let the dock animate inside
+    /// it. Previously the panel was snapped to `fittingSize` on every state
+    /// change, which is why size animation had to be disabled: SwiftUI was
+    /// animating inside a window that had already jumped to its final bounds, so
+    /// the content clipped. Nothing here resizes any more — only the capsule
+    /// inside changes width, and it can do so smoothly.
     private func resizeToFit() {
-        guard let p = panel, let host = hosting, let anchor = anchor else { return }
-        host.layoutSubtreeIfNeeded()          // ensure SwiftUI has laid out the NEW state
-        let size = host.fittingSize            // ...so this is the real size, not stale (was clipping)
-        guard size.width > 1, size.height > 1 else { return }
-        if abs(p.frame.width - size.width) < 0.5, abs(p.frame.height - size.height) < 0.5 { return }
-        let origin = NSPoint(x: anchor.x - size.width / 2, y: anchor.y)
-        p.setFrame(NSRect(origin: origin, size: size), display: true)
+        guard let p = panel, let anchor = anchor else { return }
+        let size = Self.panelSize
+        var origin = NSPoint(x: anchor.x - size.width / 2, y: anchor.y - Self.verticalPadding)
+
+        // CLAMP TO THE SCREEN. Widening the panel from ~66pt to 620pt moves its
+        // origin ~277pt left of the anchor, which pushed it clean off the display
+        // near a screen edge — the dock simply vanished. The anchor stays where
+        // the human put it; only the window is nudged back into view.
+        let screen = Self.activeScreen()
+            ?? NSScreen.screens.first { NSPointInRect(anchor, $0.frame) }
+            ?? NSScreen.main
+        if let visible = screen?.visibleFrame {
+            origin.x = min(max(origin.x, visible.minX + 4), visible.maxX - size.width - 4)
+            origin.y = min(max(origin.y, visible.minY + 4), visible.maxY - size.height - 4)
+        }
+        let target = NSRect(origin: origin, size: size)
+        if p.frame != target { p.setFrame(target, display: true) }
     }
+
+    /// Wide enough for the longest state (the expanded control row) and tall
+    /// enough for the shell plus its shadow.
+    static let panelSize = NSSize(width: 620, height: 104)
+    /// The dock sits centred in the panel, so the anchor accounts for the
+    /// transparent margin below it.
+    static let verticalPadding: CGFloat = 34
+
 
     /// A stable identity for a display, so a remembered position survives sleep,
     /// re-plugging and reordering.

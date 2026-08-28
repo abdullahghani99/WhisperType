@@ -593,9 +593,28 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 v; Spacer()
             }
         }
-        let root = VStack(alignment: .leading, spacing: 26) {
+        // Every state the human actually sees — a review that only looks at three
+        // of them cannot judge whether the app feels continuous.
+        let transcribing = DockState(); transcribing.begin(); transcribing.finishRecording()
+        let failed = DockState(); failed.fail("No audio. Check that your mic is not muted.")
+        let recording = DockState(); recording.serverOK = true; recording.meetingRecording = true
+        let offer = DockState(); offer.serverOK = true
+        offer.callTitle = CallSource.offerTitle(for: "Microsoft Teams ModuleHost")
+        if let app = NSWorkspace.shared.runningApplications.first(where: {
+            ($0.localizedName ?? "").localizedCaseInsensitiveContains("teams")
+        }), let icon = app.icon, let tiff = icon.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff) {
+            offer.callIconPNG = rep.representation(using: .png, properties: [:])
+        }
+        offer.callOffer = true
+
+        let root = VStack(alignment: .leading, spacing: 22) {
             row("AT REST", mk(idle, false))
+            row("RECORDING", mk(recording, false))
+            row("CALL OFFER", mk(offer, false))
             row("LISTENING", mk(listening, false))
+            row("TRANSCRIBING", mk(transcribing, false))
+            row("ERROR", mk(failed, false))
             row("EXPANDED", mk(controls, true))
         }
         .padding(44)
@@ -605,7 +624,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let w = NSWindow(contentViewController: host)
         w.title = "Dock Preview"
         w.styleMask = [.titled, .closable, .resizable]
-        w.setContentSize(NSSize(width: 660, height: 520))
+        w.setContentSize(NSSize(width: 700, height: 700))
         w.center(); w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         previewWindow = w
@@ -850,7 +869,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // them heard anything (all muted, unplugged, or no mic granted).
                 // There's nothing left to cycle to; just report it (auto-clears).
                 vlog("no audio captured (all input devices were silent)")
-                dockController.state.fail("No audio — check your mic isn’t muted")
+                dockController.state.fail("No audio. Check that your mic is not muted.")
             } else {
                 vlog("recording too short, ignoring")
                 dockController.state.returnToIdle()
@@ -902,7 +921,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 await insert(result.text)
                 await MainActor.run {
-                    self.dockController.state.complete()
+                    self.dockController.state.complete(words: result.text.split(whereSeparator: { $0 == " " || $0 == "\n" }).count)
                     SoundFeedback.done()   // soft confirm when your text lands
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                         // Guard: a fast back-to-back dictation may have already
@@ -915,7 +934,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } catch {
                 vlog("transcribe FAILED after retry: \(error) — audio kept at \(pendingURL.path)")
                 await MainActor.run {
-                    self.dockController.state.fail("Server unreachable — audio saved")
+                    self.dockController.state.fail("Server unreachable. Audio saved.")
                     self.overlay.show(.message("Couldn’t reach the server. Your audio is saved in the recordings folder — menu ▸ “Show recordings folder” ▸ pending."))
                     self.overlay.hide(after: 8)
                 }

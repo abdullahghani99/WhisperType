@@ -35,7 +35,11 @@ public final class DockState: ObservableObject {
     public func begin() { phase = .listening; elapsed = 0; level = 0; errorText = "" }
     public func setLevel(_ v: Float) { if phase == .listening { level = max(0, min(1, v)) } }
     public func finishRecording() { if phase == .listening { phase = .transcribing } }
-    public func complete() { phase = .done }
+    /// Words inserted by the last dictation, so the success state can say what
+    /// actually happened instead of falling back to an instruction hint.
+    @Published public var lastWordCount: Int = 0
+
+    public func complete(words: Int = 0) { lastWordCount = words; phase = .done }
     public func returnToIdle() { phase = .idle; level = 0 }
     public func fail(_ msg: String) { phase = .error; errorText = msg }
     public func toggleMode() { mode = (mode == .dictation) ? .prompt : .dictation }

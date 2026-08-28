@@ -29,6 +29,14 @@ private let vfWaveformAccentIndices: Set<Int> = [11, 12]
 private let vfWaveformBarCount = vfWaveformEnvelope.count
 private let vfWaveformBarMaxHeight: CGFloat = 22
 
+/// ONE shell for every state. The dock previously used four heights (30/44/46/52)
+/// and therefore four corner radii, because Capsule derives its radius from
+/// height — and the eye reads corner radius as object identity. Four radii meant
+/// four objects. Now only WIDTH ever changes, so the dock reads as one thing
+/// that morphs rather than a set of components being swapped.
+private let vfShellHeight: CGFloat = 36
+private let vfShellRadius: CGFloat = 18
+
 // MARK: - DockView
 
 /// The floating dock: a warm-black capsule that is the visual centerpiece of
@@ -46,6 +54,8 @@ public struct DockView: View {
     let micDevices: () -> [(uid: String, name: String)]
 
     @State private var transcribingPulse = false
+    /// Honour the system setting rather than assuming everyone wants movement.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Preview/testability only: force the hover control row visible for
     /// screenshot verification. Default false — no runtime behavior change.
     let forceControls: Bool
@@ -87,10 +97,18 @@ public struct DockView: View {
                 mainCapsule   // listening / transcribing / done / error
             }
         }
-        .padding(16)   // room for the capsule's drop shadow so the panel can hug it
-        .fixedSize()   // report an exact intrinsic size so the panel sizes to content
-        // No size animation: the panel must match the content exactly, or a
-        // mid-animation size mismatch clips the dock. Expansion is instant.
+        .padding(16)   // room for the capsule's drop shadow
+        .fixedSize()
+        // Motion is now safe: the panel is a fixed oversized window, so nothing
+        // clips mid-animation. A state change is exactly where motion is earned —
+        // this surface changes state six times per dictation, and instant cuts
+        // are what made it read as separate components rather than one object.
+        .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86),
+                   value: state.phase)
+        .animation(reduceMotion ? nil : .spring(response: 0.30, dampingFraction: 0.88),
+                   value: state.expanded)
+        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.82),
+                   value: state.callOffer)
         .onChange(of: state.phase) { newPhase in
             if newPhase != .idle { state.expanded = false }
         }
@@ -103,30 +121,27 @@ public struct DockView: View {
     /// Click to reveal controls; auto-expands to the waveform while recording.
     private var restPill: some View {
         ZStack {
-            // Subtle frosted "pebble": legible over ANY background (unlike a bare
-            // glyph), but light — not the heavy gradient circle. Warm-black,
-            // semi-transparent, thin hairline, soft shadow.
-            Circle()
-                .fill(VF.Color.canvas(dark: true).opacity(0.82))
-                .overlay(Circle().stroke(Color.white.opacity(0.10), lineWidth: 1))
-                .shadow(color: VF.Shadow.layer2.color, radius: 5, x: 0, y: 2)
-                .frame(width: 30, height: 30)
+            // Built from the SAME dockSurface as every other state. It used to be
+            // a flat fill with a different stroke and a shallower shadow — a
+            // literally different component for the state seen 95% of the time.
             Image(systemName: "mic.fill")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(state.serverOK ? .vfWarmWhite : .vfAmber)
+                .frame(width: vfShellHeight, height: vfShellHeight)
+                .background(dockSurface)
         }
-        .frame(width: 34, height: 34)
-        // Red badge while a meeting is capturing — so even collapsed, you can see
-        // recording is live.
         .overlay(alignment: .topTrailing) {
             if state.meetingRecording {
                 Circle()
                     .fill(Color.vfAccent)
                     .overlay(Circle().stroke(Color.white.opacity(0.6), lineWidth: 1))
                     .frame(width: 10, height: 10)
+                    .offset(x: 1, y: -1)
             }
         }
-        .contentShape(Circle())
+        // Visual stays compact; the TARGET is 44pt so it is comfortably hittable.
+        .contentShape(Rectangle())
+        .frame(width: 44, height: 44)
         .onTapGesture { state.expanded = true }
     }
 
@@ -146,14 +161,12 @@ public struct DockView: View {
                 Circle().fill(VF.Color.accent).frame(width: 8, height: 8)
             }
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(state.callTitle)
-                    .font(VF.Font.callout)
-                    .foregroundColor(.vfWarmWhite)
-                Text("Record it?")
-                    .font(VF.Font.caption)
-                    .foregroundColor(.vfMuted)
-            }
+            // "Record it?" sat 20pt from a button labelled Record. Deleting it
+            // removes the redundancy AND lets the offer share the one shell
+            // height instead of being the odd one out at 52pt.
+            Text(state.callTitle)
+                .font(VF.Font.callout)
+                .foregroundColor(.vfWarmWhite)
 
             Button(action: onMeeting) {
                 Text("Record")
@@ -174,7 +187,7 @@ public struct DockView: View {
             .help("Not this one")
         }
         .padding(.horizontal, VF.Space.lg)
-        .frame(height: 52)
+        .frame(height: vfShellHeight)
         .fixedSize(horizontal: true, vertical: false)
         .background(dockSurface)
         // Arrive gently rather than snapping into existence — the one place a
@@ -187,10 +200,10 @@ public struct DockView: View {
     private var mainCapsule: some View {
         phaseContent
             .padding(.horizontal, 18)
-            .frame(height: 46)
+            .frame(height: vfShellHeight)
             .fixedSize(horizontal: true, vertical: false)   // hug content — idle stays compact
             .background(dockSurface)
-            .contentShape(Capsule())
+            .contentShape(RoundedRectangle(cornerRadius: vfShellRadius, style: .continuous))
             .onTapGesture {
                 // Click toggles the controls (mic/mode/settings). Recording is
                 // driven by the ⌥ hotkey, which auto-expands the waveform.
@@ -199,7 +212,7 @@ public struct DockView: View {
     }
 
     private var dockSurface: some View {
-        Capsule()
+        RoundedRectangle(cornerRadius: vfShellRadius, style: .continuous)
             .fill(
                 LinearGradient(
                     colors: [.vfSurfaceTop, .vfSurfaceBottom],
@@ -208,7 +221,7 @@ public struct DockView: View {
                 )
             )
             .overlay(
-                Capsule()
+                RoundedRectangle(cornerRadius: vfShellRadius, style: .continuous)
                     .stroke(Color.white.opacity(0.08), lineWidth: 1)
             )
             .shadow(color: VF.Shadow.layer3.color, radius: 16, x: 0, y: 8)
@@ -217,7 +230,9 @@ public struct DockView: View {
     @ViewBuilder
     private var phaseContent: some View {
         switch state.phase {
-        case .idle, .done:
+        case .done:
+            doneContent
+        case .idle:
             idleContent
         case .listening:
             listeningContent
@@ -242,6 +257,23 @@ public struct DockView: View {
                 .fill(state.serverOK ? Color.vfGreen : Color.vfAmber)
                 .frame(width: 7, height: 7)
                 .padding(.leading, 2)
+        }
+    }
+
+    /// The moment the product exists for: your words landed. This used to fall
+    /// through to the idle hint, so every successful dictation was celebrated
+    /// with "Hold ⌥ to talk" — an instruction for a beginner, shown to someone
+    /// who had just finished speaking.
+    private var doneContent: some View {
+        HStack(spacing: VF.Space.sm) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.vfGreen)
+            Text(state.lastWordCount > 0
+                 ? "\(state.lastWordCount) words"
+                 : "Inserted")
+                .font(VF.Font.callout)
+                .foregroundColor(.vfWarmWhite)
         }
     }
 
@@ -292,12 +324,16 @@ public struct DockView: View {
         Text("Polishing\u{2026}")
             .font(VF.Font.body)
             .foregroundColor(.vfMuted)
-            .opacity(transcribingPulse ? 0.35 : 1.0)
+            .opacity(transcribingPulse ? 0.55 : 1.0)
             .onAppear {
                 withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
                     transcribingPulse = true
                 }
             }
+            // @State survives the view's disappearance, so without this the flag
+            // stays true and every later dictation renders "Polishing..." frozen
+            // at the pulse floor — invisible from the second one onward.
+            .onDisappear { transcribingPulse = false }
     }
 
     // MARK: Error
@@ -307,9 +343,12 @@ public struct DockView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 14, weight: .medium))
                 .foregroundColor(.vfAccent)
-            Text(state.errorText.isEmpty ? "Something went wrong" : state.errorText)
+            // Warm-white, not red: red across a whole capsule is accent-as-
+            // decoration and measured 2.94:1, below AA. The triangle carries the
+            // signal; the words just have to be readable.
+            Text(state.errorText.isEmpty ? "That did not reach the server." : state.errorText)
                 .font(VF.Font.body)
-                .foregroundColor(.vfAccent)
+                .foregroundColor(.vfWarmWhite)
                 .lineLimit(1)
         }
     }
@@ -345,7 +384,7 @@ public struct DockView: View {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
-        .frame(height: 44)
+        .frame(height: vfShellHeight)
         .fixedSize(horizontal: true, vertical: false)   // hug content — no label truncation
         .background(dockSurface)
     }

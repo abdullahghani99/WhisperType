@@ -56,6 +56,7 @@ final class DockController {
             resizeToFit()
         }
         panel?.orderFrontRegardless()
+        startDockWatch()
     }
 
     func hide() { panel?.orderOut(nil) }
@@ -114,6 +115,11 @@ final class DockController {
     /// full SwiftUI layout pass plus a window resize on the main thread. Only the
     /// things that actually change the dock's SIZE should do that.
     private var lastShape: String = ""
+    /// Polls the macOS Dock so our pill can ride above it. Cheap (4Hz, one
+    /// window-list read) and it is the difference between a dock that sits in a
+    /// fixed spot and one that feels aware of its surroundings.
+    private var dockWatchTimer: Timer?
+    private var lastDockTop: CGFloat = -1
 
     private func shapeKey() -> String {
         "\(state.phase)|\(state.expanded)|\(state.callOffer)|\(state.micName)|\(state.errorText)|\(state.callTitle)|\(Int(state.elapsed))"
@@ -211,6 +217,60 @@ final class DockController {
         resizeToFit()
     }
 
+    /// The top edge of the macOS Dock in bottom-left coordinates, or nil when it
+    /// is hidden. When auto-hide is on, the Dock has no strip window at all —
+    /// only the wallpaper — so its very presence is the reveal signal.
+    static func revealedDockTop() -> CGFloat? {
+        guard let screen = activeScreen() ?? NSScreen.main,
+              let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]
+        else { return nil }
+        let screenH = screen.frame.height
+        for w in list {
+            guard (w[kCGWindowOwnerName as String] as? String) == "Dock" else { continue }
+            let name = (w[kCGWindowName as String] as? String) ?? ""
+            if name.hasPrefix("Wallpaper") { continue }
+            let b = (w[kCGWindowBounds as String] as? [String: Any]) ?? [:]
+            let y = (b["Y"] as? Double) ?? 0
+            let wd = (b["Width"] as? Double) ?? 0
+            let ht = (b["Height"] as? Double) ?? 0
+            // The Dock process also owns a FULL-SCREEN desktop layer. Taking that
+            // for the Dock strip computed a "top" equal to the top of the screen
+            // and threw the pill to the top of the display. A real Dock strip is
+            // short: tens of points tall, never most of the screen.
+            guard wd > 100, ht > 20, ht < 220, CGFloat(ht) < screenH * 0.4 else { continue }
+            let nsBottom = screenH - CGFloat(y) - CGFloat(ht)
+            let nsTop = nsBottom + CGFloat(ht)
+            // Only a Dock sitting along the bottom should push us up.
+            if nsBottom < 40 { return nsTop }
+        }
+        return nil
+    }
+
+    /// Follow the Dock: rest low when it is hidden, glide up when it appears.
+    private func startDockWatch() {
+        dockWatchTimer?.invalidate()
+        let t = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            self?.followDockVisibility()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        dockWatchTimer = t
+    }
+
+    private func followDockVisibility() {
+        guard let screen = Self.activeScreen() ?? NSScreen.main else { return }
+        let revealed = Self.revealedDockTop()
+        let target = revealed.map { $0 + 10 } ?? (screen.visibleFrame.minY + 14)
+        guard abs(target - lastDockTop) > 1 else { return }
+        lastDockTop = target
+        anchor = NSPoint(x: anchor?.x ?? screen.visibleFrame.midX, y: target)
+        // Glide rather than jump: the Dock animates, so we animate with it.
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            resizeToFit()
+        }
+    }
+
     private func initialAnchor() -> NSPoint {
         // A saved position is only trustworthy if it still lands on a screen that
         // exists. This one was {3838, 56} from a second display that is no longer
@@ -230,7 +290,9 @@ final class DockController {
     static func defaultAnchor(for screen: NSScreen?) -> NSPoint {
         guard let screen = screen ?? NSScreen.main else { return .zero }
         let v = screen.visibleFrame
-        return NSPoint(x: v.midX, y: v.minY + bottomInset(for: screen))
+        // Start low; the Dock watcher lifts us the moment the Dock appears.
+        let start = revealedDockTop().map { $0 + 10 } ?? (v.minY + 14)
+        return NSPoint(x: v.midX, y: start)
     }
 
     /// How far above the bottom the dock should sit.

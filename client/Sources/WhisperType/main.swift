@@ -140,6 +140,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         requestMicPermission()
         setupHotkey()
 
+        // Follow the system input device. Without this the engine outlives the
+        // hardware it was built for.
+        AudioDevices.onDefaultInputChanged { [weak self] in
+            guard let self = self else { return }
+            vlog("system input changed -> \(AudioDevices.currentInputName()) — rebuilding engine")
+            self.recorder.reloadDevice()
+            self.refreshDockMic()
+        }
+
         dockController.micDevices = { AudioDevices.inputs().map { ($0.uid, $0.name) } }
         dockController.onPickMic = { [weak self] uid in
             guard let self = self else { return }

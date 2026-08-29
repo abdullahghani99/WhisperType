@@ -179,11 +179,24 @@ final class AudioRecorder {
         bufLock.lock()
         let haveEngine = (engine != nil && converter != nil)
         bufLock.unlock()
-        if haveEngine, state.beginRecording() {
-            bufLock.lock(); pcm = Data(ring.drain()); bufLock.unlock()
-            logError("capturing from \(lastWinningMic ?? "mic") (warm, \(pcm.count)B pre-roll)")
-            report(true)
-            return
+        if haveEngine {
+            bufLock.lock(); let seed = Data(ring.drain()); bufLock.unlock()
+            // A warm engine goes stale WITHOUT reporting it: AirPods drop the mic
+            // link after a few idle minutes, and a device switch leaves the tap
+            // bound to the old hardware. The tap keeps firing either way, so the
+            // ring fills with SILENCE rather than going empty. A live mic in a
+            // quiet room still carries a noise floor, so an all-zero pre-roll of
+            // real length means THIS ENGINE is dead -- not the microphone.
+            // Rebuild instead of recording nothing and then blaming the device,
+            // which is how a perfectly good pair of AirPods got demoted.
+            if seed.count >= Self.staleSeedBytes, Self.isAllZero(seed) {
+                logError("warm engine went stale (\(seed.count)B of silence) — rebuilding")
+            } else if state.beginRecording() {
+                pcm = seed
+                logError("capturing from \(lastWinningMic ?? "mic") (warm, \(seed.count)B pre-roll)")
+                report(true)
+                return
+            }
         }
 
         q.async { [weak self] in
@@ -353,6 +366,11 @@ final class AudioRecorder {
     /// True when every sample is exactly zero — the signature of a dead device.
     /// A working mic always carries some noise floor, so this cannot be confused
     /// with a quiet room.
+    /// Half a second of pre-roll. Enough that a device genuinely mid-start-up is
+    /// not mistaken for a dead one, small enough to catch a stale ring long
+    /// before it fills.
+    static let staleSeedBytes = 16_000
+
     static func isAllZero(_ d: Data) -> Bool {
         guard !d.isEmpty else { return true }
         return d.withUnsafeBytes { raw in

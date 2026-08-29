@@ -61,6 +61,20 @@ enum AudioDevices {
         inputs().first { transportType($0.id) == kAudioDeviceTransportTypeBuiltIn }?.uid
     }
 
+    /// Call `handler` whenever the SYSTEM default input changes -- AirPods
+    /// connecting, a headset unplugged. Nothing watched this before, so a warm
+    /// engine kept its tap on the old device and quietly recorded silence while
+    /// the UI cheerfully named the new one.
+    static func onDefaultInputChanged(_ handler: @escaping () -> Void) {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &addr, DispatchQueue.main) { _, _ in
+            handler()
+        }
+    }
+
     static func defaultInputID() -> AudioDeviceID? {
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultInputDevice,

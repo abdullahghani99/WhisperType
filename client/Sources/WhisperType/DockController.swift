@@ -123,6 +123,11 @@ final class DockController {
     private var lastDockTop: CGFloat = -1
     /// Cached: 0.089ms/read, against 0.756ms for a window-list scan.
     private var dockList: AXUIElement?
+    /// The frame WE last set. didMoveNotification fires for programmatic moves
+    /// too, so without this every resizeToFit looked like the user dragging the
+    /// pill -- which is how a fresh ultra-wide display inherited the MacBook's
+    /// centre (x=1028) as a "chosen" position and kept restoring it far left.
+    private var lastSetFrame: NSRect?
 
     private func shapeKey() -> String {
         "\(state.phase)|\(state.expanded)|\(state.callOffer)|\(state.micName)|\(state.errorText)|\(state.callTitle)|\(Int(state.elapsed))"
@@ -179,7 +184,10 @@ final class DockController {
             origin.y = min(max(origin.y, visible.minY + 4), visible.maxY - size.height - 4)
         }
         let target = NSRect(origin: origin, size: size)
-        if p.frame != target { p.setFrame(target, display: true) }
+        if p.frame != target {
+            lastSetFrame = target
+            p.setFrame(target, display: true)
+        }
     }
 
     /// Wide enough for the longest state (the expanded control row) and tall
@@ -212,7 +220,7 @@ final class DockController {
         guard id != lastScreenID else { return }
         lastScreenID = id
         if let p = placement.position(forScreen: id),
-           Self.isOnAScreen(NSPoint(x: p.x, y: p.y)) {
+           NSPointInRect(NSPoint(x: p.x, y: p.y), screen.frame) {
             anchor = NSPoint(x: p.x, y: p.y)
         } else {
             anchor = Self.defaultAnchor(for: screen)
@@ -336,6 +344,10 @@ final class DockController {
 
     private func followDockVisibility() {
         guard let screen = Self.activeScreen() ?? NSScreen.main else { return }
+        // Re-centre when the display changes. This was written but never called,
+        // so plugging in a monitor left the pill wherever the old one had put it.
+        // Cheap: it returns immediately unless the screen id actually changed.
+        followActiveScreen()
         let probe = dockProbe(on: screen)
         let target: CGFloat
         switch probe {
@@ -382,6 +394,8 @@ final class DockController {
     /// User dragged the panel — recompute the anchor from its new bottom-center.
     private func userMoved() {
         guard let p = panel else { return }
+        // Our own setFrame, not a drag. Persisting these was the bug.
+        if let mine = lastSetFrame, p.frame == mine { return }
         let a = NSPoint(x: p.frame.midX, y: p.frame.minY)
         anchor = a
         if let screen = Self.activeScreen() {

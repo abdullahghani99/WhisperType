@@ -144,6 +144,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // hardware it was built for.
         AudioDevices.onDefaultInputChanged { [weak self] in
             guard let self = self else { return }
+            // Changing the input in macOS IS a device choice, and it must win.
+            // A pin ranks ahead of the system default, so a mic picked here once
+            // kept being forced forever: switch to the speakerphone and WhisperType
+            // carried on recording AirPods that were sitting in their case, which
+            // is what "it records nothing when I change devices" actually was.
+            let pinned = UserDefaults.standard.string(forKey: AudioDevices.defaultsKey) ?? ""
+            if !pinned.isEmpty {
+                UserDefaults.standard.set("", forKey: AudioDevices.defaultsKey)
+                vlog("system input changed — clearing the pinned mic so the system choice wins")
+            }
             vlog("system input changed -> \(AudioDevices.currentInputName()) — rebuilding engine")
             self.recorder.reloadDevice()
             self.refreshDockMic()

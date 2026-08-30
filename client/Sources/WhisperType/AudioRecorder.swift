@@ -32,6 +32,10 @@ private final class Once {
 /// guarantees a late-unblocking stale attempt can't corrupt current state.
 final class AudioRecorder {
     private var engine: AVAudioEngine?
+    /// When the committed engine started running. A warm engine that has been up
+    /// for a while and still delivered NOTHING has a dead tap -- which is exactly
+    /// what an input-device change leaves behind for a few seconds.
+    private var engineReadyAt: Date?
     private var converter: AVAudioConverter?
     private var outFormat: AVAudioFormat!
     private var pcm = Data()
@@ -189,8 +193,11 @@ final class AudioRecorder {
             // real length means THIS ENGINE is dead -- not the microphone.
             // Rebuild instead of recording nothing and then blaming the device,
             // which is how a perfectly good pair of AirPods got demoted.
-            if seed.count >= Self.staleSeedBytes, Self.isAllZero(seed) {
-                logError("warm engine went stale (\(seed.count)B of silence) — rebuilding")
+            let age = Date().timeIntervalSince(engineReadyAt ?? .distantPast)
+            let deliveredNothing = seed.isEmpty && age > 0.5
+            let deliveredSilence = seed.count >= Self.staleSeedBytes && Self.isAllZero(seed)
+            if deliveredNothing || deliveredSilence {
+                logError("warm engine went stale (\(seed.count)B after \(String(format: "%.1f", age))s) — rebuilding")
             } else if state.beginRecording() {
                 pcm = seed
                 logError("capturing from \(lastWinningMic ?? "mic") (warm, \(seed.count)B pre-roll)")
@@ -265,6 +272,7 @@ final class AudioRecorder {
                 continue
             }
             engine = e; converter = conv
+            engineReadyAt = Date()
             lastWinningMic = dev.name; lastWinningUID = dev.uid
             return epoch
         }

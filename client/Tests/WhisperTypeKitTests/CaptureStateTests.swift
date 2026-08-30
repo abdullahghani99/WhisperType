@@ -82,8 +82,13 @@ final class CaptureStateTests: XCTestCase {
         XCTAssertEqual(CaptureState.classify(byteCount: 5_000, allZero: false), .inconclusive)
     }
 
-    func testEmptyCaptureIsSilent() {
-        XCTAssertEqual(CaptureState.classify(byteCount: 0, allZero: true), .silent)
+    func testEmptyCaptureIsInconclusiveNotSilent() {
+        // Zero bytes means the ENGINE delivered nothing -- which is what happens
+        // for a few seconds after the input device changes. Reading it as a dead
+        // microphone demoted AirPods, then PowerConf, then the built-in mic
+        // inside 40 seconds, leaving nothing to fall back to.
+        XCTAssertEqual(CaptureState.classify(byteCount: 0, allZero: true), .inconclusive)
+        // A device actually streaming zero-valued buffers is still dead.
         XCTAssertEqual(CaptureState.classify(byteCount: 44, allZero: true), .silent)
     }
 

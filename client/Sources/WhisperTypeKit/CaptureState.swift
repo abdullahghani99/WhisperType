@@ -101,6 +101,14 @@ public final class CaptureState {
     /// Judge a finished capture. All-zero PCM means a dead device at ANY length —
     /// a working microphone in a silent room still carries a noise floor.
     public static func classify(byteCount: Int, allZero: Bool) -> CaptureVerdict {
+        // NO BYTES IS NOT EVIDENCE. An empty buffer is trivially "all zero", so
+        // this used to read as a dead microphone and demote it. But zero bytes
+        // means the ENGINE never delivered -- which is what happens for a few
+        // seconds after the input device changes. The old reading demoted every
+        // device in turn during a switch (AirPods, then PowerConf, then the
+        // built-in, all inside 40 seconds), leaving nothing good to fall back to
+        // and dictation broken until the penalties expired.
+        if byteCount == 0 { return .inconclusive }
         if allZero { return .silent }
         if byteCount >= evidenceBytes { return .working }
         return .inconclusive

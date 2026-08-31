@@ -27,6 +27,18 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_PATH" "$APP/Contents/MacOS/$BIN_NAME"
 cp Info.plist "$APP/Contents/Info.plist"
+
+# Stamp the build. VERSION is the single source of truth for the release
+# number; CFBundleVersion carries the commit so a running app can always be
+# traced back to the exact source -- 109 commits shipped as "0.1" with no way
+# to tell which one you were running, which made every regression report start
+# from guesswork.
+VF_VERSION="$(cat ../VERSION 2>/dev/null || echo 0.0.0)"
+VF_BUILD="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then VF_BUILD="$VF_BUILD-dirty"; fi
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VF_VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VF_BUILD" "$APP/Contents/Info.plist"
+echo "==> stamped $VF_VERSION ($VF_BUILD)"
 [ -f icon/AppIcon.icns ] && cp icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # SPM emits a resource bundle beside the binary; the fonts live there. Copy the

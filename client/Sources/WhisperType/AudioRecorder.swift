@@ -96,7 +96,17 @@ final class AudioRecorder {
     /// Keeping the microphone warm removes the device wake-up delay that makes a
     /// short press come back empty — but it also means the mic is live whenever
     /// the app is. That is the user's decision, so it stays behind `vf_preroll`.
-    var prerollEnabled: Bool { UserDefaults.standard.bool(forKey: "vf_preroll") }
+    /// Warm the engine only where it is FREE.
+    ///
+    /// A warm mic removes the wake-up delay that made short presses come back
+    /// empty. On a Bluetooth headset it also costs the user their music: holding
+    /// the mic open drops the device from A2DP to HFP, and playback becomes mono
+    /// 16kHz until we let go. Measured, not assumed. So Bluetooth pays the
+    /// wake-up delay and keeps its audio; everything else stays warm.
+    var prerollEnabled: Bool {
+        guard UserDefaults.standard.bool(forKey: "vf_preroll") else { return false }
+        return !AudioDevices.currentInputIsBluetooth()
+    }
 
     /// Apply a change to the pre-roll setting: warm the engine, or shut it down.
     func configurePreroll() {

@@ -65,6 +65,23 @@ enum AudioDevices {
     /// connecting, a headset unplugged. Nothing watched this before, so a warm
     /// engine kept its tap on the old device and quietly recorded silence while
     /// the UI cheerfully named the new one.
+    /// Is the mic we would actually open a Bluetooth one?
+    ///
+    /// Holding a Bluetooth mic open forces the headset out of A2DP (stereo,
+    /// 44.1-48kHz) and into HFP (mono, 16kHz). Measured on Beats Studio3 with the
+    /// engine merely idling: the OUTPUT device reported 16000 Hz, 1 channel. The
+    /// two profiles are mutually exclusive in the Bluetooth spec, so no amount of
+    /// code buys both -- the only choice is which one to spend.
+    static func currentInputIsBluetooth() -> Bool {
+        guard let dev = preferredInputs().first else { return false }
+        switch transportType(dev.id) {
+        case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE:
+            return true
+        default:
+            return false
+        }
+    }
+
     static func onDefaultInputChanged(_ handler: @escaping () -> Void) {
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultInputDevice,

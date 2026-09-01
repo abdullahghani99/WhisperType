@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Is a capture stream actually delivering AUDIO, as opposed to merely running?
 ///
@@ -27,7 +28,11 @@ public final class MicHealth {
     private var startedAt: Double
     private var lastSignalAt: Double?
     private var sawSignal = false
-    private let lock = NSLock()
+    /// os_unfair_lock rather than NSLock: `observe` runs on the real-time audio
+    /// thread, where waiting on a lower-priority thread risks priority inversion
+    /// and a dropped buffer — which would itself look like the stall the watchdog
+    /// exists to detect. The critical sections here are two stores.
+    private var lockPrimitive = os_unfair_lock_s()
 
     /// - Parameters:
     ///   - graceSeconds: how long a device may take to produce its first audio
@@ -45,7 +50,7 @@ public final class MicHealth {
     /// contains a non-zero sample: a live mic in a quiet room still carries a
     /// noise floor, so all-zero genuinely means nothing is coming through.
     public func observe(at now: Double, hasSignal: Bool) {
-        lock.lock(); defer { lock.unlock() }
+        os_unfair_lock_lock(&lockPrimitive); defer { os_unfair_lock_unlock(&lockPrimitive) }
         if hasSignal {
             lastSignalAt = now
             sawSignal = true
@@ -55,7 +60,7 @@ public final class MicHealth {
     /// Restart the clock — called after switching to a different device, so the
     /// new one is judged on its own record rather than inheriting the old one's.
     public func reset(at now: Double) {
-        lock.lock(); defer { lock.unlock() }
+        os_unfair_lock_lock(&lockPrimitive); defer { os_unfair_lock_unlock(&lockPrimitive) }
         startedAt = now
         lastSignalAt = nil
         sawSignal = false
@@ -64,12 +69,12 @@ public final class MicHealth {
     /// Has this stream EVER carried audio? A stream that never has is a
     /// different problem from one that stopped, and deserves a different message.
     public var everCarriedAudio: Bool {
-        lock.lock(); defer { lock.unlock() }
+        os_unfair_lock_lock(&lockPrimitive); defer { os_unfair_lock_unlock(&lockPrimitive) }
         return sawSignal
     }
 
     public func verdict(at now: Double) -> Verdict {
-        lock.lock(); defer { lock.unlock() }
+        os_unfair_lock_lock(&lockPrimitive); defer { os_unfair_lock_unlock(&lockPrimitive) }
         if let last = lastSignalAt {
             let quiet = now - last
             return quiet >= stallSeconds ? .stalled(silentSeconds: quiet) : .live

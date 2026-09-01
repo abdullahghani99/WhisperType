@@ -410,15 +410,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     // Tell the truth up front. A meeting that records only the
                     // other participants is worse than one that fails outright —
                     // you find out an hour later, when the audio is gone.
+                    // Installed for EVERY meeting, not just ones that started with
+                    // a working mic. It used to live inside the micLive branch, so
+                    // the case that matters most -- no microphone at all -- never
+                    // heard about the retries or about them being given up on.
+                    self.meetingRecorder.onMicTrouble = { [weak self] msg in
+                        guard let self = self else { return }
+                        SoundFeedback.failed()
+                        self.overlay.show(.message("⚠️ \(msg)"))
+                        self.overlay.hide(after: 8)
+                        // Sticky, unlike the overlay: the dock keeps saying the
+                        // meeting has no microphone until it recovers.
+                        self.dockController.state.errorText = msg
+                    }
                     if self.meetingRecorder.micLive {
-                        // A meeting that quietly loses the mic is the worst failure
-                        // this app has. Say it out loud, while it can still be saved.
-                        self.meetingRecorder.onMicTrouble = { [weak self] msg in
-                            guard let self = self else { return }
-                            SoundFeedback.failed()
-                            self.overlay.show(.message("⚠️ \(msg)"))
-                            self.overlay.hide(after: 8)
-                        }
                         self.overlay.show(.message("🔴 Recording meeting (mic: \(self.meetingRecorder.micName)) — menu ▸ “Stop meeting & summarize” to finish"))
                         self.overlay.hide(after: 5)
                     } else {

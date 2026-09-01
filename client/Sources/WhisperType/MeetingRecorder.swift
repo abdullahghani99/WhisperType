@@ -66,6 +66,18 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     /// still complete minutes later; without this it would publish its engine
     /// over a newer, working one.
     private var micStartToken = 0
+    /// Only pad gaps this large. A converted buffer can be waiting on the lock
+    /// while the timer sees a "gap" it is about to fill itself; padding ordinary
+    /// jitter would push the mic track past the system track and delay all later
+    /// speech. Half a second is far longer than callback phase differences and
+    /// far shorter than any outage worth correcting.
+    private static let minPadBytes = 16_000
+    /// Recovery attempts are exhausted. The watchdog KEEPS RUNNING regardless: it
+    /// also pads the mic track onto the system clock, and stopping it let the
+    /// timeline drift for the remainder of the meeting.
+    private var gaveUpOnMic = false
+    /// True while a meeting is live or coming up. Read under `lock`.
+    private var isRecordingOrStarting: Bool { isRecording || starting }
     /// The device the current mic engine is bound to, so a stall demotes the
     /// right one rather than whatever happens to rank first now.
     private var lastMicUID = ""
@@ -116,15 +128,14 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         starting = true
         os_unfair_lock_unlock(&lockPrimitive)
         defer { os_unfair_lock_lock(&lockPrimitive); starting = false; os_unfair_lock_unlock(&lockPrimitive) }
-        // ~20 minutes at 16kHz mono int16, so the common meeting never reallocates
-        // these while an audio callback is holding the lock.
-        systemPCM = Data(); systemPCM.reserveCapacity(38_400_000)
-        micPCM = Data(); micPCM.reserveCapacity(38_400_000)
+        systemPCM = Data(); systemPCM.reserveCapacity(3_840_000)
+        micPCM = Data(); micPCM.reserveCapacity(3_840_000)
         // Per MEETING, not per launch. Left cumulative, three recoveries in one
         // meeting meant every later meeting gave up without trying at all.
         micRecoveries = 0
         micStalled = false
         micPaddedBytes = 0
+        gaveUpOnMic = false
 
         // --- system audio via ScreenCaptureKit ---
         let content = try await SCShareableContent.excludingDesktopWindows(false,
@@ -156,8 +167,12 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         // Both streams are live now — discard probe/preroll audio and start the
         // clock for both tracks at the same instant.
         os_unfair_lock_lock(&lockPrimitive)
-        systemPCM = Data(); systemPCM.reserveCapacity(38_400_000)   // ~20 min
-        micPCM = Data(); micPCM.reserveCapacity(38_400_000)
+        // ~2 minutes each (16kHz mono int16). Enough to absorb the early growth
+        // that would otherwise reallocate while an audio callback holds the lock,
+        // without reserving 76MB up front on a machine that has memory pressure.
+        // Longer meetings grow amortised, as they always did.
+        systemPCM = Data(); systemPCM.reserveCapacity(3_840_000)
+        micPCM = Data(); micPCM.reserveCapacity(3_840_000)
         capturing = true
         os_unfair_lock_unlock(&lockPrimitive)
         isRecording = true
@@ -189,7 +204,14 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         // exactly this -- and micQ.sync would then never return, stranding the
         // only copy of the meeting in memory. Bumping the generation makes any
         // queued or running recovery a no-op instead of blocking on it.
-        os_unfair_lock_lock(&lockPrimitive); micGeneration &+= 1; os_unfair_lock_unlock(&lockPrimitive)
+        // Bumping the generation only silences taps. A recovery blocked inside
+        // AVAudioEngine.start() would still PUBLISH its engine after stop, leaving
+        // a mic running past the end of the meeting and interfering with the next
+        // one. Moving the start token invalidates that publication too.
+        os_unfair_lock_lock(&lockPrimitive)
+        micGeneration &+= 1
+        micStartToken &+= 1
+        os_unfair_lock_unlock(&lockPrimitive)
         tearDownMic()
         // Streams are stopped now, so no callback can be appending — safe to read
         // without the lock (which isn't allowed from this async context anyway).
@@ -202,7 +224,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         // Coverage must measure DELIVERED audio, not the silence we padded in to
         // hold alignment -- otherwise a dead microphone reports 100%.
         let realMicBytes = max(0, mic.count - micPaddedBytes)
-        let coverage = secs > 0 ? Int(Double(realMicBytes) / 32_000.0 / secs * 100) : 0
+        let coverage = secs > 0 ? min(100, Int(Double(realMicBytes) / 32_000.0 / secs * 100)) : 0
         let carried = micHealth?.everCarriedAudio ?? false
         log("recording stopped (system \(sys.count)B / \(String(format: "%.0f", secs))s, " +
             "mic \(mic.count)B / \(String(format: "%.0f", micSecs))s = \(coverage)% coverage, " +
@@ -294,6 +316,13 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         defer { os_unfair_lock_lock(&lockPrimitive); micStarting = false; os_unfair_lock_unlock(&lockPrimitive) }
         micLive = false
         for dev in AudioDevices.preferredInputs() {
+            // Check FIRST, every iteration. An abandoned attempt used to run on
+            // and overwrite micConverter, pendingHealth and the probe counter, and
+            // bump micGeneration — invalidating the replacement's own tap.
+            os_unfair_lock_lock(&lockPrimitive)
+            let stale = myToken != micStartToken || !isRecordingOrStarting
+            os_unfair_lock_unlock(&lockPrimitive)
+            if stale { log("mic: abandoning superseded probe"); return }
             let e = AVAudioEngine()
             let input = e.inputNode
             if let au = input.audioUnit {
@@ -390,10 +419,12 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // catch-up, and mix() aligns by index, so every later word would slide
             // earlier and land over the wrong system audio.
             os_unfair_lock_lock(&self.lockPrimitive)
-            if self.capturing, self.micPCM.count < self.systemPCM.count {
+            if self.capturing {
                 let gap = self.systemPCM.count - self.micPCM.count
-                self.micPCM.append(Data(count: gap))
-                self.micPaddedBytes += gap
+                if gap >= Self.minPadBytes {
+                    self.micPCM.append(Data(count: gap))
+                    self.micPaddedBytes += gap
+                }
             }
             os_unfair_lock_unlock(&self.lockPrimitive)
 
@@ -437,12 +468,13 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             let who = self.micName.isEmpty ? "no input device" : self.micName
             self.log("mic: \(who) has carried NO audio for \(Int(quiet))s " +
                      "(\(everWorked ? "it was working earlier" : "it never started"))")
+            if self.gaveUpOnMic { return }   // keep padding; stop retrying
             guard self.micRecoveries < self.maxMicRecoveries else {
                 self.log("mic: giving up after \(self.micRecoveries) attempts — recording other participants only")
                 DispatchQueue.main.async {
                     self.onMicTrouble?("Still no microphone — this meeting is recording other participants ONLY.")
                 }
-                self.micWatchdog?.invalidate(); self.micWatchdog = nil
+                self.gaveUpOnMic = true
                 return
             }
             // One recovery at a time. A probe can outlast the 3s tick, and queued
@@ -525,8 +557,10 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // earlier and lay it over the wrong system audio. System capture runs
             // continuously, so it is the clock: pad the mic with silence up to it
             // before appending. Cheap, and it self-heals every gap.
-            if micPCM.count < systemPCM.count {
-                micPCM.append(Data(count: systemPCM.count - micPCM.count))
+            let gap = systemPCM.count - micPCM.count
+            if gap >= Self.minPadBytes {
+                micPCM.append(Data(count: gap))
+                micPaddedBytes += gap          // excluded from coverage, like the timer's
             }
             micPCM.append(d)
         }

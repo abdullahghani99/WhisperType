@@ -105,7 +105,52 @@ final class AudioRecorder {
     /// wake-up delay and keeps its audio; everything else stays warm.
     var prerollEnabled: Bool {
         guard UserDefaults.standard.bool(forKey: "vf_preroll") else { return false }
-        return !AudioDevices.currentInputIsBluetooth()
+        // On Bluetooth you cannot have both: holding the mic drops the headset
+        // from A2DP (stereo 48kHz) to HFP (mono 16kHz), and releasing it means
+        // the link has to come up on each press. That is the Bluetooth spec, not
+        // something code can arbitrate.
+        //
+        // It cannot be decided automatically either. "Is audio playing?" has no
+        // reliable answer: DeviceIsRunningSomewhere reads 1 with nothing audible
+        // because avconferenced and Safari hold output streams open permanently.
+        // Measured, which is why that check is gone.
+        //
+        // So it is the human's call, and it defaults to FAST.
+        if AudioDevices.currentInputIsBluetooth() {
+            return UserDefaults.standard.object(forKey: "vf_bluetoothWarm") as? Bool ?? true
+        }
+        return true
+    }
+
+    private var prerollReconciler: Timer?
+
+    /// Keep the warm engine in step with whether warming is currently free.
+    ///
+    /// prerollEnabled is a live decision — it flips when music starts or stops on
+    /// a Bluetooth headset — but the engine is only built or torn down at a few
+    /// moments. Without this, starting music would leave the mic held (and the
+    /// audio degraded) until the next dictation, and stopping it would leave the
+    /// engine cold (and the next press slow) for just as long.
+    func startPrerollReconciler() {
+        prerollReconciler?.invalidate()
+        // Unscheduled + added to the main run loop on purpose: scheduledTimer
+        // attaches to the CURRENT run loop, and a caller off the main thread has
+        // none — which is how the meeting watchdog silently never fired.
+        let t = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+            guard let self = self, !self.isRecording else { return }
+            let want = self.prerollEnabled
+            let have = self.isEngineRunning
+            guard want != have else { return }
+            self.engineQueue.async { [weak self] in
+                guard let self = self, !self.state.isRecording else { return }
+                if want { _ = self.bringUpEngine() } else { self.teardownCommitted() }
+                self.logError(want
+                    ? "warming the mic again (nothing is playing)"
+                    : "releasing the mic so playback keeps its quality")
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        prerollReconciler = t
     }
 
     /// Apply a change to the pre-roll setting: warm the engine, or shut it down.

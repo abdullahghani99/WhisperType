@@ -147,7 +147,7 @@ final class DockController {
         // Auto-clear the error state so the dock never gets STUCK on "No audio".
         if state.phase == .error {
             if errorClearTimer == nil {
-                errorClearTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+                errorClearTimer = Timer.scheduledTimer(withTimeInterval: 6.0, repeats: false) { [weak self] _ in
                     self?.errorClearTimer = nil
                     if self?.state.phase == .error { self?.state.returnToIdle() }
                 }

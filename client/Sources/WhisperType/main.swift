@@ -888,16 +888,26 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dockController.state.finishRecording()
 
         guard wav.count > 8_000 else {
-            if wav.count <= 64 {  // header only → EVERY mic produced no samples
-                // Multi-capture already recorded from every plausible input device
-                // in parallel and kept the loudest — so silence here means none of
-                // them heard anything (all muted, unplugged, or no mic granted).
-                // There's nothing left to cycle to; just report it (auto-clears).
+            // A FAILED DICTATION MUST ANNOUNCE ITSELF. The dock alone is not
+            // enough: it is small, dims at rest, clears itself after a few
+            // seconds, and on a wide display it sits far from where you are
+            // looking. Losing what you just said and being told nothing is the
+            // worst outcome this app has, so failure gets a sound and a message
+            // as well. Success stays quiet and stays in the dock.
+            SoundFeedback.failed()
+            if wav.count <= 64 {  // header only → the mic produced no samples
                 vlog("no audio captured (all input devices were silent)")
-                dockController.state.fail("No audio. Check that your mic is not muted.")
+                let msg = "No audio captured — nothing was recorded. Say it again."
+                dockController.state.fail("No audio — nothing recorded")
+                overlay.show(.message(msg))
+                overlay.hide(after: 4)
             } else {
-                vlog("recording too short, ignoring")
-                dockController.state.returnToIdle()
+                // Between a bare header and a quarter-second. Used to vanish in
+                // silence, which reads exactly like a dictation that worked.
+                vlog("recording too short (\(wav.count) bytes), ignoring")
+                dockController.state.fail("Too short — hold the key while you speak")
+                overlay.show(.message("That was too short to transcribe — hold the key while you speak."))
+                overlay.hide(after: 4)
             }
             return
         }

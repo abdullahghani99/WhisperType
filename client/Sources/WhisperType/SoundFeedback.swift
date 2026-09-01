@@ -11,6 +11,10 @@ enum SoundFeedback {
 
     /// A soft, lower confirm when the transcript has been inserted.
     static func done() { play("Pop", 0.3) }
+    /// A failed dictation MUST NOT sound like a successful one. Without this,
+    /// start went "ting" and both outcomes then went silent, so the only way to
+    /// learn it had failed was noticing that no text arrived.
+    static func failed() { play("Basso", 0.5) }
 
     private static func play(_ name: String, _ volume: Float) {
         guard !muted, let sound = NSSound(named: NSSound.Name(name)) else { return }

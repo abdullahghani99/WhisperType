@@ -57,14 +57,6 @@ public final class MicHealth {
         }
     }
 
-    /// Restart the clock — called after switching to a different device, so the
-    /// new one is judged on its own record rather than inheriting the old one's.
-    public func reset(at now: Double) {
-        os_unfair_lock_lock(&lockPrimitive); defer { os_unfair_lock_unlock(&lockPrimitive) }
-        startedAt = now
-        lastSignalAt = nil
-        sawSignal = false
-    }
 
     /// Has this stream EVER carried audio? A stream that never has is a
     /// different problem from one that stopped, and deserves a different message.

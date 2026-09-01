@@ -55,8 +55,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     /// the microphone stayed dead and no further attempt could run. AudioRecorder
     /// solved the same hang by abandoning its queue rather than waiting, so this
     /// does too.
-    private var micQ = DispatchQueue(label: "vf.meeting.mic.0")
-    private var micQSerial = 0
+    private var micQ = DispatchQueue(label: "vf.meeting.mic")
     private var recoveryStartedAt: Double = 0
     /// Silence inserted to keep the mic track on the system clock. Excluded from
     /// the coverage figure, or padding would report a dead microphone as 100%.
@@ -76,8 +75,6 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     /// also pads the mic track onto the system clock, and stopping it let the
     /// timeline drift for the remainder of the meeting.
     private var gaveUpOnMic = false
-    /// True while a meeting is live or coming up. Read under `lock`.
-    private var isRecordingOrStarting: Bool { isRecording || starting }
     /// The device the current mic engine is bound to, so a stall demotes the
     /// right one rather than whatever happens to rank first now.
     private var lastMicUID = ""
@@ -320,7 +317,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // and overwrite micConverter, pendingHealth and the probe counter, and
             // bump micGeneration — invalidating the replacement's own tap.
             os_unfair_lock_lock(&lockPrimitive)
-            let stale = myToken != micStartToken || !isRecordingOrStarting
+            let stale = myToken != micStartToken || !(isRecording || starting)
             os_unfair_lock_unlock(&lockPrimitive)
             if stale { log("mic: abandoning superseded probe"); return }
             let e = AVAudioEngine()
@@ -434,8 +431,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             let stuck = self.recovering &&
                 (Date().timeIntervalSince1970 - self.recoveryStartedAt) > 8.0
             if stuck {
-                self.micQSerial += 1
-                self.micQ = DispatchQueue(label: "vf.meeting.mic.\(self.micQSerial)")
+                self.micQ = DispatchQueue(label: "vf.meeting.mic")   // a fresh one; the old is abandoned
                 self.recovering = false
                 // Free the start slot too, and move the token so the abandoned
                 // attempt cannot publish its engine when it eventually returns.

@@ -65,13 +65,4 @@ final class MicHealthTests: XCTestCase {
         XCTAssertEqual(h.verdict(at: 9.0), .live)
     }
 
-    func testResetJudgesANewDeviceOnItsOwnRecord() {
-        let h = MicHealth(startedAt: 0, graceSeconds: 3, stallSeconds: 12)
-        for t in stride(from: 0.0, through: 20.0, by: 0.5) { h.observe(at: t, hasSignal: false) }
-        XCTAssertEqual(h.verdict(at: 20.0), .stalled(silentSeconds: 20.0))
-        // Switched to another microphone: it starts clean, not already condemned.
-        h.reset(at: 20.0)
-        XCTAssertEqual(h.verdict(at: 21.0), .starting)
-        XCTAssertFalse(h.everCarriedAudio)
-    }
 }

@@ -166,7 +166,12 @@ public final class MicLifecycle {
     // MARK: recovery budget
 
     public enum RecoveryDecision: Equatable {
-        case recover(attempt: Int, of: Int)
+        /// The attempt is RESERVED by this call — slot taken and wedge clock
+        /// started — and its token must be carried into the bring-up. Granting
+        /// recovery without reserving left a window in which later ticks saw no
+        /// attempt in flight, spent the remaining budget, and could not abandon
+        /// the blocked queue either.
+        case recover(attempt: Int, of: Int, token: Int)
         /// Out of attempts. Retrying stops; the caller must keep its clock-keeping
         /// running, because stopping that let the two tracks drift apart.
         case exhausted
@@ -181,7 +186,10 @@ public final class MicLifecycle {
             guard !attemptInFlight else { return .alreadyRecovering }
             guard recoveries < maxRecoveries else { gaveUp = true; return .exhausted }
             recoveries += 1
-            return .recover(attempt: recoveries, of: maxRecoveries)
+            attemptInFlight = true          // reserve and timestamp ATOMICALLY
+            attemptStartedAt = now
+            attemptToken &+= 1
+            return .recover(attempt: recoveries, of: maxRecoveries, token: attemptToken)
         }
     }
 

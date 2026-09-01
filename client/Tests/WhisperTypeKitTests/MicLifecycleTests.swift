@@ -126,11 +126,11 @@ final class MicLifecycleTests: XCTestCase {
         let l = MicLifecycle(maxRecoveries: 3)
         _ = l.requestStart(); l.markRecording()
         for n in 1...3 {
-            guard case .recover(let attempt, let of) = l.requestRecovery(at: Double(n)) else {
+            guard case .recover(let attempt, let of, let token) = l.requestRecovery(at: Double(n)) else {
                 return XCTFail("attempt \(n) should be allowed")
             }
             XCTAssertEqual(attempt, n); XCTAssertEqual(of, 3)
-            l.endAttempt(l.beginAttempt(at: Double(n))!)
+            l.endAttempt(token)          // the caller carries the RESERVED token
         }
         XCTAssertEqual(l.requestRecovery(at: 4), .exhausted)
         XCTAssertTrue(l.hasGivenUp)
@@ -141,7 +141,10 @@ final class MicLifecycleTests: XCTestCase {
     func testTheRecoveryBudgetResetsForEachMeeting() {
         let l = MicLifecycle(maxRecoveries: 3)
         _ = l.requestStart(); l.markRecording()
-        for n in 1...3 { _ = l.requestRecovery(at: Double(n)); l.endAttempt(l.beginAttempt(at: Double(n))!) }
+        for n in 1...3 {
+            guard case .recover(_, _, let token) = l.requestRecovery(at: Double(n)) else { return XCTFail() }
+            l.endAttempt(token)
+        }
         XCTAssertEqual(l.requestRecovery(at: 4), .exhausted)
         _ = l.requestStop(); l.finishStop()
         // Left cumulative, three recoveries in one meeting meant every later
@@ -149,20 +152,35 @@ final class MicLifecycleTests: XCTestCase {
         XCTAssertEqual(l.requestStart(), .start)
         l.markRecording()
         XCTAssertFalse(l.hasGivenUp)
-        guard case .recover(let attempt, _) = l.requestRecovery(at: 10) else {
+        guard case .recover(let attempt, _, _) = l.requestRecovery(at: 10) else {
             return XCTFail("a new meeting gets a fresh budget")
         }
         XCTAssertEqual(attempt, 1)
     }
 
-    func testRecoveryIsRefusedWhileOneIsAlreadyRunning() {
-        let l = MicLifecycle()
+    func testASecondRecoveryIsRefusedImmediately() {
+        let l = MicLifecycle(maxRecoveries: 3)
         _ = l.requestStart(); l.markRecording()
-        _ = l.requestRecovery(at: 0)
-        _ = l.beginAttempt(at: 0)
-        // A probe can outlast the watchdog tick; queued jobs would tear down a
-        // microphone an earlier job had just recovered.
-        XCTAssertEqual(l.requestRecovery(at: 3), .alreadyRecovering)
+        guard case .recover = l.requestRecovery(at: 0) else { return XCTFail() }
+        // WITHOUT calling beginAttempt: granting recovery must reserve the slot
+        // itself. The earlier version of this test called beginAttempt by hand and
+        // so passed while the real call order — reserve only after a queued
+        // teardown — left a window that burned the whole retry budget in seconds.
+        XCTAssertEqual(l.requestRecovery(at: 1), .alreadyRecovering)
+        XCTAssertEqual(l.requestRecovery(at: 2), .alreadyRecovering)
+    }
+
+    func testARecoveryWedgedBeforeTheMicEvenStartsCanBeAbandoned() {
+        let l = MicLifecycle(wedgeTimeout: 8)
+        _ = l.requestStart(); l.markRecording()
+        guard case .recover(_, _, let token) = l.requestRecovery(at: 0) else { return XCTFail() }
+        // The wedge clock starts at the DECISION, so a teardown that blocks before
+        // the bring-up is still recoverable.
+        XCTAssertTrue(l.abandonIfWedged(at: 20))
+        XCTAssertFalse(l.isCurrentAttempt(token))
+        guard case .recover = l.requestRecovery(at: 21) else {
+            return XCTFail("the slot must be free after abandoning")
+        }
     }
 
     func testRecoveryIsRefusedWhenNoMeetingIsRunning() {

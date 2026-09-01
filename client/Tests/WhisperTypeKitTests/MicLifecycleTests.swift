@@ -133,7 +133,6 @@ final class MicLifecycleTests: XCTestCase {
             l.endAttempt(token)          // the caller carries the RESERVED token
         }
         XCTAssertEqual(l.requestRecovery(at: 4), .exhausted)
-        XCTAssertTrue(l.hasGivenUp)
         // Exhausted stays exhausted — it must not log "giving up" on every tick.
         XCTAssertEqual(l.requestRecovery(at: 5), .exhausted)
     }
@@ -151,7 +150,6 @@ final class MicLifecycleTests: XCTestCase {
         // meeting gave up without a single attempt.
         XCTAssertEqual(l.requestStart(), .start)
         l.markRecording()
-        XCTAssertFalse(l.hasGivenUp)
         guard case .recover(let attempt, _, _) = l.requestRecovery(at: 10) else {
             return XCTFail("a new meeting gets a fresh budget")
         }

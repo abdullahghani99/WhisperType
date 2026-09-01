@@ -193,8 +193,6 @@ public final class MicLifecycle {
         }
     }
 
-    public var hasGivenUp: Bool { locked { gaveUp } }
-
     // MARK: track alignment
 
     /// How much silence to insert so the microphone track stays on the system

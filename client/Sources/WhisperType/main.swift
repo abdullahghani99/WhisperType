@@ -411,6 +411,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     // other participants is worse than one that fails outright —
                     // you find out an hour later, when the audio is gone.
                     if self.meetingRecorder.micLive {
+                        // A meeting that quietly loses the mic is the worst failure
+                        // this app has. Say it out loud, while it can still be saved.
+                        self.meetingRecorder.onMicTrouble = { [weak self] msg in
+                            guard let self = self else { return }
+                            SoundFeedback.failed()
+                            self.overlay.show(.message("⚠️ \(msg)"))
+                            self.overlay.hide(after: 8)
+                        }
                         self.overlay.show(.message("🔴 Recording meeting (mic: \(self.meetingRecorder.micName)) — menu ▸ “Stop meeting & summarize” to finish"))
                         self.overlay.hide(after: 5)
                     } else {

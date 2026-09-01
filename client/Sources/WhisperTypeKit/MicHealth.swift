@@ -1,0 +1,82 @@
+import Foundation
+
+/// Is a capture stream actually delivering AUDIO, as opposed to merely running?
+///
+/// Every microphone failure in this app has had one shape: the device opens, the
+/// tap fires, bytes arrive — and the bytes are zeros. Byte count is not evidence
+/// of audio, and a probe at the start cannot see a device that dies later. A
+/// ten-minute meeting recorded 17.8MB of microphone data and none of the user's
+/// voice, because the only check ran in the first second.
+///
+/// This watches continuously instead. Feed it every buffer; ask it what the
+/// stream is doing. It is deliberately pure — no timers, no clock of its own —
+/// so the decisions can be tested without hardware.
+public final class MicHealth {
+    public enum Verdict: Equatable {
+        /// Real audio arrived recently. Nothing to do.
+        case live
+        /// Too early to judge: a device is allowed a moment to wake up, and
+        /// Bluetooth headsets routinely need one to negotiate the mic link.
+        case starting
+        /// Bytes may still be arriving, but none of them have carried signal.
+        case stalled(silentSeconds: Double)
+    }
+
+    private let graceSeconds: Double
+    private let stallSeconds: Double
+    private var startedAt: Double
+    private var lastSignalAt: Double?
+    private var sawSignal = false
+    private let lock = NSLock()
+
+    /// - Parameters:
+    ///   - graceSeconds: how long a device may take to produce its first audio
+    ///     before silence counts against it.
+    ///   - stallSeconds: how long a stream that HAS produced audio may go quiet
+    ///     before it is treated as stalled. Must comfortably exceed a natural
+    ///     pause in speech, or a thoughtful silence looks like a dead mic.
+    public init(startedAt: Double, graceSeconds: Double = 3.0, stallSeconds: Double = 12.0) {
+        self.startedAt = startedAt
+        self.graceSeconds = graceSeconds
+        self.stallSeconds = stallSeconds
+    }
+
+    /// Call for every buffer. `hasSignal` must be true only when the buffer
+    /// contains a non-zero sample: a live mic in a quiet room still carries a
+    /// noise floor, so all-zero genuinely means nothing is coming through.
+    public func observe(at now: Double, hasSignal: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        if hasSignal {
+            lastSignalAt = now
+            sawSignal = true
+        }
+    }
+
+    /// Restart the clock — called after switching to a different device, so the
+    /// new one is judged on its own record rather than inheriting the old one's.
+    public func reset(at now: Double) {
+        lock.lock(); defer { lock.unlock() }
+        startedAt = now
+        lastSignalAt = nil
+        sawSignal = false
+    }
+
+    /// Has this stream EVER carried audio? A stream that never has is a
+    /// different problem from one that stopped, and deserves a different message.
+    public var everCarriedAudio: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return sawSignal
+    }
+
+    public func verdict(at now: Double) -> Verdict {
+        lock.lock(); defer { lock.unlock() }
+        if let last = lastSignalAt {
+            let quiet = now - last
+            return quiet >= stallSeconds ? .stalled(silentSeconds: quiet) : .live
+        }
+        // Never produced a sample yet.
+        let waited = now - startedAt
+        if waited < graceSeconds { return .starting }
+        return .stalled(silentSeconds: waited)
+    }
+}

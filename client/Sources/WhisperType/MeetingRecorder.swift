@@ -1,6 +1,7 @@
 import AVFoundation
 import ScreenCaptureKit
 import Foundation
+import WhisperTypeKit
 
 /// Live meeting recorder: captures SYSTEM audio (everyone else on the call, via
 /// ScreenCaptureKit) + your MIC (AVAudioEngine) simultaneously, mixes them into
@@ -23,8 +24,36 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     /// True only when the mic proved it delivers samples. The caller warns the
     /// user when this is false — silently recording half a meeting is not OK.
     private(set) var micLive = false
+    /// Continuous liveness watch on the microphone. The opening probe proves a
+    /// device STARTED; this proves it is still carrying audio. Without it a
+    /// ten-minute meeting recorded 17.8MB of microphone bytes and none of the
+    /// user's voice, because the only check ran in the first second.
+    private var micHealth: MicHealth?
+    private var micWatchdog: Timer?
+    private var micRecoveries = 0
+    private let maxMicRecoveries = 3
+    /// True once the mic has been silent long enough to matter, so the UI can say
+    /// so WHILE the meeting is running instead of after it is lost.
+    private(set) var micStalled = false
+    /// Fired on the main queue the first time the mic goes quiet, and again when
+    /// recovery gives up. Losing a meeting's microphone in silence is the single
+    /// most expensive failure this app has; the human has to hear about it while
+    /// there is still a meeting left to save.
+    var onMicTrouble: ((String) -> Void)?
     private(set) var micName = ""
     private let sysQ = DispatchQueue(label: "vf.meeting.sys")
+    private let micQ = DispatchQueue(label: "vf.meeting.mic")
+    /// The device the current mic engine is bound to, so a stall demotes the
+    /// right one rather than whatever happens to rank first now.
+    private var lastMicUID = ""
+    /// Set SYNCHRONOUSLY at the top of start(). isRecording is only true after
+    /// two awaits, so it could not keep a second start() out of the window in
+    /// between: both ran startMic(), and the loser nilled micConverter under the
+    /// winner's still-installed tap. The meeting then recorded 0 microphone
+    /// bytes while the probe had reported 14400 healthy frames.
+    private var starting = false
+    /// startMic sleeps while probing, so two of them must never overlap.
+    private var micStarting = false
     private(set) var isRecording = false
     /// Both tracks only accumulate once BOTH streams are live, so sample 0 of the
     /// mic and sample 0 of the system audio are the same instant. mix() aligns by
@@ -39,7 +68,11 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func start() async throws {
-        guard !isRecording else { return }
+        lock.lock()
+        if isRecording || starting { lock.unlock(); return }
+        starting = true
+        lock.unlock()
+        defer { lock.lock(); starting = false; lock.unlock() }
         systemPCM = Data(); micPCM = Data()
 
         // --- system audio via ScreenCaptureKit ---
@@ -73,6 +106,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         // clock for both tracks at the same instant.
         lock.lock(); systemPCM = Data(); micPCM = Data(); capturing = true; lock.unlock()
         isRecording = true
+        startMicWatchdog()
         log(micLive ? "recording started (system + mic: \(micName))"
                     : "recording started (system ONLY — no working mic)")
     }
@@ -81,6 +115,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         guard isRecording else { return Data() }
         isRecording = false
         lock.lock(); capturing = false; lock.unlock()
+        micWatchdog?.invalidate(); micWatchdog = nil
         try? await stream?.stopCapture()
         stream = nil
         micEngine?.inputNode.removeTap(onBus: 0)
@@ -89,7 +124,24 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         // Streams are stopped now, so no callback can be appending — safe to read
         // without the lock (which isn't allowed from this async context anyway).
         let sys = systemPCM, mic = micPCM
-        log("recording stopped (system \(sys.count)B, mic \(mic.count)B)")
+        // Report COVERAGE and SIGNAL, not just byte counts. "mic 17833984B" read
+        // as success for a meeting that captured none of the user's voice; bytes
+        // were never the question.
+        let secs = Double(sys.count) / 32_000.0                 // 16kHz mono int16
+        let micSecs = Double(mic.count) / 32_000.0
+        let coverage = secs > 0 ? Int(micSecs / secs * 100) : 0
+        let carried = micHealth?.everCarriedAudio ?? false
+        log("recording stopped (system \(sys.count)B / \(String(format: "%.0f", secs))s, " +
+            "mic \(mic.count)B / \(String(format: "%.0f", micSecs))s = \(coverage)% coverage, " +
+            "mic carried audio: \(carried ? "YES" : "NO"))")
+        if micLive && (coverage < 60 || !carried) {
+            log("mic: WARNING — the microphone track is incomplete; the human should be told")
+            DispatchQueue.main.async { [weak self] in
+                self?.onMicTrouble?(carried
+                    ? "Your microphone only covered \(coverage)% of that meeting."
+                    : "Your microphone captured NO audio in that meeting.")
+            }
+        }
         return wav(from: mix(sys, mic))
     }
 
@@ -143,6 +195,11 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     /// accepting it. A meeting is not latency-sensitive, so a short liveness
     /// probe is cheap insurance against losing half a conversation.
     private func startMic() {
+        lock.lock()
+        if micStarting { lock.unlock(); log("mic: start already in progress, ignoring"); return }
+        micStarting = true
+        lock.unlock()
+        defer { lock.lock(); micStarting = false; lock.unlock() }
         micLive = false
         for dev in AudioDevices.preferredInputs() {
             let e = AVAudioEngine()
@@ -190,13 +247,74 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             AudioDevices.markWorking(uid: dev.uid)
             micEngine = e
             micLive = true
+            micStalled = false
             micName = dev.name
+            lastMicUID = dev.uid
+            if let h = micHealth { h.reset(at: Date().timeIntervalSince1970) }
+            else { micHealth = MicHealth(startedAt: Date().timeIntervalSince1970) }
             log("mic: capturing from \(dev.name) (\(got) frames in probe)")
             return
         }
         micEngine = nil
         micConverter = nil
+        lastMicUID = ""
+        // Arm the clock anyway. Previously micHealth stayed nil when nothing was
+        // accepted, so the watchdog returned early and NEVER retried -- a
+        // Bluetooth headset that was two seconds from being ready was lost for
+        // the whole meeting.
+        micHealth = MicHealth(startedAt: Date().timeIntervalSince1970)
         log("mic: NO working input device — this meeting will record OTHER participants only")
+    }
+
+    /// Watch the microphone for the WHOLE meeting, not just its first second.
+    ///
+    /// When a mic stops carrying audio we switch to the next candidate device and
+    /// keep recording. The failed one is demoted first, so preferredInputs ranks
+    /// it last and we do not land straight back on it. Bounded, because thrashing
+    /// between two broken devices for an hour would be its own failure.
+    private func startMicWatchdog() {
+        micWatchdog?.invalidate()
+        // NOT scheduledTimer: start() is async, so this runs off the main thread
+        // where there is no run loop to attach to, and the timer never fired at
+        // all. Build it unscheduled and add it to the main run loop explicitly.
+        let t = Timer(timeInterval: 3.0, repeats: true) { [weak self] _ in
+            guard let self = self, self.isRecording else { return }
+            guard let h = self.micHealth else { return }
+            guard case .stalled(let quiet) = h.verdict(at: Date().timeIntervalSince1970) else { return }
+            let firstNotice = !self.micStalled
+            self.micStalled = true
+            let everWorked = h.everCarriedAudio
+            if firstNotice {
+                let what = everWorked
+                    ? "Your microphone stopped being picked up"
+                    : "Your microphone is not being picked up"
+                DispatchQueue.main.async { self.onMicTrouble?("\(what) — trying another input…") }
+            }
+            self.log("mic: \(self.micName) has carried NO audio for \(Int(quiet))s " +
+                     "(\(everWorked ? "it was working earlier" : "it never started"))")
+            guard self.micRecoveries < self.maxMicRecoveries else {
+                self.log("mic: giving up after \(self.micRecoveries) attempts — recording other participants only")
+                DispatchQueue.main.async {
+                    self.onMicTrouble?("Still no microphone — this meeting is recording other participants ONLY.")
+                }
+                self.micWatchdog?.invalidate(); self.micWatchdog = nil
+                return
+            }
+            self.micRecoveries += 1
+            AudioDevices.markSilent(uid: self.lastMicUID)
+            self.log("mic: switching device (attempt \(self.micRecoveries)/\(self.maxMicRecoveries))")
+            // startMic sleeps while probing, so never run it on the timer thread.
+            self.micQ.async { [weak self] in
+                guard let self = self, self.isRecording else { return }
+                self.micEngine?.inputNode.removeTap(onBus: 0)
+                self.micEngine?.stop()
+                self.micEngine = nil
+                self.micConverter = nil
+                self.startMic()
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        micWatchdog = t
     }
 
     private func appendMic(_ buffer: AVAudioPCMBuffer) {
@@ -211,6 +329,18 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         guard err == nil, let ch = outBuf.int16ChannelData else { return }
         let n = Int(outBuf.frameLength)
+        // Does this buffer carry SIGNAL, or is it zero-filled? A live mic in a
+        // quiet room still has a noise floor, so all-zero means nothing is
+        // coming through -- the distinction the whole failure turned on.
+        var signal = false
+        for i in 0..<n where ch[0][i] != 0 { signal = true; break }
+        // `vf_simulateMicStall` pretends the mic went quiet, so the recovery path
+        // can actually be exercised. A dead microphone cannot be produced on
+        // demand -- dropping input gain to zero still yields a noise floor on both
+        // USB and Bluetooth here -- and this path is the one that lost a real
+        // meeting, so it must be testable rather than assumed.
+        let faked = UserDefaults.standard.bool(forKey: "vf_simulateMicStall")
+        micHealth?.observe(at: Date().timeIntervalSince1970, hasSignal: signal && !faked)
         let d = Data(bytes: ch[0], count: n * 2)
         lock.lock(); if capturing { micPCM.append(d) }; lock.unlock()
     }

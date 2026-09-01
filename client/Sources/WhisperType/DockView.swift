@@ -149,8 +149,11 @@ public struct DockView: View {
         }
         .overlay(alignment: .topTrailing) {
             if state.meetingRecording {
+                // Amber, not accent, when the mic is not being picked up: the
+                // recording dot otherwise looks identical whether or not your
+                // voice is being captured.
                 Circle()
-                    .fill(Color.vfAccent)
+                    .fill(state.meetingMicTrouble ? Color.vfAmber : Color.vfAccent)
                     .overlay(Circle().stroke(Color.white.opacity(0.6), lineWidth: 1))
                     .frame(width: 10, height: 10)
                     .offset(x: 1, y: -1)

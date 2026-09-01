@@ -403,7 +403,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startMeeting() {
         Task {
             do {
-                try await meetingRecorder.start()
+                // A refused start must not light the recording indicator. It used
+                // to show red while nothing whatsoever was being captured.
+                let began = try await meetingRecorder.start()
+                guard began else {
+                    await MainActor.run {
+                        self.overlay.show(.message("A meeting is still finishing — try again in a moment."))
+                        self.overlay.hide(after: 3)
+                    }
+                    return
+                }
                 await MainActor.run {
                     self.dockController.state.meetingRecording = true
                     self.dockController.state.callOffer = false
@@ -419,9 +428,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         SoundFeedback.failed()
                         self.overlay.show(.message("⚠️ \(msg)"))
                         self.overlay.hide(after: 8)
-                        // Sticky, unlike the overlay: the dock keeps saying the
-                        // meeting has no microphone until it recovers.
-                        self.dockController.state.errorText = msg
+                        // Sticky, unlike the overlay: the dock's recording dot
+                        // turns amber and STAYS amber until the mic comes back.
+                        // (Setting errorText alone rendered nothing — it is only
+                        // drawn in the .error phase — and left stale text behind.)
+                        self.dockController.state.meetingMicTrouble = true
+                    }
+                    self.meetingRecorder.onMicRecovered = { [weak self] in
+                        self?.dockController.state.meetingMicTrouble = false
+                        self?.overlay.show(.message("Microphone is being picked up again."))
+                        self?.overlay.hide(after: 3)
                     }
                     if self.meetingRecorder.micLive {
                         self.overlay.show(.message("🔴 Recording meeting (mic: \(self.meetingRecorder.micName)) — menu ▸ “Stop meeting & summarize” to finish"))
@@ -435,6 +451,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 vlog("meeting start FAILED: \(error)")
                 await MainActor.run {
                     self.dockController.state.meetingRecording = false
+                    self.dockController.state.meetingMicTrouble = false
                     self.overlay.show(.message("Couldn’t start recording — grant Screen Recording in System Settings ▸ Privacy & Security, then try again"))
                     self.overlay.hide(after: 5)
                 }
@@ -444,6 +461,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func stopMeeting() {
         dockController.state.meetingRecording = false   // clear the red indicator immediately
+        dockController.state.meetingMicTrouble = false // ...and never start the next meeting amber
         overlay.show(.message("Finishing recording…"))
         Task {
             let wav = await meetingRecorder.stop()

@@ -14,6 +14,11 @@ public final class DockState: ObservableObject {
     /// A meeting is actively being captured (drives the dock's record button and
     /// resting-pill indicator, so you can always tell recording is running).
     @Published public var meetingRecording: Bool = false
+    /// The meeting is running but the microphone is not being picked up. Sticky
+    /// on purpose: an overlay that fades after eight seconds is exactly how a
+    /// whole meeting gets recorded without the user's voice while they sit there
+    /// believing it is fine. Cleared when the mic comes back.
+    @Published public var meetingMicTrouble: Bool = false
     /// A call was detected and we are offering to record it. Never set without a
     /// real call — a nagging dock is worse than one that stays quiet.
     @Published public var callOffer: Bool = false

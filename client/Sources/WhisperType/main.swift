@@ -204,7 +204,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             vlog("call detected via \(raw) — offering to record")
             self.dockController.state.callTitle = CallSource.offerTitle(for: raw)
             self.dockController.state.callIconPNG = self.callWatcher.lastCallIconPNG
+            // Announce ONCE per offer. The detector can report a start twice as a
+            // device settles, and two chimes for one call reads as a glitch.
+            let alreadyOffering = self.dockController.state.callOffer
             self.dockController.state.callOffer = true
+            if !alreadyOffering { SoundFeedback.callOffer() }
             // The offer stays for as long as the call does. A 12-second window
             // assumed the human was watching the screen at the exact moment a
             // call began — usually they are looking at the person, or reaching

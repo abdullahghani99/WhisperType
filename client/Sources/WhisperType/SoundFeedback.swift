@@ -15,6 +15,12 @@ enum SoundFeedback {
     /// start went "ting" and both outcomes then went silent, so the only way to
     /// learn it had failed was noticing that no text arrived.
     static func failed() { play("Basso", 0.5) }
+    /// A call was detected and we are offering to record it. Soft, and distinct
+    /// from both the dictation "ting" and the failure tone: an offer you cannot
+    /// hear is not an offer. The pill alone was silent, at the bottom centre of
+    /// the screen, at the exact moment the human is looking at the person they
+    /// just called -- so in real use it was never once noticed.
+    static func callOffer() { play("Submarine", 0.35) }
 
     private static func play(_ name: String, _ volume: Float) {
         guard !muted, let sound = NSSound(named: NSSound.Name(name)) else { return }

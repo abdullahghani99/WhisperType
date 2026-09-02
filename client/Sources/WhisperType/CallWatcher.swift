@@ -100,12 +100,23 @@ final class CallWatcher {
             // daemons hold the microphone permanently — Apple's corespeechd
             // (Siri) is always capturing — and counting them meant the dock
             // offered to record a "pid 3990 call" all day long. Daemons have no
-            // NSRunningApplication and no bundle identifier, so this excludes
-            // them precisely rather than by blocklist.
-            guard let app = NSRunningApplication(processIdentifier: pid),
-                  app.bundleIdentifier != nil,
-                  app.activationPolicy == .regular,
-                  let name = app.localizedName, !name.isEmpty else { continue }
+            // NSRunningApplication and no bundle identifier, so requiring one
+            // excludes them precisely rather than by blocklist.
+            guard let proc = NSRunningApplication(processIdentifier: pid),
+                  let bundle = proc.bundleIdentifier, !bundle.isEmpty else { continue }
+            // But do NOT also require .regular. The big conferencing apps capture
+            // audio in a HELPER process, and Teams' is `.prohibited`:
+            //
+            //   com.microsoft.teams2.modulehost  "Microsoft Teams ModuleHost"  prohibited
+            //
+            // so the daemon filter silently threw away every Teams call — the one
+            // app the human actually gets called on. Resolve the helper back to
+            // the app that owns it instead, by bundle-identifier prefix, and
+            // report the call under the OWNER's name and icon ("Teams", not
+            // "Microsoft Teams ModuleHost"). A helper with no owning app is still
+            // rejected, so daemons stay out.
+            let owner = Self.owningApplication(of: proc, bundle: bundle)
+            guard let app = owner, let name = app.localizedName, !name.isEmpty else { continue }
             var png: Data?
             if let icon = app.icon, let tiff = icon.tiffRepresentation,
                let rep = NSBitmapImageRep(data: tiff) {
@@ -114,6 +125,30 @@ final class CallWatcher {
             found.append(Capturer(name: name, iconPNG: png))
         }
         return found
+    }
+
+    /// The user-facing app a capturing process belongs to.
+    ///
+    /// Returns the process itself when it is already a normal app (QuickTime,
+    /// Zoom). Otherwise walks to the `.regular` app whose bundle identifier is a
+    /// prefix of the helper's — `com.microsoft.teams2` owns
+    /// `com.microsoft.teams2.modulehost` — so a call captured in a helper is
+    /// still attributed to the app the human recognises. Returns nil for a
+    /// bundled process with no owning app, which keeps daemons out.
+    private static func owningApplication(of proc: NSRunningApplication,
+                                          bundle: String) -> NSRunningApplication? {
+        if proc.activationPolicy == .regular { return proc }
+        var best: NSRunningApplication?
+        for candidate in NSWorkspace.shared.runningApplications {
+            guard candidate.activationPolicy == .regular,
+                  let cid = candidate.bundleIdentifier, !cid.isEmpty,
+                  bundle == cid || bundle.hasPrefix(cid + ".") else { continue }
+            // Longest matching prefix wins, so a nested helper resolves to its
+            // closest owner rather than to a shorter unrelated identifier.
+            if let b = best, let bid = b.bundleIdentifier, bid.count >= cid.count { continue }
+            best = candidate
+        }
+        return best
     }
 
     private static func readU32(_ id: AudioObjectID, _ sel: AudioObjectPropertySelector) -> UInt32? {

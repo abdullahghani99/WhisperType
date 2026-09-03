@@ -621,13 +621,14 @@ def _name_speakers(labeled: str, taken: set | None = None) -> tuple[str, dict]:
     human now SEES.
 
     `taken` is the set of names already assigned (by voiceprint) BEFORE this runs.
-    Without it, a two-person call was labelled entirely "Abdullah": the voiceprint
-    named speaker one correctly, then this pass saw the other speaker say "sure
-    you are Abdullah" and gave that speaker the same name. Two humans collapsed
-    into one identity in a durable transcript, with the audio already discarded.
+    Without it, a real two-person call was labelled entirely with ONE person's
+    name: the voiceprint named speaker one correctly, then this pass saw the other
+    speaker say "sure you are, Sam" and gave that speaker the same name. Two
+    humans collapsed into one identity in a durable transcript, with the audio
+    already discarded.
 
     Being addressed by name used to count as evidence, and that is backwards: in
-    "sure you are Abdullah" the name belongs to the LISTENER, not the speaker. Only
+    "sure you are, Sam" the name belongs to the LISTENER, not the speaker. Only
     self-introduction is trustworthy."""
     model = _prompt_model if _prompt_model is not None else _model
     tok = _prompt_tok if _prompt_model is not None else _tok
@@ -639,7 +640,7 @@ def _name_speakers(labeled: str, taken: set | None = None) -> tuple[str, dict]:
     sys = ("You map anonymous speaker labels to real names, but ONLY when a speaker "
            "NAMES THEMSELVES — \"I'm Alex\", \"Alex here\", \"this is Alex speaking\". "
            "A name being spoken in a line is NOT evidence about who is speaking: in "
-           "\"sure you are, Abdullah\" the name belongs to the person being spoken TO, "
+           "\"sure you are, Sam\" the name belongs to the person being spoken TO, "
            "not the speaker. Never map a label on that basis. Never give the same name "
            "to two labels. Output STRICT JSON mapping the exact label to the name, e.g. "
            "{\"Speaker 1\": \"Alex\"}. Include a label ONLY if that speaker introduced "

@@ -612,13 +612,23 @@ def _meeting_title(text: str) -> str:
     return _sentence_case(out[:80])
 
 
-def _name_speakers(labeled: str) -> tuple[str, dict]:
-    """Map generic 'Speaker N' labels to real names ONLY where a speaker's name is
-    clearly stated in the conversation (self-introduction, or being addressed by
-    name). Leaves the rest as 'Speaker N'. Never invents a name. Returns
-    (transcript, applied) — the transcript with confident labels replaced, and
-    the {displayed_label: new_name} actually applied, so the caller can keep the
-    per-speaker embeddings keyed by what the human now SEES."""
+def _name_speakers(labeled: str, taken: set | None = None) -> tuple[str, dict]:
+    """Map generic 'Speaker N' labels to real names ONLY where a speaker names
+    THEMSELVES. Leaves the rest as 'Speaker N'. Never invents a name, and never
+    gives one name to two people. Returns (transcript, applied) — the transcript
+    with confident labels replaced, and the {displayed_label: new_name} actually
+    applied, so the caller can keep the per-speaker embeddings keyed by what the
+    human now SEES.
+
+    `taken` is the set of names already assigned (by voiceprint) BEFORE this runs.
+    Without it, a two-person call was labelled entirely "Abdullah": the voiceprint
+    named speaker one correctly, then this pass saw the other speaker say "sure
+    you are Abdullah" and gave that speaker the same name. Two humans collapsed
+    into one identity in a durable transcript, with the audio already discarded.
+
+    Being addressed by name used to count as evidence, and that is backwards: in
+    "sure you are Abdullah" the name belongs to the LISTENER, not the speaker. Only
+    self-introduction is trustworthy."""
     model = _prompt_model if _prompt_model is not None else _model
     tok = _prompt_tok if _prompt_model is not None else _tok
     if model is None or not labeled.strip():
@@ -626,12 +636,17 @@ def _name_speakers(labeled: str) -> tuple[str, dict]:
     present = sorted(set(re.findall(r"Speaker \d+", labeled)))
     if not present:
         return labeled, {}
-    sys = ("You map anonymous speaker labels to real names, but ONLY when a "
-           "speaker's name is clearly stated in the conversation (they introduce "
-           "themselves, or someone clearly addresses them by name). Output STRICT "
-           "JSON: an object mapping the exact label to the name, e.g. "
-           "{\"Speaker 1\": \"Alex\"}. Include a label ONLY if you are confident. "
-           "If no names are determinable, output {}. Output JSON only, nothing else.")
+    sys = ("You map anonymous speaker labels to real names, but ONLY when a speaker "
+           "NAMES THEMSELVES — \"I'm Alex\", \"Alex here\", \"this is Alex speaking\". "
+           "A name being spoken in a line is NOT evidence about who is speaking: in "
+           "\"sure you are, Abdullah\" the name belongs to the person being spoken TO, "
+           "not the speaker. Never map a label on that basis. Never give the same name "
+           "to two labels. Output STRICT JSON mapping the exact label to the name, e.g. "
+           "{\"Speaker 1\": \"Alex\"}. Include a label ONLY if that speaker introduced "
+           "themselves. If nobody did, output {}. Output JSON only, nothing else.")
+    if taken:
+        sys += (" These names are ALREADY assigned to other speakers and must not be "
+                "reused: " + ", ".join(sorted(taken)) + ".")
     msgs = [{"role": "system", "content": sys},
             {"role": "user", "content": f"Labels present: {', '.join(present)}\n\n"
                                          f"<<<TRANSCRIPT>>>\n{labeled[:8000]}\n<<<END>>>"}]
@@ -649,6 +664,9 @@ def _name_speakers(labeled: str) -> tuple[str, dict]:
     except Exception:  # noqa: BLE001
         return labeled, {}
     result, applied = labeled, {}
+    # A name may be used ONCE. The prompt asks for this, but a model is not a
+    # guarantee — enforce it here, where it cannot be argued with.
+    used = {n.strip().casefold() for n in (taken or set()) if isinstance(n, str)}
     for label, name in (mapping or {}).items():
         if not isinstance(name, str) or not name.strip():
             continue
@@ -656,10 +674,18 @@ def _name_speakers(labeled: str) -> tuple[str, dict]:
         if not re.fullmatch(r"Speaker \d+", lbl):
             continue
         nm = name.strip()[:40]
+        key = nm.casefold()
+        if key in used:
+            # Already this meeting's other speaker. An anonymous "Speaker 2" is
+            # visibly unknown and can be renamed by hand; a confident wrong name
+            # is indistinguishable from a right one.
+            log.info("speaker naming: %s -> %s rejected (name already assigned)", lbl, nm)
+            continue
         if f"**{lbl}:**" not in result:
             continue
         result = result.replace(f"**{lbl}:**", f"**{nm}:**")
         applied[lbl] = nm
+        used.add(key)
     return result, applied
 
 
@@ -1225,7 +1251,10 @@ async def _process_meeting(job_id: int, audio: bytes, language: str | None,
                             labeled = labeled.replace(f"**{generic}:**", f"**{name}:**")
                             display[raw_label] = name
                     # Then let the LLM name anyone who introduced themselves.
-                    transcript, applied = await asyncio.to_thread(_name_speakers, labeled)
+                    # Pass the names voiceprints already claimed, so the LLM pass cannot
+                    # hand the same person's name to a second speaker.
+                    transcript, applied = await asyncio.to_thread(
+                        _name_speakers, labeled, set(known.values()))
                     for raw_label, shown in list(display.items()):
                         if shown in applied:
                             display[raw_label] = applied[shown]

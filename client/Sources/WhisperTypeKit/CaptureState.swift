@@ -97,14 +97,22 @@ public final class CaptureState {
 
     /// Enough audio that silence is meaningful: ~0.75 s at 16 kHz mono int16.
     static let evidenceBytes = 24_000
-    /// Half a second of continuous zeros (16kHz mono int16) before a device is
-    /// called dead. Comfortably longer than the ~1.2s-at-worst Bluetooth wake-up
-    /// the engine now waits through, and far longer than the 0.128s burst that
-    /// wrongly demoted a working headset.
-    static let silenceEvidenceBytes = 16_000
+    /// ONE AND A HALF SECONDS of continuous zeros before a device is called dead.
+    ///
+    /// Set from measured hardware, not taste. Every wrongful demotion observed in
+    /// a single day sat under a second: 0.13s (Beats, mid-link), 0.40s (AirPods),
+    /// 0.59s (PowerConf). That last one is why half a second was not enough — the
+    /// project's own hardware notes record that the PowerConf's DSP has a ~500ms
+    /// wake-up delay that clips first words, so a threshold of 0.5s lands exactly
+    /// on top of a documented quirk. Meanwhile a device that is genuinely dead
+    /// streams zeros for the WHOLE press: the built-in mic managed 18.1 seconds of
+    /// them. There is a wide gap between the two, so sit near the top of it.
+    static let silenceEvidenceBytes = 48_000
 
-    /// Judge a finished capture. All-zero PCM means a dead device at ANY length —
-    /// a working microphone in a silent room still carries a noise floor.
+    /// Judge a finished capture. All-zero PCM means a dead device only once it has
+    /// lasted longer than any wake-up delay can explain — a working microphone in a
+    /// silent room still carries a noise floor, but a device that has not finished
+    /// coming up carries nothing at all.
     public static func classify(byteCount: Int, allZero: Bool) -> CaptureVerdict {
         // NO BYTES IS NOT EVIDENCE. An empty buffer is trivially "all zero", so
         // this used to read as a dead microphone and demote it. But zero bytes

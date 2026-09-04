@@ -76,9 +76,13 @@ final class CaptureStateTests: XCTestCase {
         // its mic link came up and was demoted for it, so dictation then avoided
         // the headset the human was wearing.
         XCTAssertEqual(CaptureState.classify(byteCount: 4_096, allZero: true), .inconclusive)
-        XCTAssertEqual(CaptureState.classify(byteCount: 5_000, allZero: true), .inconclusive)
-        // Sustained zeros still mean the hardware is dead.
-        XCTAssertEqual(CaptureState.classify(byteCount: 50_000, allZero: true), .silent)
+        XCTAssertEqual(CaptureState.classify(byteCount: 12_778, allZero: true), .inconclusive)
+        // 0.59s: the PowerConf's DSP wake-up, which the project's hardware notes
+        // put at ~500ms. Half a second was not enough headroom.
+        XCTAssertEqual(CaptureState.classify(byteCount: 18_890, allZero: true), .inconclusive)
+        // Sustained zeros still mean dead hardware — the built-in mic produced
+        // 18.1 seconds of them.
+        XCTAssertEqual(CaptureState.classify(byteCount: 580_012, allZero: true), .silent)
     }
 
     func testShortNonZeroCaptureIsInconclusiveNotWorking() {

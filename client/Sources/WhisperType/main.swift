@@ -189,8 +189,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // memory and overwritten continuously.
         UserDefaults.standard.register(defaults: ["vf_preroll": true])
         recorder.configurePreroll()       // start warm engine if pre-roll is enabled
-        // ...and keep it in step as playback starts and stops.
-        recorder.startPrerollReconciler()
 
         // Ambient meetings: offer to record when a call starts, and stop by
         // itself when it ends. Two meetings were lost to "I forgot to press

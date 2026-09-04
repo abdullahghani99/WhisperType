@@ -122,36 +122,20 @@ final class AudioRecorder {
         return true
     }
 
-    private var prerollReconciler: Timer?
-
-    /// Keep the warm engine in step with whether warming is currently free.
-    ///
-    /// prerollEnabled is a live decision — it flips when music starts or stops on
-    /// a Bluetooth headset — but the engine is only built or torn down at a few
-    /// moments. Without this, starting music would leave the mic held (and the
-    /// audio degraded) until the next dictation, and stopping it would leave the
-    /// engine cold (and the next press slow) for just as long.
-    func startPrerollReconciler() {
-        prerollReconciler?.invalidate()
-        // Unscheduled + added to the main run loop on purpose: scheduledTimer
-        // attaches to the CURRENT run loop, and a caller off the main thread has
-        // none — which is how the meeting watchdog silently never fired.
-        let t = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
-            guard let self = self, !self.isRecording else { return }
-            let want = self.prerollEnabled
-            let have = self.isEngineRunning
-            guard want != have else { return }
-            self.engineQueue.async { [weak self] in
-                guard let self = self, !self.state.isRecording else { return }
-                if want { _ = self.bringUpEngine() } else { self.teardownCommitted() }
-                self.logError(want
-                    ? "warming the mic again (nothing is playing)"
-                    : "releasing the mic so playback keeps its quality")
-            }
-        }
-        RunLoop.main.add(t, forMode: .common)
-        prerollReconciler = t
-    }
+    // The pre-roll reconciler is GONE. It existed to re-warm the mic when
+    // playback stopped on a Bluetooth headset -- but the playback detection it
+    // depended on was deleted (DeviceIsRunningSomewhere reports playback with
+    // nothing audible), so `prerollEnabled` became near-constant and all the
+    // reconciler did was retry a failed warm every 2 seconds, forever, with no
+    // backoff. It logged 2052 rebuild attempts in ONE DAY: each tears down an
+    // AVAudioEngine and builds another, and on Bluetooth one of those releases
+    // raced AVAudioIOUnit's device-change property listener and segfaulted the app
+    // twice -- EXC_BAD_ACCESS on the AVAudioIOUnit queue, the same crash class
+    // teardownCommitted was written to prevent.
+    //
+    // The warm engine is still warm: configurePreroll() brings it up at launch and
+    // reloadDevice() rebuilds it whenever the input device changes. If it dies in
+    // between, the next press builds it cold -- a short delay instead of a crash.
 
     /// Apply a change to the pre-roll setting: warm the engine, or shut it down.
     func configurePreroll() {
@@ -295,16 +279,50 @@ final class AudioRecorder {
             let e = AVAudioEngine()
             let input = e.inputNode
             if let au = input.audioUnit {
-                var id = dev.id
-                let st = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
+                // Pinning a Bluetooth device fails with -10851 while the link is
+                // still coming up — the same not-ready state that makes it report
+                // zero input channels a moment later. Observed on AirPods Pro
+                // right after they became the default input. Retry briefly before
+                // giving up on the device the human actually chose; skipping
+                // straight past it is how a call gets recorded on the wrong
+                // microphone, or on none.
+                var st: OSStatus = noErr
+                for attempt in 0..<6 {                    // up to ~1.2s
+                    var id = dev.id
+                    st = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
                                               kAudioUnitScope_Global, 0, &id,
                                               UInt32(MemoryLayout<AudioDeviceID>.size))
+                    if st == noErr {
+                        if attempt > 0 { logError("\(dev.name) pinned on attempt \(attempt + 1)") }
+                        break
+                    }
+                    Thread.sleep(forTimeInterval: 0.2)
+                }
                 if st != noErr {
-                    logError("skip \(dev.name): could not pin (err \(st))")
+                    logError("skip \(dev.name): could not pin (err \(st)) after 6 attempts")
                     e.stop(); continue
                 }
             }
-            let inFormat = input.inputFormat(forBus: 0)
+            // A Bluetooth headset reports ZERO input channels while it negotiates
+            // the mic link — measured on AirPods Pro: "24000.0Hz/0ch", repeatedly,
+            // for a second or so after it becomes the input device. Treating that
+            // as an unusable device is what "no audio recording via the AirPods"
+            // actually was: the format is not invalid, the device is not ready yet.
+            // Wait briefly rather than skipping to a worse microphone. Bounded and
+            // synchronous on the engine queue -- the previous attempt at handling
+            // this was a background timer that retried every 2s forever and
+            // segfaulted the app.
+            var inFormat = input.inputFormat(forBus: 0)
+            if inFormat.channelCount == 0 || inFormat.sampleRate == 0 {
+                for _ in 0..<6 {                       // up to ~1.2s
+                    Thread.sleep(forTimeInterval: 0.2)
+                    inFormat = input.inputFormat(forBus: 0)
+                    if inFormat.channelCount > 0 && inFormat.sampleRate > 0 { break }
+                }
+                if inFormat.channelCount > 0 {
+                    logError("\(dev.name) was not ready; it settled at \(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch")
+                }
+            }
             guard inFormat.channelCount > 0, inFormat.sampleRate > 0,
                   let conv = AVAudioConverter(from: inFormat, to: outFormat) else {
                 logError("skip \(dev.name): invalid format (\(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch)")

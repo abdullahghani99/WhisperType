@@ -149,14 +149,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
         // Both streams are live now — discard probe/preroll audio and start the
         // clock for both tracks at the same instant.
-        os_unfair_lock_lock(&lockPrimitive)
-        // ~2 minutes each (16kHz mono int16). Enough to absorb the early growth
-        // that would otherwise reallocate while an audio callback holds the lock,
-        // without reserving 76MB up front on a machine that has memory pressure.
-        // Longer meetings grow amortised, as they always did.
-        systemPCM = Data(); systemPCM.reserveCapacity(3_840_000)
-        micPCM = Data(); micPCM.reserveCapacity(3_840_000)
-        os_unfair_lock_unlock(&lockPrimitive)
+        resetBuffersForCapture()
         life.markRecording()
         began = true
         startMicWatchdog()
@@ -169,6 +162,27 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         log(micLive ? "recording started (system + mic: \(micName))"
                     : "recording started (system ONLY — no working mic)")
         return true
+    }
+
+
+    /// Clear both tracks and reserve their capacity, under the lock.
+    ///
+    /// Deliberately NOT inline in `start()`. `os_unfair_lock` must be locked and
+    /// unlocked on the same thread, and an async function can resume on a
+    /// different one — so the compiler refuses it there ("unavailable from
+    /// asynchronous contexts") and Swift 6 makes it an error. There was no
+    /// `await` between the lock and unlock, so it was safe in practice, but
+    /// "safe as long as nobody adds an await" is not a property worth relying on.
+    /// A synchronous helper makes suspension impossible by construction.
+    private func resetBuffersForCapture() {
+        os_unfair_lock_lock(&lockPrimitive)
+        // ~2 minutes each (16kHz mono int16). Enough to absorb the early growth
+        // that would otherwise reallocate while an audio callback holds the lock,
+        // without reserving 76MB up front on a machine that has memory pressure.
+        // Longer meetings grow amortised, as they always did.
+        systemPCM = Data(); systemPCM.reserveCapacity(3_840_000)
+        micPCM = Data(); micPCM.reserveCapacity(3_840_000)
+        os_unfair_lock_unlock(&lockPrimitive)
     }
 
     func stop() async -> Data {

@@ -74,7 +74,20 @@ final class AudioRecorder {
     // Replaceable: a wedged BT call leaks its thread, so we abandon the whole
     // queue and make a fresh one rather than wait on the stuck one forever.
     private var engineQueue = DispatchQueue(label: "app.whispertype.client.audio.0")
-    private let watchdogTimeout: TimeInterval = 4.0
+    /// How long a bring-up may take before it is presumed wedged.
+    ///
+    /// This MUST exceed the bring-up's own deliberate waiting, and for a while it
+    /// did not. 0.4.3 added retries for a Bluetooth device that is not ready yet —
+    /// up to 1.2s for pinning plus 1.2s for the format, 2.4s in total — while this
+    /// stayed at the 4s chosen before those retries existed. On AirPods, where
+    /// every press is now a cold bring-up, the engine spent its budget waiting for
+    /// the headset and the watchdog then killed the attempt as wedged: four times
+    /// in seven minutes. Two mechanisms of mine fighting each other.
+    ///
+    /// 8s leaves ~5.6s for the actual HAL work after the retries, and still
+    /// abandons a genuinely stuck AVAudioEngine.start() rather than jamming the
+    /// queue forever.
+    private let watchdogTimeout: TimeInterval = 8.0
 
     var onLevel: ((Float) -> Void)?
     /// Name of the mic used for the last capture (for the dock to display).

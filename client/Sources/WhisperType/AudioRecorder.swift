@@ -80,6 +80,9 @@ final class AudioRecorder {
     /// Name of the mic used for the last capture (for the dock to display).
     private(set) var lastWinningMic: String?
     private var lastWinningUID: String = ""
+    /// Consecutive silent captures per device UID. One silent capture is treated
+    /// as an engine fault; two in a row on the same device is the device.
+    private var silentStrikes: [String: Int] = [:]
 
     init() {
         outFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000,
@@ -392,16 +395,38 @@ final class AudioRecorder {
                                             allZero: Self.isAllZero(captured))
         switch verdict {
         case .silent:
+            // ONE silent capture is an ENGINE fault far more often than a device
+            // fault. Measured: the Beats delivered 3.3s of zeros through
+            // WhisperType's warm engine while an independent AVAudioEngine on the
+            // same device, seconds later, read 64000 non-zero frames at peak
+            // 0.86. The hardware was fine; the engine had gone quiet mid-press,
+            // which no pre-press check can see. Demoting on that single sample
+            // banished a working headset for ten minutes and sent dictation to a
+            // worse microphone — the exact complaint this keeps producing.
+            //
+            // So: rebuild first, demote only if the SAME device fails again. A
+            // genuinely dead device fails every time and is demoted on the second
+            // press; a stale engine is repaired without the human losing a device.
             if !uid.isEmpty {
-                AudioDevices.markSilent(uid: uid)
-                logError("\(name) produced no usable audio (\(captured.count) bytes) — demoting it")
+                let strikes = (silentStrikes[uid] ?? 0) + 1
+                silentStrikes[uid] = strikes
+                if strikes >= 2 {
+                    AudioDevices.markSilent(uid: uid)
+                    logError("\(name) produced no usable audio twice (\(captured.count) bytes) — demoting it")
+                    silentStrikes[uid] = 0
+                } else {
+                    logError("\(name) produced no usable audio (\(captured.count) bytes) — rebuilding the engine, not blaming the device")
+                }
             } else {
                 logError("captured \(captured.count) bytes (device produced no samples)")
             }
-            // A dead device must not stay warm for the next press.
+            // Either way the engine is suspect and must not stay warm.
             q.async { [weak self] in self?.teardownCommitted() }
         case .working:
-            if !uid.isEmpty { AudioDevices.markWorking(uid: uid) }
+            if !uid.isEmpty {
+                AudioDevices.markWorking(uid: uid)
+                silentStrikes[uid] = 0        // it delivered; the slate is clean
+            }
         case .inconclusive:
             logError("\(name): \(captured.count) bytes — too short to judge the mic, leaving its standing unchanged")
         }

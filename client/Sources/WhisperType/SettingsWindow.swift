@@ -1,6 +1,6 @@
 import SwiftUI
 import AppKit
-import WhisperTypeKit
+import VoiceFlowKit
 
 extension Notification.Name {
     /// Posted when the pre-roll toggle changes so the recorder can start/stop
@@ -175,9 +175,9 @@ struct DictionaryTab: View {
             Text("When Whisper mishears a word, add a fix. Applies instantly to every dictation.")
                 .font(VF.Font.caption).foregroundColor(VF.Color.muted(dark: dark))
             HStack {
-                TextField("heard (e.g. helo)", text: $from).textFieldStyle(.roundedBorder)
+                TextField("heard (e.g. faroq)", text: $from).textFieldStyle(.roundedBorder)
                 Image(systemName: "arrow.right").foregroundColor(VF.Color.muted(dark: dark))
-                TextField("correct (e.g. Kubernetes)", text: $to).textFieldStyle(.roundedBorder)
+                TextField("correct (e.g. Farooq)", text: $to).textFieldStyle(.roundedBorder)
                 Button("Add") { state.addReplacement(from, to); from = ""; to = "" }
                     .disabled(from.isEmpty || to.isEmpty)
             }
@@ -187,7 +187,7 @@ struct DictionaryTab: View {
             Text("Terms Whisper should spell correctly and the polisher should keep exact.")
                 .font(VF.Font.caption).foregroundColor(VF.Color.muted(dark: dark))
             HStack {
-                TextField("add a term (e.g. PostgreSQL)", text: $newTerm).textFieldStyle(.roundedBorder)
+                TextField("add a term (e.g. Nexus45)", text: $newTerm).textFieldStyle(.roundedBorder)
                 Button("Add") { state.addTerm(newTerm); newTerm = "" }.disabled(newTerm.isEmpty)
             }
 
@@ -224,7 +224,7 @@ struct LearningTab: View {
                 Spacer()
                 Button("Refresh") { state.loadSuggestions() }
             }
-            Text("Fixes WhisperType noticed — from corrections you taught it (“Correct last dictation…”) and names you use often. Approve one to add it to your dictionary; nothing is applied until you do.")
+            Text("Fixes VoiceFlow noticed — from corrections you taught it (“Correct last dictation…”) and names you use often. Approve one to add it to your dictionary; nothing is applied until you do.")
                 .font(VF.Font.caption).foregroundColor(VF.Color.muted(dark: dark))
 
             if state.suggestions.isEmpty {
@@ -295,7 +295,7 @@ struct MicTab: View {
             Divider()
             Toggle("Capture the moment before I start (pre-roll)", isOn: $state.prerollEnabled)
                 .font(VF.Font.callout)
-            Text("Keeps a ~1.5 s rolling buffer so words spoken the instant you press the trigger aren’t clipped by a mic’s wake-up delay (PowerConf / AirPods DSP take ~500 ms to spin up). Trade-off: your pinned mic stays warm while WhisperType runs. Applies immediately.")
+            Text("Keeps a ~1.5 s rolling buffer so words spoken the instant you press the trigger aren’t clipped by a mic’s wake-up delay (PowerConf / AirPods DSP take ~500 ms to spin up). Trade-off: your pinned mic stays warm while VoiceFlow runs. Applies immediately.")
                 .font(VF.Font.caption).foregroundColor(VF.Color.muted(dark: dark))
 
             Spacer()
@@ -338,8 +338,8 @@ struct AboutTab: View {
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: "mic.fill").font(.system(size: 34)).foregroundStyle(Color.vfAccent)
-            Text("WhisperType").font(.title2).bold()
-            Text("Hold Right-Option (⌥) to dictate. Runs on your own Mac.\nWorks over Screen Sharing. Private — nothing leaves your network.")
+            Text("voice-flow").font(.title2).bold()
+            Text("Hold Right-Option (⌥) to dictate. Runs on your Mac Studio cluster.\nWorks over Screen Sharing. Private — nothing leaves your network.")
                 .font(VF.Font.callout).foregroundColor(VF.Color.muted(dark: dark)).multilineTextAlignment(.center)
         }.padding(30)
     }
@@ -355,7 +355,7 @@ final class SettingsWindowController {
         if window == nil {
             let hosting = NSHostingController(rootView: SettingsView(state: state))
             let w = NSWindow(contentViewController: hosting)
-            w.title = "WhisperType Settings"
+            w.title = "voice-flow Settings"
             w.styleMask = [.titled, .closable, .miniaturizable]
             w.setContentSize(NSSize(width: 560, height: 460))
             w.isReleasedWhenClosed = false

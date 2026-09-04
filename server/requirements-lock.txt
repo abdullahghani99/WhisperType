@@ -1,7 +1,7 @@
-# Exact working versions (Python 3.12).
+# Exact working versions on uli-ms1 (Python 3.12), captured 2026-07-07.
 # This is the source of truth for a reproducible server venv. Install with:
-#   python3.12 -m venv ~/WhisperType-venv
-#   ~/WhisperType-venv/bin/pip install -r requirements-lock.txt
+#   python3.12 -m venv ~/voice-flow-venv
+#   ~/voice-flow-venv/bin/pip install -r requirements-lock.txt
 #
 # NOTE: mlx-lm 0.31.3 *declares* transformers>=5.0.0, but transformers 5.x
 # broke mlx-lm's AutoTokenizer.register(); 4.51.3 works. Because of that

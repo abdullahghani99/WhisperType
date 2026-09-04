@@ -1,8 +1,8 @@
 import SwiftUI
 import AppKit
-import WhisperTypeKit
+import VoiceFlowKit
 
-/// The one unified WhisperType window — a light sidebar app that replaces the
+/// The one unified VoiceFlow window — a light sidebar app that replaces the
 /// scattered Settings/Meetings windows. Sections reuse the existing views, so
 /// there's a single cohesive home for everything: meetings, dictation history,
 /// dictionary, microphone, about.
@@ -115,7 +115,7 @@ final class MainWindowController {
         if window == nil {
             let hosting = NSHostingController(rootView: MainView(settings: settings, meetings: meetings, nav: nav))
             let w = NSWindow(contentViewController: hosting)
-            w.title = "WhisperType"
+            w.title = "VoiceFlow"
             w.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
             w.setContentSize(NSSize(width: 900, height: 600))
             w.isReleasedWhenClosed = false

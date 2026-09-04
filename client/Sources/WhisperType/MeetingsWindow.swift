@@ -1,6 +1,6 @@
 import SwiftUI
 import AppKit
-import WhisperTypeKit
+import VoiceFlowKit
 
 /// Backing state for the Meetings window — lists jobs from the server and loads
 /// a selected meeting's transcript + notes. Polls while any job is processing.
@@ -547,7 +547,7 @@ struct MeetingsView: View {
     private func promptRenameSpeaker(_ meetingID: Int, current: String) {
         let alert = NSAlert()
         alert.messageText = "Who is \(current)?"
-        alert.informativeText = "WhisperType will remember this voice and name them automatically in future meetings."
+        alert.informativeText = "VoiceFlow will remember this voice and name them automatically in future meetings."
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
@@ -611,7 +611,7 @@ final class MeetingsWindowController {
         if window == nil {
             let hosting = NSHostingController(rootView: MeetingsView(state: state))
             let w = NSWindow(contentViewController: hosting)
-            w.title = "WhisperType Meetings"
+            w.title = "VoiceFlow Meetings"
             w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             w.setContentSize(NSSize(width: 820, height: 560))
             w.isReleasedWhenClosed = false

@@ -1,7 +1,7 @@
 import AppKit
 import CoreAudio
 import Foundation
-import WhisperTypeKit
+import VoiceFlowKit
 
 /// Watches for calls starting and ending, so a meeting can be offered rather
 /// than remembered.
@@ -71,7 +71,7 @@ final class CallWatcher {
         }
     }
 
-    /// Which processes OTHER than WhisperType are capturing audio right now.
+    /// Which processes OTHER than VoiceFlow are capturing audio right now.
     /// Available since macOS 14.2; if the property is missing we simply never
     /// report a call rather than falling back to a guess that cries wolf.
     struct Capturer { let name: String; let iconPNG: Data? }
@@ -172,7 +172,7 @@ final class CallWatcher {
     }
 
     /// True if ANY output device is currently playing. This is the half of the
-    /// signal WhisperType does not pollute — it captures but never plays — so
+    /// signal VoiceFlow does not pollute — it captures but never plays — so
     /// unlike the microphone it stays meaningful while our engine is warm.
     private static func anyOutputDeviceInUse() -> Bool {
         deviceIDs().contains { id in

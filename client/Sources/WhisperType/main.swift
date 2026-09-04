@@ -4,13 +4,13 @@ import AVFoundation
 import ApplicationServices
 import UniformTypeIdentifiers
 import CoreText
-import WhisperTypeKit
+import VoiceFlowKit
 
 /// Simple timestamped file log so we can diagnose the live pipeline.
-/// tail -f /tmp/whispertype-client.log
+/// tail -f /tmp/voiceflow-client.log
 func vlog(_ s: String) {
     let line = "\(ISO8601DateFormatter().string(from: Date())) \(s)\n"
-    let path = "/tmp/whispertype-client.log"
+    let path = "/tmp/voiceflow-client.log"
     if let h = FileHandle(forWritingAtPath: path) {
         h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile()
     } else {
@@ -18,7 +18,7 @@ func vlog(_ s: String) {
     }
 }
 
-/// WhisperType menu-bar client.
+/// voice-flow menu-bar client.
 ///
 /// Push-to-talk: hold Right-Option (⌥) to record, release to transcribe and
 /// insert via synthesized keystrokes (works over Screen Sharing / VNC).
@@ -93,10 +93,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         registerFonts()
-        vlog("=== WhisperType client launched ===")
-        // Single instance only: if another WhisperType is already running (e.g. the
+        vlog("=== voice-flow client launched ===")
+        // Single instance only: if another VoiceFlow is already running (e.g. the
         // login-agent copy plus a manual launch), bow out so there's never two.
-        let bid = Bundle.main.bundleIdentifier ?? "app.whispertype.client"
+        let bid = Bundle.main.bundleIdentifier ?? "ai.uliverse.voiceflow"
         if NSRunningApplication.runningApplications(withBundleIdentifier: bid).count > 1 {
             vlog("another instance already running — exiting")
             NSApp.terminate(nil)
@@ -146,7 +146,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self = self else { return }
             // Changing the input in macOS IS a device choice, and it must win.
             // A pin ranks ahead of the system default, so a mic picked here once
-            // kept being forced forever: switch to the speakerphone and WhisperType
+            // kept being forced forever: switch to the speakerphone and VoiceFlow
             // carried on recording AirPods that were sitting in their case, which
             // is what "it records nothing when I change devices" actually was.
             let pinned = UserDefaults.standard.string(forKey: AudioDevices.defaultsKey) ?? ""
@@ -183,7 +183,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startHealthMonitor()
         // Default pre-roll ON. Without a warm engine every press pays the mic's
         // wake-up delay, which is why short dictations came back empty while long
-        // ones worked. The trade is that the microphone is live while WhisperType
+        // ones worked. The trade is that the microphone is live while VoiceFlow
         // runs — visible in the macOS recording indicator, and switchable in
         // Settings ▸ Microphone. Nothing is stored: the pre-roll is 1.5s held in
         // memory and overwritten continuously.
@@ -245,7 +245,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         vlog("accessibility trusted at launch: \(trusted)")
         if !trusted {
             ensureAccessibilityPrompt()
-            overlay.show(.message("Enable WhisperType in Privacy & Security ▸ Accessibility, then relaunch"))
+            overlay.show(.message("Enable VoiceFlow in Privacy & Security ▸ Accessibility, then relaunch"))
             overlay.hide(after: 8)
         }
     }
@@ -254,7 +254,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setupClient() {
         let urlStr = ProcessInfo.processInfo.environment["VF_SERVER_URL"]
-            ?? "http://127.0.0.1:8790" // set VF_SERVER_URL to your server Mac
+            ?? "http://100.106.176.1:8790" // uli-ms2 (Tailscale, AI model host — 512GB, co-located models)
         let apiKey = ProcessInfo.processInfo.environment["VF_API_KEY"]
         client = ServerClient(baseURL: URL(string: urlStr)!, apiKey: apiKey)
         vlog("server url: \(urlStr)")
@@ -267,7 +267,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Menu bar
 
     private func setupMenu() {
-        if let img = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "WhisperType") {
+        if let img = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "voice-flow") {
             img.isTemplate = true
             statusItem.button?.image = img
         } else {
@@ -276,7 +276,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let menu = NSMenu()
         menu.delegate = self
-        menu.addItem(NSMenuItem(title: "WhisperType — hold ⌥ (Right Option) to talk",
+        menu.addItem(NSMenuItem(title: "voice-flow — hold ⌥ (Right Option) to talk",
                                 action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Dictation vs. Prompt mode on the dock",
                                 action: nil, keyEquivalent: ""))
@@ -317,7 +317,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                              action: #selector(toggleMeeting), keyEquivalent: "")
         menu.addItem(mtg)
         meetingItem = mtg
-        menu.addItem(NSMenuItem(title: "Open WhisperType…",
+        menu.addItem(NSMenuItem(title: "Open VoiceFlow…",
                                 action: #selector(openMain), keyEquivalent: "0"))
         menu.addItem(NSMenuItem(title: "Meetings…",
                                 action: #selector(openMeetings), keyEquivalent: ""))
@@ -348,7 +348,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// shifted punctuation. Focus the target field (local or VNC), then pick this
     /// — a short delay lets the menu close and key focus return to that field.
     @objc private func insertTestString() {
-        let s = "Hello world! What's the plan? Testing 1, 2, 3: 100% ready."
+        let s = "Hello Farouk! What's the plan? D365, B2B: 100% ready."
         vlog("insert test string")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             KeystrokeInserter.type(s)
@@ -480,7 +480,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Save the raw recording to a proper app folder FIRST, so processing
             // can never lose it (re-runnable via "Summarize a recording…"). A
             // 44-min meeting was lost once before this safeguard. Not the Desktop.
-            let wavURL = Self.recordingsDir().appendingPathComponent("WhisperType Meeting \(stamp).wav")
+            let wavURL = Self.recordingsDir().appendingPathComponent("VoiceFlow Meeting \(stamp).wav")
             do { try wav.write(to: wavURL); vlog("meeting: audio saved -> \(wavURL.path)") }
             catch { vlog("meeting: could not save audio: \(error)") }
             do {
@@ -492,7 +492,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } catch {
                 vlog("meeting submit FAILED: \(error)")
                 await MainActor.run {
-                    self.overlay.show(.message("Recording saved to your WhisperType recordings folder, but upload failed: \(error.localizedDescription). Retry via “Summarize a recording…”."))
+                    self.overlay.show(.message("Recording saved to your VoiceFlow recordings folder, but upload failed: \(error.localizedDescription). Retry via “Summarize a recording…”."))
                     self.overlay.hide(after: 6)
                 }
             }
@@ -507,7 +507,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Application Support, NOT the Desktop. Created on demand.
     static func recordingsDir() -> URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("WhisperType", isDirectory: true)
+            .appendingPathComponent("VoiceFlow", isDirectory: true)
             .appendingPathComponent("Recordings", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
@@ -1063,7 +1063,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var remoteAgentURL: URL? {
         let s = ProcessInfo.processInfo.environment["VF_REMOTE_AGENT_URL"]
-            ?? "http://127.0.0.1:8791" // set VF_REMOTE_AGENT_URL to the Mac you screen-share into
+            ?? "http://100.91.191.80:8791" // empowers-mac-mini (Tailscale)
         return URL(string: s)?.appendingPathComponent("insert")
     }
 
@@ -1075,7 +1075,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         req.timeoutInterval = 15
         let (_, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw NSError(domain: "whispertype", code: 2,
+            throw NSError(domain: "voiceflow", code: 2,
                           userInfo: [NSLocalizedDescriptionKey: "agent HTTP error"])
         }
     }

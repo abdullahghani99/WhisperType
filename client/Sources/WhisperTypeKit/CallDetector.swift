@@ -11,7 +11,7 @@ public struct CallSignals: Equatable {
     /// them made "a call" indistinguishable from an ordinary Tuesday.
     public let conferencingAppRunning: Bool
     /// Audio is coming OUT of a device. This is the signal we do not pollute:
-    /// WhisperType captures but never plays, so unlike the microphone this stays
+    /// VoiceFlow captures but never plays, so unlike the microphone this stays
     /// honest while our warm engine is running.
     public let audioPlayingSomewhere: Bool
 
@@ -31,7 +31,7 @@ public enum CallEvent: Equatable { case started, ended }
 ///
 /// The hard part is our own microphone. Keeping the engine warm is what makes
 /// dictation reliable, but it means "a mic is in use" is true for as long as
-/// WhisperType runs — so that signal alone can never mean "a call". A call is
+/// VoiceFlow runs — so that signal alone can never mean "a call". A call is
 /// therefore either another process holding the mic while we are idle, or the
 /// mic held while a conferencing app is up.
 ///
@@ -61,13 +61,13 @@ public final class CallDetector {
         lock.lock(); defer { lock.unlock() }
 
         // The microphone cannot be the primary signal any more: our own warm
-        // pre-roll engine holds it for as long as WhisperType runs, so "a mic is in
+        // pre-roll engine holds it for as long as VoiceFlow runs, so "a mic is in
         // use" is true every second of the day. Relying on it made the app
         // "detect a call" at launch, latch, and then stay silent through the real
         // one.
         //
         // A call is a conferencing app that is BOTH capturing and playing. Audio
-        // output is the honest half — WhisperType records but never plays, so it
+        // output is the honest half — VoiceFlow records but never plays, so it
         // never contaminates that signal.
         let somebodyElseHasTheMic = s.micInUseBySomeone && !s.ourEngineRunning
         let conferenceIsLive = s.conferencingAppRunning && s.audioPlayingSomewhere

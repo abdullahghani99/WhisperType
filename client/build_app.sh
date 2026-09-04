@@ -1,21 +1,21 @@
 #!/bin/bash
-# Build WhisperType.app — a menu-bar app bundle so macOS TCC will grant
+# Build VoiceFlow.app — a menu-bar app bundle so macOS TCC will grant
 # Microphone + Accessibility permissions by stable identity. Ad-hoc signed
 # (fine for personal / same-machine use). Run from the client/ directory.
 #
-#   ./build_app.sh          # build + assemble WhisperType.app
-#   open WhisperType.app      # launch it
+#   ./build_app.sh          # build + assemble VoiceFlow.app
+#   open VoiceFlow.app      # launch it
 #
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP="WhisperType.app"
-BIN_NAME="WhisperType"
+APP="VoiceFlow.app"
+BIN_NAME="VoiceFlow"
 
 # Keep the churny build output OUTSIDE the source tree (default: a Caches dir).
 # The project lives in OneDrive; syncing hundreds of MB of build artifacts is
 # what corrupted the checkout, so builds write here instead and never sync.
-SCRATCH="${VF_SCRATCH:-$HOME/Library/Caches/whispertype-build}"
+SCRATCH="${VF_SCRATCH:-$HOME/Library/Caches/voiceflow-build}"
 mkdir -p "$SCRATCH"
 
 echo "==> swift build (release, scratch=$SCRATCH)"
@@ -47,14 +47,14 @@ BIN_DIR="$(dirname "$BIN_PATH")"
 find "$BIN_DIR" -name "*.bundle" -maxdepth 1 -print0 2>/dev/null | while IFS= read -r -d '' b; do
   find "$b" -name "Inter-*.ttf" -exec cp {} "$APP/Contents/Resources/" \; 2>/dev/null || true
 done
-[ -d Sources/WhisperType/Resources ] && cp Sources/WhisperType/Resources/Inter-*.ttf "$APP/Contents/Resources/" 2>/dev/null || true
+[ -d Sources/VoiceFlow/Resources ] && cp Sources/VoiceFlow/Resources/Inter-*.ttf "$APP/Contents/Resources/" 2>/dev/null || true
 
 # Prefer a stable, trusted identity so TCC (Accessibility/Microphone) grants
-# persist across rebuilds. Order: Apple Development > self-signed "WhisperType
+# persist across rebuilds. Order: Apple Development > self-signed "VoiceFlow
 # Dev" > ad-hoc. Ad-hoc changes identity every build and loses permissions.
 IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | grep 'Apple Development' | head -1 | awk '{print $2}')"
 if [ -z "$IDENTITY" ]; then
-    IDENTITY="$(security find-identity -v 2>/dev/null | grep 'WhisperType Dev' | head -1 | awk '{print $2}')"
+    IDENTITY="$(security find-identity -v 2>/dev/null | grep 'VoiceFlow Dev' | head -1 | awk '{print $2}')"
 fi
 SIGN="${IDENTITY:--}"   # fall back to ad-hoc "-" if nothing found
 

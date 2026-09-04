@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The single source of truth for WhisperType's visual language. Every surface
+/// The single source of truth for VoiceFlow's visual language. Every surface
 /// imports these tokens; no raw hex lives anywhere else in the app.
 ///
 /// Warm-shifted throughout: there are no cold greys and no system colours here.
@@ -136,7 +136,7 @@ public enum VF {
     }
 
     /// Sentence case: capitalise the first word, lower the rest — but leave
-    /// all-caps tokens (VAT, ISO, AE7) alone, since those are acronyms and
+    /// all-caps tokens (VAT, D365, AE7) alone, since those are acronyms and
     /// product codes, not Title Case.
     public static func sentenceCase(_ s: String) -> String {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)

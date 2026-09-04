@@ -18,7 +18,7 @@ final class DockHostingView<Content: View>: NSHostingView<Content> {
     }
 }
 import Combine
-import WhisperTypeKit
+import VoiceFlowKit
 
 /// Hosts `DockView` in a floating, non-activating `NSPanel` that sits ABOVE
 /// every other window — including a Screen Sharing / VNC session window.

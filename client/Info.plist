@@ -4,13 +4,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>WhisperType</string>
+    <string>VoiceFlow</string>
     <key>CFBundleDisplayName</key>
-    <string>WhisperType</string>
+    <string>voice-flow</string>
     <key>CFBundleIdentifier</key>
-    <string>app.whispertype.client</string>
+    <string>ai.uliverse.voiceflow</string>
     <key>CFBundleExecutable</key>
-    <string>WhisperType</string>
+    <string>VoiceFlow</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundlePackageType</key>
@@ -24,10 +24,10 @@
     <key>LSUIElement</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>WhisperType records your voice while you hold the push-to-talk key, to transcribe it into text.</string>
+    <string>voice-flow records your voice while you hold the push-to-talk key, to transcribe it into text.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
-    <!-- The server speaks plain HTTP on the private local network, so allow
+    <!-- The server speaks plain HTTP on the private Tailscale network, so allow
          local cleartext requests (macOS App Transport Security blocks http://
          by default — this is why URLSession failed while curl worked). -->
     <key>NSAppTransportSecurity</key>

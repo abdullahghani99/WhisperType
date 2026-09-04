@@ -2,7 +2,7 @@ import AVFoundation
 import AudioToolbox
 import CoreAudio
 import Foundation
-import VoiceFlowKit
+import WhisperTypeKit
 
 /// Fires its action at most once — guards the completion against the race
 /// between a normal engine bring-up and the wedge watchdog.
@@ -41,7 +41,7 @@ final class AudioRecorder {
     private var pcm = Data()
 
     private let bufLock = NSLock()
-    /// The tested state machine (VoiceFlowKit). Engine epoch and recording state
+    /// The tested state machine (WhisperTypeKit). Engine epoch and recording state
     /// are deliberately separate: a tap outlives many recordings, so it must
     /// validate against the ENGINE, not against a per-press counter.
     private let state = CaptureState()
@@ -73,7 +73,7 @@ final class AudioRecorder {
 
     // Replaceable: a wedged BT call leaks its thread, so we abandon the whole
     // queue and make a fresh one rather than wait on the stuck one forever.
-    private var engineQueue = DispatchQueue(label: "ai.uliverse.voiceflow.audio.0")
+    private var engineQueue = DispatchQueue(label: "app.whispertype.client.audio.0")
     private let watchdogTimeout: TimeInterval = 4.0
 
     var onLevel: ((Float) -> Void)?
@@ -91,7 +91,7 @@ final class AudioRecorder {
 
     private func logError(_ s: String) {
         let line = "\(ISO8601DateFormatter().string(from: Date())) [audio] \(s)\n"
-        if let h = FileHandle(forWritingAtPath: "/tmp/voiceflow-client.log") {
+        if let h = FileHandle(forWritingAtPath: "/tmp/whispertype-client.log") {
             h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile()
         }
     }
@@ -208,7 +208,7 @@ final class AudioRecorder {
             let wedged = (gen == self.attempt) && !self.state.isRecording
             if wedged {
                 self.attempt += 1   // invalidate the stuck attempt
-                self.engineQueue = DispatchQueue(label: "ai.uliverse.voiceflow.audio.\(self.attempt)")
+                self.engineQueue = DispatchQueue(label: "app.whispertype.client.audio.\(self.attempt)")
                 self.wantRecording = false
             }
             self.bufLock.unlock()
@@ -388,7 +388,7 @@ final class AudioRecorder {
         // buffers, which makes `captured` large while containing no audio at all.
         // A real mic in a silent room still carries a noise floor, so an
         // all-zero buffer means the hardware is dead, not that the room is quiet.
-        // Tri-state, unit-tested in VoiceFlowKit: all-zero audio means a dead
+        // Tri-state, unit-tested in WhisperTypeKit: all-zero audio means a dead
         // device at any length, a short press is evidence of NOTHING, and only a
         // long non-zero capture proves the mic works.
         let verdict = CaptureState.classify(byteCount: captured.count,
@@ -397,7 +397,7 @@ final class AudioRecorder {
         case .silent:
             // ONE silent capture is an ENGINE fault far more often than a device
             // fault. Measured: the Beats delivered 3.3s of zeros through
-            // VoiceFlow's warm engine while an independent AVAudioEngine on the
+            // WhisperType's warm engine while an independent AVAudioEngine on the
             // same device, seconds later, read 64000 non-zero frames at peak
             // 0.86. The hardware was fine; the engine had gone quiet mid-press,
             // which no pre-press check can see. Demoting on that single sample

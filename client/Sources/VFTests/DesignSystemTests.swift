@@ -1,6 +1,6 @@
-import XCTest
+
 import SwiftUI
-@testable import WhisperTypeKit
+import WhisperTypeKit
 
 final class DesignSystemTests: XCTestCase {
     func testSpacingIsOnThe4pxGrid() {

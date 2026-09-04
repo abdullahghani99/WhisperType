@@ -1,5 +1,5 @@
-import XCTest
-@testable import WhisperTypeKit
+
+import WhisperTypeKit
 
 /// Turning a process name into something a human wants to read. The shipped
 /// version rendered "Microsoft Teams ModuleHost call" — and, when nothing was

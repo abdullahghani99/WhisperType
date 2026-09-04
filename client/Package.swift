@@ -2,17 +2,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "VoiceFlow",
+    name: "WhisperType",
     platforms: [.macOS(.v13)],
     targets: [
         .target(
-            name: "VoiceFlowKit",
-            path: "Sources/VoiceFlowKit"
+            name: "WhisperTypeKit",
+            path: "Sources/WhisperTypeKit"
         ),
         .executableTarget(
-            name: "VoiceFlow",
-            dependencies: ["VoiceFlowKit"],
-            path: "Sources/VoiceFlow",
+            name: "WhisperType",
+            dependencies: ["WhisperTypeKit"],
+            path: "Sources/WhisperType",
             resources: [.process("Resources")]
         ),
         // The suite runs as an EXECUTABLE, not an XCTest target. XCTest ships
@@ -23,7 +23,7 @@ let package = Package(
         // returns.
         .executableTarget(
             name: "vf-tests",
-            dependencies: ["VoiceFlowKit"],
+            dependencies: ["WhisperTypeKit"],
             path: "Sources/VFTests"
         )
     ]

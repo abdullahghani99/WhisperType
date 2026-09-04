@@ -1,5 +1,5 @@
-import XCTest
-@testable import WhisperTypeKit
+
+import WhisperTypeKit
 
 /// Deciding "a call is happening" from noisy system signals. Every rule here is
 /// a judgement call, so every rule is tested — a wrong answer either nags during

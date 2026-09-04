@@ -1,5 +1,5 @@
-import XCTest
-@testable import WhisperTypeKit
+
+import WhisperTypeKit
 
 /// These encode the failure that lost a real ten-minute meeting: a microphone
 /// that passed its opening probe, then stopped carrying audio, with bytes still

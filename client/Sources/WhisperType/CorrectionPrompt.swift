@@ -7,7 +7,7 @@ enum CorrectionPrompt {
     static func run(prefill: String) -> String? {
         let alert = NSAlert()
         alert.messageText = "Correct this dictation"
-        alert.informativeText = "Fix any wrong words below. VoiceFlow learns the difference and suggests vocabulary fixes."
+        alert.informativeText = "Fix any wrong words below. WhisperType learns the difference and suggests vocabulary fixes."
         alert.addButton(withTitle: "Teach fix")
         alert.addButton(withTitle: "Cancel")
 

@@ -1,5 +1,5 @@
-import XCTest
-@testable import WhisperTypeKit
+
+import WhisperTypeKit
 
 /// Smoke tests over the DockState machine — covering the transitions whose bugs
 /// reached the user this session (stuck error, expand not resizing, stuck phases).

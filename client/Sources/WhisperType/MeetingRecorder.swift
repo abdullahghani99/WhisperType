@@ -2,7 +2,7 @@ import AVFoundation
 import ScreenCaptureKit
 import Foundation
 import os
-import VoiceFlowKit
+import WhisperTypeKit
 
 /// Frames counted for ONE probe. Shared, the counter let a superseded engine's
 /// callbacks satisfy its replacement's probe, publishing a dead device as live.
@@ -87,7 +87,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func log(_ s: String) {
         let line = "\(ISO8601DateFormatter().string(from: Date())) [meeting] \(s)\n"
-        if let h = FileHandle(forWritingAtPath: "/tmp/voiceflow-client.log") {
+        if let h = FileHandle(forWritingAtPath: "/tmp/whispertype-client.log") {
             h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile()
         }
     }
@@ -124,7 +124,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let content = try await SCShareableContent.excludingDesktopWindows(false,
                                                                            onScreenWindowsOnly: false)
         guard let display = content.displays.first else {
-            throw NSError(domain: "voiceflow", code: 10,
+            throw NSError(domain: "whispertype", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "no display for capture"])
         }
         let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
@@ -487,7 +487,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     /// environment variable cannot outlive the process that was launched with it,
     /// and the normal login launch never sets it.
     ///
-    ///     VF_SIMULATE_MIC_STALL=1 /Applications/VoiceFlow.app/Contents/MacOS/VoiceFlow
+    ///     VF_SIMULATE_MIC_STALL=1 /Applications/WhisperType.app/Contents/MacOS/WhisperType
     /// An environment variable CAN be inherited by every relaunch if a parent
     /// shell or launch service holds it, so it is not self-limiting the way the
     /// comment above once claimed. It therefore announces itself: a build running

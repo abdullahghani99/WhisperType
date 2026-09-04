@@ -1,5 +1,5 @@
-import XCTest
-@testable import WhisperTypeKit
+
+import WhisperTypeKit
 
 /// The audio capture state machine. Every bug that has reached the user in this
 /// area was pure logic — an integer comparison, a threshold, a routing decision —

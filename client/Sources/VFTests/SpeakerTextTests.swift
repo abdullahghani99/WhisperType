@@ -1,5 +1,5 @@
-import XCTest
-@testable import WhisperTypeKit
+
+import WhisperTypeKit
 
 final class SpeakerTextTests: XCTestCase {
     func testExtractsSpeakerNamesInFirstAppearanceOrder() {

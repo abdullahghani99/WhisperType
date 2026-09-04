@@ -1,6 +1,6 @@
 import Foundation
 
-/// Talks to the voice-flow server on the Mac Studio.
+/// Talks to the WhisperType server.
 struct ServerClient {
     let baseURL: URL
     let apiKey: String?
@@ -138,7 +138,7 @@ struct ServerClient {
         req.httpBody = body
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw NSError(domain: "voiceflow", code: 5,
+            throw NSError(domain: "whispertype", code: 5,
                           userInfo: [NSLocalizedDescriptionKey: String(data: data, encoding: .utf8) ?? "upload failed"])
         }
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
@@ -170,7 +170,7 @@ struct ServerClient {
         req.timeoutInterval = 15
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw NSError(domain: "voiceflow", code: 6,
+            throw NSError(domain: "whispertype", code: 6,
                           userInfo: [NSLocalizedDescriptionKey: "fetch failed"])
         }
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
@@ -195,7 +195,7 @@ struct ServerClient {
         req.httpBody = "title=\(enc)".data(using: .utf8)
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw NSError(domain: "voiceflow", code: 7,
+            throw NSError(domain: "whispertype", code: 7,
                           userInfo: [NSLocalizedDescriptionKey: String(data: data, encoding: .utf8) ?? "rename failed"])
         }
     }
@@ -216,7 +216,7 @@ struct ServerClient {
         req.httpBody = "frm=\(enc(from))&to=\(enc(to))".data(using: .utf8)
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw NSError(domain: "voiceflow", code: 9,
+            throw NSError(domain: "whispertype", code: 9,
                           userInfo: [NSLocalizedDescriptionKey:
                                         String(data: data, encoding: .utf8) ?? "speaker rename failed"])
         }
@@ -232,7 +232,7 @@ struct ServerClient {
         req.timeoutInterval = 10
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw NSError(domain: "voiceflow", code: 8,
+            throw NSError(domain: "whispertype", code: 8,
                           userInfo: [NSLocalizedDescriptionKey: String(data: data, encoding: .utf8) ?? "delete failed"])
         }
     }
@@ -260,7 +260,7 @@ struct ServerClient {
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let msg = String(data: data, encoding: .utf8) ?? "unknown"
-            throw NSError(domain: "voiceflow", code: 4,
+            throw NSError(domain: "whispertype", code: 4,
                           userInfo: [NSLocalizedDescriptionKey: "server error: \(msg)"])
         }
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
@@ -270,10 +270,10 @@ struct ServerClient {
                           coding: obj["coding"] as? String ?? "")
     }
 
-    /// POST the WAV to /voice-flow and return the polished transcript.
+    /// POST the WAV to /WhisperType and return the polished transcript.
     func transcribe(wav: Data) async throws -> Result {
         let boundary = "vf-\(UUID().uuidString)"
-        var req = URLRequest(url: baseURL.appendingPathComponent("voice-flow"))
+        var req = URLRequest(url: baseURL.appendingPathComponent("dictate"))
         req.httpMethod = "POST"
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         if let apiKey = apiKey, !apiKey.isEmpty {
@@ -296,7 +296,7 @@ struct ServerClient {
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let msg = String(data: data, encoding: .utf8) ?? "unknown"
-            throw NSError(domain: "voiceflow", code: 1,
+            throw NSError(domain: "whispertype", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "server error: \(msg)"])
         }
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
@@ -318,7 +318,7 @@ struct ServerClient {
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let msg = String(data: data, encoding: .utf8) ?? "unknown"
-            throw NSError(domain: "voiceflow", code: 3,
+            throw NSError(domain: "whispertype", code: 3,
                           userInfo: [NSLocalizedDescriptionKey: "server error: \(msg)"])
         }
     }

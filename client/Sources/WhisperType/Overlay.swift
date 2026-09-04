@@ -1,6 +1,6 @@
 import SwiftUI
 import AppKit
-import VoiceFlowKit
+import WhisperTypeKit
 
 /// Visual state shared between the app and the floating pill UI.
 enum OverlayMode: Equatable {
@@ -23,7 +23,7 @@ final class OverlayState: ObservableObject {
     }
 }
 
-/// Uliverse palette (warm black / warm off-white / red accent used sparingly).
+/// WhisperType palette (warm black / warm off-white / red accent used sparingly).
 /// All values come from VF — no local hex. `vfPaper` uses `VF.Color.ink(dark:
 /// true)` (0xF7F5F3), the nearest token to the old 0xFAFAF9 (a 3-point shift
 /// per channel, imperceptible).

@@ -1,5 +1,5 @@
-import XCTest
-@testable import WhisperTypeKit
+
+import WhisperTypeKit
 
 /// One test per fault that previously could only be found by running the app and
 /// reading a log. If any of them comes back, this fails instead of a meeting.

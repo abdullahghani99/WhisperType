@@ -1,5 +1,5 @@
 import SwiftUI
-import VoiceFlowKit
+import WhisperTypeKit
 
 // The dock is the floating layer over other apps, so it uses the DARK side of
 // the palette. All values come from VF — no local hex.

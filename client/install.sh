@@ -1,5 +1,5 @@
 #!/bin/bash
-# One-command install for the VoiceFlow menu-bar client:
+# One-command install for the WhisperType menu-bar client:
 #   1. builds + signs the app (build_app.sh)
 #   2. installs it to /Applications
 #   3. sets it to auto-start at login (LaunchAgent, RunAtLoad; no KeepAlive so
@@ -11,17 +11,17 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP="VoiceFlow.app"
+APP="WhisperType.app"
 DEST="/Applications/$APP"
-LABEL="ai.uliverse.voiceflow.client"
+LABEL="app.whispertype.client.client"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-BIN="$DEST/Contents/MacOS/VoiceFlow"
+BIN="$DEST/Contents/MacOS/WhisperType"
 
 if [ "${1:-}" = "--uninstall" ]; then
     echo "==> uninstalling"
     launchctl unload "$PLIST" 2>/dev/null || true
     rm -f "$PLIST"
-    osascript -e 'quit app "VoiceFlow"' 2>/dev/null || true
+    osascript -e 'quit app "WhisperType"' 2>/dev/null || true
     pkill -f "$DEST" 2>/dev/null || true
     rm -rf "$DEST"
     echo "==> removed $DEST, login item, and stopped the app. (Server on ms2 untouched.)"
@@ -32,13 +32,13 @@ echo "==> building the app"
 ./build_app.sh
 
 echo "==> installing to /Applications"
-osascript -e 'quit app "VoiceFlow"' 2>/dev/null || true
+osascript -e 'quit app "WhisperType"' 2>/dev/null || true
 pkill -f "$DEST" 2>/dev/null || true
 sleep 1
 rm -rf "$DEST"
 cp -R "$APP" "$DEST"
 # Keep only ONE app: /Applications is canonical; remove the local build copy so
-# there aren't two VoiceFlows floating around.
+# there aren't two WhisperTypes floating around.
 rm -rf "$APP"
 
 echo "==> enabling auto-start at login"
@@ -51,7 +51,7 @@ cat > "$PLIST" <<PL
   <key>ProgramArguments</key><array><string>$BIN</string></array>
   <key>RunAtLoad</key><true/>
   <!-- Relaunch if the app CRASHES, but stay quit when the user quits it.
-       A segfault in the audio device-change listener used to leave VoiceFlow
+       A segfault in the audio device-change listener used to leave WhisperType
        dead until someone noticed dictation silently doing nothing. -->
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ProcessType</key><string>Interactive</string>
@@ -60,6 +60,6 @@ PL
 launchctl unload "$PLIST" 2>/dev/null || true
 launchctl load "$PLIST"   # RunAtLoad launches it now (and at every login)
 
-echo "==> done. VoiceFlow is in /Applications and will start at login."
+echo "==> done. WhisperType is in /Applications and will start at login."
 echo "   First run: grant Microphone (prompted) and Accessibility"
 echo "   (System Settings ▸ Privacy & Security ▸ Accessibility), then it's ready."

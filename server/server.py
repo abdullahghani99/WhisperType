@@ -1,8 +1,8 @@
-"""voice-flow server — always-warm dictation backend.
+"""WhisperType server — always-warm dictation backend.
 
-Runs on the Mac Studio (uli-ms1). One endpoint the client calls:
+Runs on your server Mac. One endpoint the client calls:
 
-    POST /voice-flow   (multipart: file=<audio>)  ->  {"raw": ..., "text": ...}
+    POST /dictate   (multipart: file=<audio>)  ->  {"raw": ..., "text": ...}
 
 Pipeline:
     1. ASR — local mlx-whisper (whisper-large-v3, biased by your vocabulary),
@@ -20,9 +20,9 @@ Pipeline:
 Run under launchd (see scripts/) so it auto-starts.
 
 Env:
-    VF_WHISPER_URL   default http://100.65.184.48:8181  (ms3 tailscale IP)
+    VF_WHISPER_URL   default http://127.0.0.1:8181
     VF_POLISH        default 1 (on, narrow). Set 0 for pure near-verbatim.
-    VF_POLISH_MODEL  default mlx-community/Meta-Llama-3.1-8B-Instruct-4bit (fast)
+    VF_POLISH_MODEL  default mlx-community/Qwen2.5-7B-Instruct-4bit (fast)
     VF_PROMPT        default 1 (prompt mode on). Set 0 to disable.
     VF_PROMPT_MODEL  default mlx-community/Qwen2.5-14B-Instruct-4bit (stronger;
                      background-loaded; falls back to VF_POLISH_MODEL on failure)
@@ -45,10 +45,10 @@ from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException
 from fastapi.responses import JSONResponse
 from mlx_lm import load, generate
 
-WHISPER_URL = os.environ.get("VF_WHISPER_URL", "http://100.65.184.48:8181").rstrip("/")
+WHISPER_URL = os.environ.get("VF_WHISPER_URL", "http://127.0.0.1:8181").rstrip("/")
 WHISPER_MODEL = os.environ.get("VF_WHISPER_MODEL", "mlx-community/whisper-large-v3-mlx")
 # Fast model for the high-frequency dictation-polish path.
-POLISH_MODEL = os.environ.get("VF_POLISH_MODEL", "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit")
+POLISH_MODEL = os.environ.get("VF_POLISH_MODEL", "mlx-community/Qwen2.5-7B-Instruct-4bit")
 # Stronger model for the deliberate prompt-engineering path (quality > speed).
 # Falls back to POLISH_MODEL if it can't be loaded.
 PROMPT_MODEL = os.environ.get("VF_PROMPT_MODEL", "mlx-community/Qwen2.5-14B-Instruct-4bit")
@@ -182,9 +182,9 @@ MEETING_SYS = (
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("voiceflow")
+log = logging.getLogger("whispertype")
 
-app = FastAPI(title="voice-flow", version="0.1")
+app = FastAPI(title="WhisperType", version="0.1")
 
 # Resident, always-warm models. Loaded in startup, held for process lifetime.
 # _model/_tok = fast dictation-polish model (8B). _prompt_model/_prompt_tok =
@@ -197,8 +197,8 @@ _prompt_tok = None
 _polish_distilled = False   # True when the polish model carries the distilled LoRA adapter
 
 # Personal vocabulary/dictionary (learning layer). Shape:
-#   {"replacements": {"faroq": "Farooq"}, "terms": ["Farooq", "D365"],
-#    "snippets": {"e.t.": "Empower Tribe"}}
+#   {"replacements": {"helo": "hello"}, "terms": ["Kubernetes", "PostgreSQL"],
+#    "snippets": {"omw": "on my way"}}
 # replacements: word-boundary, case-insensitive fixes applied to the raw ASR.
 # terms:        proper nouns fed to the polish model so it keeps them spelled right.
 # snippets:     literal expansions.
@@ -569,7 +569,7 @@ def _meeting_notes(transcript: str) -> str:
 
 def _sentence_case(s: str) -> str:
     """Sentence case for titles: capitalise the first word, lower the rest, but
-    leave acronyms and product codes (VAT, D365, AE7) alone. Mirrors
+    leave acronyms and product codes (VAT, ISO, AE7) alone. Mirrors
     VF.sentenceCase on the client so both agree."""
     words = s.strip().split()
     out = []
@@ -876,7 +876,7 @@ def _save_meeting_embeddings(job_id: int, disp: dict) -> None:
     """Persist this meeting's per-speaker vectors, keyed by the label the human
     SEES. In-memory only was a silent lie: after any server restart, renaming a
     speaker on an older meeting stored nothing while the dialog promised
-    "VoiceFlow will remember this voice"."""
+    "WhisperType will remember this voice"."""
     if not disp:
         return
     try:
@@ -1053,7 +1053,7 @@ async def _keepalive():
 
 async def _run_asr(audio: bytes, filename: str | None, language: str | None):
     """Transcribe audio -> (raw_text, asr_ms). Local biased Whisper first, with
-    the shared HTTP whisper server as fallback. Shared by /voice-flow and
+    the shared HTTP whisper server as fallback. Shared by /WhisperType and
     /engineer."""
     t_asr = time.time()
     raw, nsp = "", 0.0
@@ -1102,7 +1102,7 @@ async def health():
     }
 
 
-@app.post("/voice-flow")
+@app.post("/dictate")
 async def voice_flow(
     file: UploadFile = File(...),
     language: str | None = Form(None),
@@ -1129,7 +1129,7 @@ async def voice_flow(
         text = await asyncio.to_thread(_polish, corrected)
         polish_ms = int((time.time() - t_p) * 1000)
 
-    log.info("voice-flow ok asr=%dms polish=%dms chars=%d", asr_ms, polish_ms, len(text))
+    log.info("WhisperType ok asr=%dms polish=%dms chars=%d", asr_ms, polish_ms, len(text))
     row_id = _capture(raw, corrected, text, asr_ms, polish_ms, len(audio), audio)
     return JSONResponse({
         "id": row_id,

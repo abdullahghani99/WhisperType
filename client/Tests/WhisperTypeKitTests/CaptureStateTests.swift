@@ -70,9 +70,14 @@ final class CaptureStateTests: XCTestCase {
 
     // MARK: Silence classification (tri-state)
 
-    func testAllZeroAudioIsAlwaysSilentEvenWhenShort() {
-        // A device streaming zero-valued buffers is dead, at any length.
-        XCTAssertEqual(CaptureState.classify(byteCount: 5_000, allZero: true), .silent)
+    func testAllZeroAudioCondemnsADeviceONLYWhenItLastsLongEnough() {
+        // A SHORT all-zero capture is the Bluetooth not-ready window, not a dead
+        // device. A real headset delivered 4096 bytes of silence (0.128s) while
+        // its mic link came up and was demoted for it, so dictation then avoided
+        // the headset the human was wearing.
+        XCTAssertEqual(CaptureState.classify(byteCount: 4_096, allZero: true), .inconclusive)
+        XCTAssertEqual(CaptureState.classify(byteCount: 5_000, allZero: true), .inconclusive)
+        // Sustained zeros still mean the hardware is dead.
         XCTAssertEqual(CaptureState.classify(byteCount: 50_000, allZero: true), .silent)
     }
 
@@ -88,8 +93,8 @@ final class CaptureStateTests: XCTestCase {
         // microphone demoted AirPods, then PowerConf, then the built-in mic
         // inside 40 seconds, leaving nothing to fall back to.
         XCTAssertEqual(CaptureState.classify(byteCount: 0, allZero: true), .inconclusive)
-        // A device actually streaming zero-valued buffers is still dead.
-        XCTAssertEqual(CaptureState.classify(byteCount: 44, allZero: true), .silent)
+        // A bare WAV header is no more evidence than nothing at all.
+        XCTAssertEqual(CaptureState.classify(byteCount: 44, allZero: true), .inconclusive)
     }
 
     func testLongNonZeroCaptureIsWorking() {

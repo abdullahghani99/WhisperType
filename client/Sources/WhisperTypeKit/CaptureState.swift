@@ -97,6 +97,11 @@ public final class CaptureState {
 
     /// Enough audio that silence is meaningful: ~0.75 s at 16 kHz mono int16.
     static let evidenceBytes = 24_000
+    /// Half a second of continuous zeros (16kHz mono int16) before a device is
+    /// called dead. Comfortably longer than the ~1.2s-at-worst Bluetooth wake-up
+    /// the engine now waits through, and far longer than the 0.128s burst that
+    /// wrongly demoted a working headset.
+    static let silenceEvidenceBytes = 16_000
 
     /// Judge a finished capture. All-zero PCM means a dead device at ANY length —
     /// a working microphone in a silent room still carries a noise floor.
@@ -109,7 +114,15 @@ public final class CaptureState {
         // built-in, all inside 40 seconds), leaving nothing good to fall back to
         // and dictation broken until the penalties expired.
         if byteCount == 0 { return .inconclusive }
-        if allZero { return .silent }
+        // A SHORT all-zero capture is not proof either, and this cost a real
+        // device: a Bluetooth headset delivered 4096 bytes of silence — 0.128
+        // seconds, the not-ready window while the mic link comes up — and was
+        // demoted for it, so dictation then avoided the headset the human was
+        // wearing. Condemning a device requires it to stream zeros for long
+        // enough that no wake-up delay explains it. The asymmetry decides the
+        // threshold: a device wrongly demoted is unusable for ten minutes, while
+        // one wrongly spared is merely retried.
+        if allZero { return byteCount >= silenceEvidenceBytes ? .silent : .inconclusive }
         if byteCount >= evidenceBytes { return .working }
         return .inconclusive
     }

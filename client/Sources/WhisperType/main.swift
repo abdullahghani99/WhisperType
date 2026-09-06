@@ -1299,8 +1299,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard complete else { throw insertionError("Destination changed while typing. Some text may have been sent; inspect it before inserting again.") }
             for _ in 0..<10 {
                 try await Task.sleep(nanoseconds: 100_000_000)
-                if target.containsVerifiedValue(expected) { return }
+                if target.containsVerifiedValue(expected) { vlog("insertion receipt: id=\(id) verified"); return }
             }
+            vlog("insertion receipt: id=\(id) unverified " + target.receiptDiagnostic(expected))
             throw insertionError("Keys were sent; the destination could not confirm the text. Inspect it before inserting again. Audio and result remain in Inbox.")
         }
     }
@@ -1362,6 +1363,16 @@ if Bundle.main.bundleIdentifier?.hasSuffix(".review.client") == true {
         fputs("Review configuration unavailable; refusing to start with production defaults.\n", stderr)
         exit(1)
     }
+}
+// Explicit read-only support command: no controller, microphone, keys, windows,
+// server requests or preference writes. Launch in the background to preserve focus.
+if CommandLine.arguments.contains("--diagnose-destination") {
+    NSApplication.shared.setActivationPolicy(.prohibited)
+    let identity = "destination-check pid=\(ProcessInfo.processInfo.processIdentifier)"
+    vlog("\(identity) trusted=\(AXIsProcessTrusted())")
+    let target = CaptureDestination.capture { vlog("\(identity) \($0)") }
+    vlog("\(identity) editable-target=\(target != nil)")
+    exit(target == nil ? 1 : 0)
 }
 let app = NSApplication.shared
 let controller = AppController()

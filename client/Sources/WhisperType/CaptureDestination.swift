@@ -15,13 +15,18 @@ struct CaptureDestination {
         guard AXIsProcessTrusted() else { diagnose("accessibility-denied"); return nil }
         var focused: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &focused)
-        guard status == .success, let focused = focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else {
-            diagnose("focused-application-unavailable ax=\(status.rawValue)"); return nil
+        var axPID: pid_t?
+        if status == .success, let focused = focused, CFGetTypeID(focused) == AXUIElementGetTypeID() {
+            var value: pid_t = 0
+            if AXUIElementGetPid(focused as! AXUIElement, &value) == .success { axPID = value }
         }
-        var pid: pid_t = 0
-        guard AXUIElementGetPid(focused as! AXUIElement, &pid) == .success,
-              let app = NSRunningApplication(processIdentifier: pid) else { diagnose("focused-process-unavailable"); return nil }
-        guard pid != ProcessInfo.processInfo.processIdentifier else { diagnose("own-application-focused"); return nil }
+        let frontmostPID = status == .noValue ? NSWorkspace.shared.frontmostApplication?.processIdentifier : nil
+        guard let pid = resolveFocusedPID(axPID: axPID, status: status, frontmostPID: frontmostPID,
+                                          ownPID: ProcessInfo.processInfo.processIdentifier),
+              let app = NSRunningApplication(processIdentifier: pid) else {
+            diagnose("focused-application-unavailable ax=\(status.rawValue) own=\(axPID == ProcessInfo.processInfo.processIdentifier)"); return nil
+        }
+        if status == .noValue { diagnose("system-focus-empty; validating-frontmost bundle=\(app.bundleIdentifier ?? "unknown") pid=\(pid)") }
         let identity = "bundle=\(app.bundleIdentifier ?? "unknown") pid=\(pid)"
         let element = AXUIElementCreateApplication(pid)
         func attribute(_ object: AXUIElement, _ name: String) -> CFTypeRef? {
@@ -47,6 +52,15 @@ struct CaptureDestination {
         return CaptureDestination(app: app, window: window, field: field,
                                   title: attribute(window, kAXTitleAttribute) as? String ?? "")
     }
+    /// AX's system-wide focused app can have no value even while an app is
+    /// frontmost. Use that current app only for this exact case; its focused
+    /// window and editable field must still pass every check above. Never use a
+    /// previously focused app or relax permission / transport failures.
+    static func resolveFocusedPID(axPID: pid_t?, status: AXError, frontmostPID: pid_t?, ownPID: pid_t) -> pid_t? {
+        let candidate = status == .success ? axPID : status == .noValue ? frontmostPID : nil
+        guard let pid = candidate, pid > 0, pid != ownPID else { return nil }
+        return pid
+    }
     func isCurrent(diagnose: (String) -> Void = { _ in }) -> Bool {
         guard let current = Self.capture(diagnose: diagnose) else { return false }
         guard app.processIdentifier == current.app.processIdentifier else { diagnose("application-changed"); return false }
@@ -69,6 +83,15 @@ struct CaptureDestination {
               range.location <= (before as NSString).length,
               range.length <= (before as NSString).length - range.location else { return nil }
         return (before as NSString).replacingCharacters(in: NSRange(location: range.location, length: range.length), with: text)
+    }
+    func receiptDiagnostic(_ expected: String?) -> String {
+        guard let expected = expected else { return "expected-value-or-selection-unavailable" }
+        var value: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(field, kAXValueAttribute as CFString, &value)
+        guard status == .success, let actual = value as? String else { return "actual-value-unavailable ax=\(status.rawValue)" }
+        let before = Array(expected.utf16), after = Array(actual.utf16)
+        let first = zip(before, after).enumerated().first(where: { $0.element.0 != $0.element.1 })?.offset
+        return "expectedUTF16=\(before.count) actualUTF16=\(after.count) firstDifference=\(first.map(String.init) ?? "none-in-shared-prefix")"
     }
     func containsVerifiedValue(_ expected: String?) -> Bool {
         guard let expected = expected else { return false }

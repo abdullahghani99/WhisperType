@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "b908034df92dbedd142741ee10b5da8ac50837c4994e15c0840b47b022e8e263",
+    "VERSION": "a0ad50640139a524f86591157145bf1d4674ea9c065bfea21558f0f7b04430c8",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/CallDetectorTests.swift": "95a8f91d2bc8d63037d64e9c411b11368420a411118be3cbc0ca38c03e42687f",

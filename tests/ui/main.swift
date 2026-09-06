@@ -108,13 +108,14 @@ func runReview() {
   testNativeDockInteraction();print("COMPLETE: background native pill checks; no foreground helper or microphone");exit(0)
  }
  if ProcessInfo.processInfo.environment["VF_UI_DOCK_RENDER"] == "1" {
-  let names = ["Idle", "Controls", "Recording", "Saved result", "Attention"]
+  let names = ["Idle", "Controls", "Recording", "Saved result", "Attention", "Teams offer"]
   let states = names.map { name -> DockState in
    let s=DockState();s.serverOK=true;s.micName="AirPods Pro"
    if name == "Controls" {s.expanded=true}
-   if name == "Recording" {s.begin();s.elapsed=8;for _ in 0..<24{s.setLevel(0.35)}}
+   if name == "Recording" {s.begin();s.elapsed=8;for i in 0..<24{s.setLevel(Float(i % 5 + 1) / 6, at: Double(i) * 0.1)}}
    if name == "Saved result" {s.ready();s.collapsePresentation()}
    if name == "Attention" {s.fail("Audio saved in Inbox");s.collapsePresentation()}
+   if name == "Teams offer" {s.ready();s.callOffer=true;s.callTitle="Teams call · fixture"}
    return s
   }
   let gallery=VStack(alignment:.leading,spacing:12) {
@@ -126,7 +127,7 @@ func runReview() {
     }
    }
   }.padding(24).background(Color(red:0.91,green:0.94,blue:0.95))
-  render(gallery,"Compact-Pill",width:860,height:480)
+  render(gallery,"Compact-Pill",width:860,height:570)
   print("COMPLETE: pill visual review only; no audio");exit(0)
  }
  if ProcessInfo.processInfo.environment["VF_UI_PROBE_ONLY"] == "1" { probeDockAccessibility(); exit(0) }

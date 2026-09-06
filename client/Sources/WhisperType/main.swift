@@ -8,7 +8,9 @@ import WhisperTypeKit
 
 /// Simple timestamped file log so we can diagnose the live pipeline.
 /// tail -f /tmp/whispertype-client.log
+private let voiceFlowLogLock = NSLock()
 func vlog(_ s: String) {
+    voiceFlowLogLock.lock(); defer { voiceFlowLogLock.unlock() }
     let line = "\(ISO8601DateFormatter().string(from: Date())) \(s)\n"
     let path = ProcessInfo.processInfo.environment["VF_LOG_PATH"] ?? "/tmp/whispertype-client.log"
     if let h = FileHandle(forWritingAtPath: path) {
@@ -150,6 +152,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         NSApp.setActivationPolicy(.accessory)
+        vlog("accessibility trusted before setup: \(AXIsProcessTrusted())")
         setupClient()
         setupMenu()
         setupHotkey()
@@ -183,7 +186,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         dockController.onToggleRecord = { [weak self] in
             guard let self = self else { return }
-            self.isRecording ? self.endRecording() : self.beginRecording(prompt: self.dockController.state.mode == .prompt)
+            self.isRecording ? self.endRecording() : self.beginRecording(prompt: self.dockController.state.mode == .prompt, trigger: "pill")
         }
         dockController.onMeeting = { [weak self] in self?.toggleMeeting() }
         dockController.onSettings = { [weak self] in
@@ -862,7 +865,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         settings.captureMode = dockController.state.mode
         settings.onModeChanged = { [weak self] mode in self?.dockController.state.mode = mode }
-        settings.onToggleRecording = { [weak self] in self?.toggleRecording() }
+        settings.onToggleRecording = { [weak self] in self?.toggleRecording(trigger: "capture-page") }
         settings.onToggleMeeting = { [weak self] in self?.toggleMeeting() }
         settings.onImportRecording = { [weak self] in self?.summarizeRecording() }
         settings.onCancelImport = { [weak self] in self?.importTask?.cancel() }
@@ -965,7 +968,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard event.keyCode == self.rightOptionKeyCode else { return }
             let pressed = event.modifierFlags.contains(.option)
             if pressed {
-                self.beginRecording(prompt: self.dockController.state.mode == .prompt)
+                self.beginRecording(prompt: self.dockController.state.mode == .prompt, trigger: "right-option")
             } else {
                 self.endRecording()
             }
@@ -1035,12 +1038,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return Unmanaged.passUnretained(event)
     }
 
-    private func toggleRecording() {
+    private func toggleRecording(trigger: String = "mouse-button") {
         // Debounce so one physical click = one toggle (no desync from double-fire).
         let now = Date()
         if now.timeIntervalSince(lastToggle) < 0.25 { return }
         lastToggle = now
-        if isRecording { endRecording() } else { beginRecording(prompt: dockController.state.mode == .prompt) }
+        if isRecording { endRecording() } else { beginRecording(prompt: dockController.state.mode == .prompt, trigger: trigger) }
     }
 
     @objc private func setMouseTrigger() {
@@ -1070,13 +1073,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var remotePreparations: [UUID: Task<Void, Error>] = [:]
 
-    private func beginRecording(prompt: Bool = false) {
+    private func beginRecording(prompt: Bool = false, trigger: String = "menu-test") {
         guard !isRecording, !meetingStarting, !meetingFinishing, !meetingRecorder.isRecording else { return }
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { requestMicPermission(); return }
         let id = UUID()
         vlog("capture begin: pid=\(ProcessInfo.processInfo.processIdentifier), id=\(id), source=\(Bundle.main.bundleIdentifier ?? "unbundled")")
         activeRecordingID = id; presentationID = id
-        captureDestination = CaptureDestination.capture()
+        captureDestination = CaptureDestination.capture { vlog("capture destination: id=\(id) trigger=\(trigger) \($0)") }
         if let target = captureDestination {
             destinations[id] = target
             if target.isRemote {
@@ -1206,7 +1209,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 entry.status = "ready"
                 try RecordingStore.save(entry); recordingsChanged()
                 addToHistory(result.text); lastDictationId = result.id; lastDictationText = result.text
-                if !isRecording, let target = destinations[id], target.isCurrent() {
+                if destinations[id] == nil { vlog("insertion deferred: id=\(id) no-captured-destination") }
+                if isRecording { vlog("insertion deferred: id=\(id) another-recording-active") }
+                if !isRecording, let target = destinations[id], target.isCurrent(diagnose: { vlog("insertion destination: id=\(id) \($0)") }) {
                     try await insert(result.text, into: target, id: id)
                     entry.status = "inserted"; try RecordingStore.save(entry)
                     try RecordingStore.removeAudio(id)

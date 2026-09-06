@@ -77,6 +77,8 @@ func run(_ name: String, _ body: () -> Void) {
         run("DockStateTests.testFailEntersErrorWithText") { t.testFailEntersErrorWithText() }
         run("DockStateTests.testToggleModeFlips") { t.testToggleModeFlips() }
         run("DockStateTests.testSetLevelClampsAndStoresWhileListening") { t.testSetLevelClampsAndStoresWhileListening() }
+        run("DockStateTests.testMeterHasStableCadenceAndGentleRelease") { t.testMeterHasStableCadenceAndGentleRelease() }
+        run("DockStateTests.testCallOfferSurfacesOverRecoveryWithoutInterruptingCapture") { t.testCallOfferSurfacesOverRecoveryWithoutInterruptingCapture() }
         run("DockStateTests.testCollapseRetainsRecoveryAndProtectsCapture") { t.testCollapseRetainsRecoveryAndProtectsCapture() }
     }
     suite("MicHealthTests") {
@@ -153,7 +155,7 @@ if let files = try? fm.contentsOfDirectory(atPath: "Sources/VFTests") {
         }
     }
 }
-let registered = 91
+let registered = 93
 print("")
 if declared > 0 && declared != registered {
     print("  ✘ DRIFT: \(declared) test functions on disk, \(registered) registered.")

@@ -41,7 +41,7 @@ public struct DockView: View {
             .padding(.vertical, compact ? 4 : 6).frame(minHeight: compact ? 24 : 40)
             .background {
                 ZStack {
-                    if reduceTransparency || contrast == .increased {
+                    if !compact || state.phase != .idle || reduceTransparency || contrast == .increased {
                         VF.Color.surface(dark: true)
                     } else {
                         RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -70,11 +70,12 @@ public struct DockView: View {
         if compact { restContent }
         else if state.meetingRecording && state.phase != .listening && state.phase != .starting {
             meetingContent
+        } else if state.showsCallOffer {
+            callOfferContent
         } else {
             switch state.phase {
             case .idle:
-                if state.callOffer { callOfferContent }
-                else if controlsVisible { controls }
+                if controlsVisible { controls }
                 else { restContent }
             case .starting:
                 HStack(spacing: 10) {

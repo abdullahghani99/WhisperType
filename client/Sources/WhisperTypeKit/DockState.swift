@@ -38,6 +38,9 @@ public final class DockState: ObservableObject {
 
     public init() {}
 
+    public var showsCallOffer: Bool {
+        callOffer && !meetingRecording && [.idle, .ready, .done, .error].contains(phase)
+    }
     public var canCollapsePresentation: Bool {
         !meetingRecording && !callOffer && [.idle, .ready, .done, .error].contains(phase)
     }
@@ -46,6 +49,7 @@ public final class DockState: ObservableObject {
     public func ready() { phase = .ready; expanded = true }
     public func begin() {
         expanded = false; phase = .listening; elapsed = 0; level = 0; errorText = ""
+        meterAt = nil; publishedMeterAt = nil; smoothedLevel = 0
         levels = Array(repeating: 0, count: 24)
     }
     /// The last N levels, oldest first — so the waveform shows speech TRAVELLING
@@ -54,12 +58,24 @@ public final class DockState: ObservableObject {
     /// indices meaning nothing.
     @Published public var levels: [Float] = Array(repeating: 0, count: 24)
 
-    public func setLevel(_ v: Float) {
+    private var meterAt: TimeInterval?
+    private var publishedMeterAt: TimeInterval?
+    private var smoothedLevel: Float = 0
+
+    /// Smooth the meter independently of captured PCM. Ten history samples per
+    /// second keep the visible time span stable across microphone buffer sizes.
+    public func setLevel(_ v: Float, at now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard phase == .listening else { return }
         let clamped = max(0, min(1, v))
-        level = clamped
+        let dt = max(0, now - (meterAt ?? (now - 0.1)))
+        let tau = clamped > smoothedLevel ? 0.08 : 0.28
+        smoothedLevel += (clamped - smoothedLevel) * Float(1 - exp(-dt / tau))
+        meterAt = now
+        guard publishedMeterAt == nil || now - publishedMeterAt! >= 0.099 else { return }
+        publishedMeterAt = now
+        level = smoothedLevel
         levels.removeFirst()
-        levels.append(clamped)
+        levels.append(level)
     }
     public func finishRecording() { if phase == .listening || phase == .starting { phase = .transcribing } }
     /// Words inserted by the last dictation, so the success state can say what

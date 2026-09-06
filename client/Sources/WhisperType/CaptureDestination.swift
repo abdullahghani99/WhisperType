@@ -11,38 +11,49 @@ struct CaptureDestination {
     var name: String { app.localizedName ?? "application" }
     var isRemote: Bool { (app.bundleIdentifier ?? "").contains("ScreenSharing") }
 
-    static func capture() -> CaptureDestination? {
-        guard AXIsProcessTrusted() else { return nil }
+    static func capture(diagnose: (String) -> Void = { _ in }) -> CaptureDestination? {
+        guard AXIsProcessTrusted() else { diagnose("accessibility-denied"); return nil }
         var focused: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &focused) == .success,
-              let focused = focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+        let status = AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &focused)
+        guard status == .success, let focused = focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else {
+            diagnose("focused-application-unavailable ax=\(status.rawValue)"); return nil
+        }
         var pid: pid_t = 0
         guard AXUIElementGetPid(focused as! AXUIElement, &pid) == .success,
-              pid != ProcessInfo.processInfo.processIdentifier, let app = NSRunningApplication(processIdentifier: pid) else { return nil }
-        let element = AXUIElementCreateApplication(app.processIdentifier)
+              let app = NSRunningApplication(processIdentifier: pid) else { diagnose("focused-process-unavailable"); return nil }
+        guard pid != ProcessInfo.processInfo.processIdentifier else { diagnose("own-application-focused"); return nil }
+        let identity = "bundle=\(app.bundleIdentifier ?? "unknown") pid=\(pid)"
+        let element = AXUIElementCreateApplication(pid)
         func attribute(_ object: AXUIElement, _ name: String) -> CFTypeRef? {
             var value: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(object, name as CFString, &value) == .success else { return nil }
+            let result = AXUIElementCopyAttributeValue(object, name as CFString, &value)
+            guard result == .success else { diagnose("\(identity) attribute=\(name) ax=\(result.rawValue)"); return nil }
             return value
         }
         guard let winValue = attribute(element, kAXFocusedWindowAttribute),
-              CFGetTypeID(winValue) == AXUIElementGetTypeID(),
-              let fieldValue = attribute(element, kAXFocusedUIElementAttribute),
-              CFGetTypeID(fieldValue) == AXUIElementGetTypeID() else { return nil }
+              CFGetTypeID(winValue) == AXUIElementGetTypeID() else { diagnose("\(identity) focused-window-unavailable"); return nil }
+        guard let fieldValue = attribute(element, kAXFocusedUIElementAttribute),
+              CFGetTypeID(fieldValue) == AXUIElementGetTypeID() else { diagnose("\(identity) focused-field-unavailable"); return nil }
         let window = winValue as! AXUIElement, field = fieldValue as! AXUIElement
         let remote = (app.bundleIdentifier ?? "").contains("ScreenSharing")
         let role = attribute(field, kAXRoleAttribute) as? String ?? ""
         let subrole = attribute(field, kAXSubroleAttribute) as? String ?? ""
         var writable = DarwinBoolean(false)
         _ = AXUIElementIsAttributeSettable(field, kAXValueAttribute as CFString, &writable)
-        guard remote || ((writable.boolValue || [kAXTextFieldRole, kAXTextAreaRole].contains(role)) && subrole != kAXSecureTextFieldSubrole) else { return nil }
+        guard remote || ((writable.boolValue || [kAXTextFieldRole, kAXTextAreaRole].contains(role)) && subrole != kAXSecureTextFieldSubrole) else {
+            diagnose("\(identity) field-rejected role=\(role) subrole=\(subrole) writable=\(writable.boolValue)"); return nil
+        }
+        diagnose("captured \(identity) role=\(role) remote=\(remote)")
         return CaptureDestination(app: app, window: window, field: field,
                                   title: attribute(window, kAXTitleAttribute) as? String ?? "")
     }
-    func isCurrent() -> Bool {
-        guard let current = Self.capture() else { return false }
-        return app.processIdentifier == current.app.processIdentifier &&
-            CFEqual(window, current.window) && CFEqual(field, current.field) && title == current.title
+    func isCurrent(diagnose: (String) -> Void = { _ in }) -> Bool {
+        guard let current = Self.capture(diagnose: diagnose) else { return false }
+        guard app.processIdentifier == current.app.processIdentifier else { diagnose("application-changed"); return false }
+        guard CFEqual(window, current.window) else { diagnose("window-changed"); return false }
+        guard CFEqual(field, current.field) else { diagnose("field-changed"); return false }
+        guard title == current.title else { diagnose("window-title-changed"); return false }
+        return true
     }
     /// A receipt can verify acceptance only when the app exposes plain text and
     /// selection. Editors without these attributes still receive keys, but the

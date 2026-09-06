@@ -26,8 +26,29 @@ final class DockStateTests: XCTestCase {
         XCTAssertEqual(s.mode, .prompt)
     }
     func testSetLevelClampsAndStoresWhileListening() {
-        let s = DockState(); s.begin(); s.setLevel(2.0)
+        let s = DockState(); s.begin(); s.setLevel(2.0, at: 0); s.setLevel(2.0, at: 2)
         XCTAssertEqual(s.level, 1.0, accuracy: 0.001)
+    }
+    func testMeterHasStableCadenceAndGentleRelease() {
+        let s = DockState(); s.begin()
+        s.setLevel(1, at: 0)
+        let first = s.level
+        s.setLevel(0, at: 0.02)
+        XCTAssertEqual(s.level, first)
+        s.setLevel(0, at: 0.1)
+        XCTAssertTrue(s.level > 0 && s.level < first)
+        s.setLevel(0, at: 2)
+        XCTAssertTrue(s.level < 0.01)
+    }
+    func testCallOfferSurfacesOverRecoveryWithoutInterruptingCapture() {
+        let s = DockState(); s.ready(); s.callOffer = true
+        XCTAssertTrue(s.showsCallOffer)
+        s.fail("Audio saved"); XCTAssertTrue(s.showsCallOffer)
+        s.callOffer = false; XCTAssertEqual(s.phase, .error)
+        XCTAssertEqual(s.errorText, "Audio saved")
+        s.callOffer = true; s.begin(); XCTAssertFalse(s.showsCallOffer)
+        s.finishRecording(); XCTAssertFalse(s.showsCallOffer)
+        s.returnToIdle(); s.meetingRecording = true; XCTAssertFalse(s.showsCallOffer)
     }
     func testCollapseRetainsRecoveryAndProtectsCapture() {
         let s = DockState()

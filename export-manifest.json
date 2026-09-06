@@ -11,7 +11,7 @@
     "client/Sources/VFTests/MicHealthTests.swift": "100ecd61cc429b390deb7be011c5f13eed6cc1bc9ef8b92a692ff234e540b0f2",
     "client/Sources/VFTests/MicLifecycleTests.swift": "c1ca7899abe5a926e2f1ac562b522445b74d3e0af535c8fa175f634024e8daa8",
     "client/Sources/VFTests/RecoveryTests.swift": "b7dd4b298bc3395d8bc828c7cbcb71997e394dc0f7e7a93313886ddfe1321aa5",
-    "client/Sources/VFTests/SmokeTests.swift": "3bbce16ffc6ade66176297aa8364f1404198cf8736c9c50a489b8d3e6188e333",
+    "client/Sources/VFTests/SmokeTests.swift": "a315785ad23aa44dd02222b71f41e8bf7412719915009b5b984e31e0f91d1627",
     "client/Sources/VFTests/SpeakerTextTests.swift": "851df69a7c40f1b11fc53b90e241086eea7d3528c024c315ecda786bfcd4830c",
     "client/Sources/VFTests/XCTShim.swift": "ab67e380f48c735096790308fe3bba854b6cd8c99d05e89d338af01130822e3b",
     "client/Sources/VFTests/main.swift": "b9807b2ab4db2e68822b11bbda01a91bff67e7fd9b084491c8bdff0a68342dc2",

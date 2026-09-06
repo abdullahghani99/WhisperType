@@ -547,45 +547,8 @@ _SECOND_PERSON = frozenset(
 
 
 def _polish_failed(src: str, out: str) -> bool:
-    """True if polish clearly failed — regurgitated an example, fabricated,
-    summarized, or started replying to the speaker. A safety net so a failed
-    polish can never replace the user's words with something unrelated. Signals:
-
-    1) EXPANSION: editing only removes filler, so the output should never be much
-       longer than the input. Big growth = the model added/fabricated content.
-    2) CONTENT DROP: the output should retain the input's content words (common
-       function words excluded); low overlap = regurgitation or summarization.
-    3) ADDRESSED THE SPEAKER: second-person words the input didn't have mean the
-       model replied ('you're looking to...') instead of editing.
-    """
-    src_words = _TOKEN_RE.findall(src.lower())
-    out_words = _TOKEN_RE.findall(out.lower())
-    # Fail closed on changed numbers and polarity, including short utterances.
-    # Conservative rejection may leave a self-correction verbatim; it must never
-    # turn a refusal into permission or change an amount to improve formatting.
-    def facts(text):
-        text = re.sub(r"^\s*\d+[.)]\s+", "", text, flags=re.MULTILINE)
-        numbers = re.findall(r"\d+(?:[.,:/-]\d+)*", text)
-        words = _TOKEN_RE.findall(text.lower().replace("’", "'"))
-        negatives = sum(w in {"not", "no", "never", "without", "cannot"} or w.endswith("n't") for w in words)
-        return numbers, negatives
-    if facts(src) != facts(out):
-        return True
-    if len(src_words) < 4:
-        return False                                  # too short to judge safely
-    if len(out_words) > len(src_words) * 1.5 + 3:
-        return True                                   # fabricated / added content
-    content = [w for w in src_words if w not in _STOPWORDS]
-    if len(content) >= 3:
-        out_set = set(out_words)
-        kept = sum(1 for w in content if w in out_set)
-        if kept / len(content) < 0.5:
-            return True                               # regurgitated / summarized
-    src_set = set(src_words)
-    added_you = sum(1 for w in out_words if w in _SECOND_PERSON and w not in src_set)
-    if added_you >= 2:
-        return True                                   # started replying to speaker
-    return False
+    from polish_guard import faithful_cleanup
+    return not faithful_cleanup(src, out)
 
 
 def _polish(text: str) -> str:

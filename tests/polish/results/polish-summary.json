@@ -1,0 +1,46 @@
+{
+  "polish-model-results.json:baseline": {
+    "n": 28,
+    "invariants": 21,
+    "reference": 16,
+    "format_cases": 5,
+    "format_pass": 2,
+    "median_seconds": 0.6189323957078159
+  },
+  "polish-model-results.json:focused": {
+    "n": 28,
+    "invariants": 21,
+    "reference": 19,
+    "format_cases": 5,
+    "format_pass": 1,
+    "median_seconds": 0.47376266680657864
+  },
+  "polish-layout-results.json:layout": {
+    "n": 28,
+    "invariants": 27,
+    "reference": 24,
+    "format_cases": 5,
+    "format_pass": 3,
+    "median_seconds": 0.7186804790981114
+  },
+  "polish-holdout-results.json:baseline": {
+    "n": 16,
+    "invariants": 15,
+    "reference": 14,
+    "format_cases": 0,
+    "format_pass": 0,
+    "median_seconds": 0.5779340630397201
+  },
+  "baseline-output-replay-new-guard": {
+    "n": 28,
+    "invariants": 28,
+    "reference": 25,
+    "fallbacks": 9,
+    "guard_median_ms": 0.054063042625784874
+  },
+  "holdout-same-output-legacy-replay": {
+    "n": 16,
+    "invariants": 12,
+    "reference": 12
+  }
+}

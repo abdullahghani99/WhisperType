@@ -98,11 +98,12 @@ def main():
                "one, but you're worried you'll lose your data."), "replied to speaker (I->you)"
     assert not bad("Make sure this complies with the German laws and our German entities.",
                    "Make sure this complies with the German laws and our German entities."), "faithful"
-    assert not bad("also make a message draft a message for the doctor to submit it to her",
-                   "Draft a message for the doctor to submit to her."), "light cleanup"
-    # A genuine question that already contains 'you' must NOT be flagged.
-    assert not bad("can you like send me the the report when you get a chance you know",
-                   "Can you send me the report when you get a chance?"), "keeps existing 'you'"
+    assert bad("also make a message draft a message for the doctor to submit it to her",
+                   "Draft a message for the doctor to submit to her."), "ambiguous phrasing deletion conservatively retains original"
+    # Ambiguous filler edits retain the original; an unchanged question still passes.
+    assert bad("can you like send me the the report when you get a chance you know",
+                   "Can you send me the report when you get a chance?"), "ambiguous like deletion conservatively retains original"
+    assert not bad("Can you send me the report?", "Can you send me the report?")
     assert not bad("hey", "Hey."), "too short to judge"
 
     # Prompt mode: guard returns 503 when the model isn't loaded (as in this test).

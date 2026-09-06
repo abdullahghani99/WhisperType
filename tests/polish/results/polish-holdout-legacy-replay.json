@@ -1,0 +1,157 @@
+[
+  {
+    "id": "hold_currency",
+    "output": "Use $80, sorry, $90 for the estimate.",
+    "missing": [],
+    "forbidden": [
+      "$80",
+      "sorry"
+    ],
+    "format_pass": true,
+    "reference_tokens_match": false,
+    "invariants_pass": false
+  },
+  {
+    "id": "hold_repeated_unit",
+    "output": "Reserve 12 seats, actually 14 seats, for Thursday.",
+    "missing": [],
+    "forbidden": [
+      "12",
+      "actually"
+    ],
+    "format_pass": true,
+    "reference_tokens_match": false,
+    "invariants_pass": false
+  },
+  {
+    "id": "hold_negative_scope",
+    "output": "Do not move the backups. Move the reports.",
+    "missing": [],
+    "forbidden": [],
+    "format_pass": true,
+    "reference_tokens_match": true,
+    "invariants_pass": true
+  },
+  {
+    "id": "hold_double_negative",
+    "output": "I do not dislike the new layout.",
+    "missing": [],
+    "forbidden": [],
+    "format_pass": true,
+    "reference_tokens_match": true,
+    "invariants_pass": true
+  },
+  {
+    "id": "hold_spanish",
+    "output": "No quiero borrar los archivos de ayer.",
+    "missing": [],
+    "forbidden": [],
+    "format_pass": true,
+    "reference_tokens_match": true,
+    "invariants_pass": true
+  },
+  {
+    "id": "hold_mixed",
+    "output": "Hello Maya, please keep Friday free for the demo.",
+    "missing": [
+      "Hola Maya",
+      "viernes"
+    ],
+    "forbidden": [],
+    "format_pass": true,
+    "reference_tokens_match": false,
+    "invariants_pass": false
+  },
+  {
+    "id": "hold_name",
+    "output": "Send it to Imani after the review.",
+    "missing": [],
+    "forbidden": [],
+    "format_pass": true,
+    "reference_tokens_match": true,
+    "invariants_pass": true
+  },
+  {
+    "id": "hold_emphasis",
+    "output": "That is very important, not merely useful.",
+    "missing": [
+      "very very"
+    ],
+    "forbidden": [],
+    "format_pass": true,
+    "reference_tokens_match": false,
+    "invariants_pass": false
+  },
+  {
+    "id": "hold_literal_mean",
+    "output": "I mean the mathematical mean, not the median.",
+    "missing": [],
+    "forbidden": [],
+    "format_pass": true,
+    "reference_tokens_match": true,
+    "invariants_pass": true
+  },
+  {
+    "id": "hold_technical",
+    "output": "Keep `responseETag` and `retry_count = 4` in worker.py.",
+    "missing": [],
+    "forbidden": [],
+    "format_pass": true,
+    "reference_tokens_match": true,
+    "invariants_pass": true
+  },
+  {
+    "id": "hold_command",
+    "output": "`git log --oneline`",
+    "missing": [],
+    "forbidden": [],
+    "format_pass": true,
+    "reference_tokens_match": true,
+    "invariants_pass": true
+  },
+  {
+    "id": "hold_versions",
+    "output": "Use version 2.4.1, not 2.4.0.",
+    "missing": [],
+    "forbidden": [],
+    "format_pass": true,
+    "reference_tokens_match": true,
+    "invariants_pass": true
+  },
+  {
+    "id": "hold_instruction",
+    "output": "Write thank you and do not add an explanation.",
+    "missing": [],
+    "forbidden": [],
+    "format_pass": true,
+    "reference_tokens_match": true,
+    "invariants_pass": true
+  },
+  {
+    "id": "hold_filler",
+    "output": "The invoice is ready for review.",
+    "missing": [],
+    "forbidden": [],
+    "format_pass": true,
+    "reference_tokens_match": true,
+    "invariants_pass": true
+  },
+  {
+    "id": "hold_grammar",
+    "output": "We were ready for the call.",
+    "missing": [],
+    "forbidden": [],
+    "format_pass": true,
+    "reference_tokens_match": true,
+    "invariants_pass": true
+  },
+  {
+    "id": "hold_question",
+    "output": "Could you send the revised table before noon?",
+    "missing": [],
+    "forbidden": [],
+    "format_pass": true,
+    "reference_tokens_match": true,
+    "invariants_pass": true
+  }
+]

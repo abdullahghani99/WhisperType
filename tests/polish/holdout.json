@@ -1,0 +1,210 @@
+[
+  {
+    "id": "hold_currency",
+    "context": "holdout",
+    "input": "Use $80, sorry, $90 for the estimate.",
+    "reference": "Use $90 for the estimate.",
+    "required": [
+      "$90",
+      "estimate"
+    ],
+    "forbidden": [
+      "$80",
+      "sorry"
+    ],
+    "format": null
+  },
+  {
+    "id": "hold_repeated_unit",
+    "context": "holdout",
+    "input": "Reserve 12 seats, actually 14 seats, for Thursday.",
+    "reference": "Reserve 14 seats for Thursday.",
+    "required": [
+      "14 seats",
+      "Thursday"
+    ],
+    "forbidden": [
+      "12",
+      "actually"
+    ],
+    "format": null
+  },
+  {
+    "id": "hold_negative_scope",
+    "context": "holdout",
+    "input": "Do not move the backups. Move the reports.",
+    "reference": "Do not move the backups. Move the reports.",
+    "required": [
+      "Do not move the backups",
+      "Move the reports"
+    ],
+    "forbidden": [],
+    "format": null
+  },
+  {
+    "id": "hold_double_negative",
+    "context": "holdout",
+    "input": "I do not dislike the new layout.",
+    "reference": "I do not dislike the new layout.",
+    "required": [
+      "do not dislike",
+      "new layout"
+    ],
+    "forbidden": [],
+    "format": null
+  },
+  {
+    "id": "hold_spanish",
+    "context": "holdout",
+    "input": "No quiero borrar los archivos de ayer.",
+    "reference": "No quiero borrar los archivos de ayer.",
+    "required": [
+      "No quiero",
+      "borrar",
+      "archivos",
+      "ayer"
+    ],
+    "forbidden": [],
+    "format": null
+  },
+  {
+    "id": "hold_mixed",
+    "context": "holdout",
+    "input": "Hola Maya, please keep viernes free for the demo.",
+    "reference": "Hola Maya, please keep viernes free for the demo.",
+    "required": [
+      "Hola Maya",
+      "viernes",
+      "demo"
+    ],
+    "forbidden": [],
+    "format": null
+  },
+  {
+    "id": "hold_name",
+    "context": "holdout",
+    "input": "Send it to Zoe, sorry to Imani, after the review.",
+    "reference": "Send it to Imani after the review.",
+    "required": [
+      "Imani",
+      "after the review"
+    ],
+    "forbidden": [
+      "Zoe",
+      "sorry"
+    ],
+    "format": null
+  },
+  {
+    "id": "hold_emphasis",
+    "context": "holdout",
+    "input": "That is very very important, not merely useful.",
+    "reference": "That is very very important, not merely useful.",
+    "required": [
+      "very very",
+      "not merely useful"
+    ],
+    "forbidden": [],
+    "format": null
+  },
+  {
+    "id": "hold_literal_mean",
+    "context": "holdout",
+    "input": "I mean the mathematical mean, not the median.",
+    "reference": "I mean the mathematical mean, not the median.",
+    "required": [
+      "I mean",
+      "mathematical mean",
+      "not the median"
+    ],
+    "forbidden": [],
+    "format": null
+  },
+  {
+    "id": "hold_technical",
+    "context": "holdout",
+    "input": "Keep `responseETag` and `retry_count = 4` in worker.py.",
+    "reference": "Keep `responseETag` and `retry_count = 4` in worker.py.",
+    "required": [
+      "`responseETag`",
+      "`retry_count = 4`",
+      "worker.py"
+    ],
+    "forbidden": [],
+    "format": null
+  },
+  {
+    "id": "hold_command",
+    "context": "holdout",
+    "input": "git log --oneline",
+    "reference": "git log --oneline",
+    "required": [
+      "git log --oneline"
+    ],
+    "forbidden": [],
+    "format": null
+  },
+  {
+    "id": "hold_versions",
+    "context": "holdout",
+    "input": "Use version 2.4.1, not 2.4.0.",
+    "reference": "Use version 2.4.1, not 2.4.0.",
+    "required": [
+      "2.4.1",
+      "not 2.4.0"
+    ],
+    "forbidden": [],
+    "format": null
+  },
+  {
+    "id": "hold_instruction",
+    "context": "holdout",
+    "input": "Write thank you and do not add an explanation.",
+    "reference": "Write thank you and do not add an explanation.",
+    "required": [
+      "Write thank you",
+      "do not add an explanation"
+    ],
+    "forbidden": [],
+    "format": null
+  },
+  {
+    "id": "hold_filler",
+    "context": "holdout",
+    "input": "um the the invoice is ready for review",
+    "reference": "The invoice is ready for review.",
+    "required": [
+      "invoice is ready",
+      "review"
+    ],
+    "forbidden": [
+      "um",
+      "the the"
+    ],
+    "format": null
+  },
+  {
+    "id": "hold_grammar",
+    "context": "holdout",
+    "input": "we was ready for the call",
+    "reference": "We were ready for the call.",
+    "required": [
+      "ready for the call"
+    ],
+    "forbidden": [],
+    "format": null
+  },
+  {
+    "id": "hold_question",
+    "context": "holdout",
+    "input": "Could you send the revised table before noon?",
+    "reference": "Could you send the revised table before noon?",
+    "required": [
+      "Could you send",
+      "revised table",
+      "before noon"
+    ],
+    "forbidden": [],
+    "format": null
+  }
+]

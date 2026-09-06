@@ -17,7 +17,7 @@ import time
 import urllib.request
 import uuid
 
-FILES = ('server.py', 'inference_worker.py', 'diarize.py',
+FILES = ('server.py', 'inference_worker.py', 'polish_guard.py', 'diarize.py',
          'requirements-lock.txt', 'requirements-diarize-lock.txt')
 
 def configuration(previous, root, release, updates):

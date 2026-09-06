@@ -1,0 +1,1 @@
+Synthetic evaluation fixtures and raw experiment evidence. See ../../docs/POLISH-ASSESSMENT.md for decisions, metrics, known false rejections and reproduction. The focused/layout prompts are rejected experiments; neither is a runtime default.

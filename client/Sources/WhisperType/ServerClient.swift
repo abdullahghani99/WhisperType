@@ -378,8 +378,25 @@ struct ServerClient {
 
     /// Teach the server your fix for a dictation. It stores it and derives
     /// candidate vocab corrections (surfaced via `suggestions()`).
-    func correct(id: Int, edited: String) async throws {
-        try await postJSON("correct", ["id": id, "edited": edited])
+    func correct(id: Int, edited: String, expected: String? = nil) async throws {
+        var body: [String: Any] = ["id": id, "edited": edited]
+        if let expected = expected { body["expected"] = expected }
+        try await postJSON("correct", body)
+    }
+
+    func learningSummary() async throws -> String {
+        var req = URLRequest(url: baseURL.appendingPathComponent("learning/status"))
+        req.timeoutInterval = 10
+        let (data, _) = try await request(req)
+        let item = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        let corrections = item["corrections"] as? Int ?? 0
+        let feedback = item["feedback"] as? [String: Int] ?? [:]
+        let meetings = (feedback["meeting_notes"] ?? 0) + (feedback["meeting_transcript"] ?? 0)
+        return "\(corrections) dictation corrections · \(meetings) meeting corrections saved"
+    }
+
+    func teachMeeting(id: Int, task: String, edited: String, expected: String) async throws {
+        try await postJSON("learning/feedback", ["id": id, "task": task, "edited": edited, "expected": expected])
     }
 
     /// Pending learning candidates, most-corrected first.
@@ -422,7 +439,7 @@ struct ServerClient {
         let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         return (object["items"] as! [[String: Any]]).map {
             HistoryItem(id: $0["id"] as! Int, timestamp: $0["ts"] as? String ?? "",
-                        text: $0["polished"] as? String ?? $0["corrected"] as? String ?? "")
+                        text: ($0["edited"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? $0["polished"] as? String ?? $0["corrected"] as? String ?? "")
         }
     }
     func removeVocab(kind: String, key: String, value: String) async throws {

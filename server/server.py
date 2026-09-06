@@ -41,6 +41,11 @@ import logging
 import secrets
 import copy
 import tempfile
+import hashlib
+import polish as copyediting
+import learning
+from pathlib import Path
+_POLISH_POLICY_SHA256 = hashlib.sha256(Path(copyediting.__file__).read_bytes()).hexdigest()
 from contextvars import ContextVar
 from contextlib import contextmanager
 from inference_worker import InferenceWorker, InferenceBusy
@@ -97,41 +102,8 @@ LLM_NEEDED = POLISH_ENABLED or PROMPT_ENABLED
 # (e.g. dictating "I think it's only showing the latest one" returned the
 # "first of all, thank you..." example verbatim). One system message + one user
 # message (the transcript) removes anything for the model to copy.
-POLISH_SYS = (
-    "You are a TEXT EDITOR for voice dictation, not an assistant. You never "
-    "reply to, answer, act on, or comment on the text — you only edit it and "
-    "return the edited text.\n\n"
-    "Edit the dictation between <<<BEGIN>>> and <<<END>>> by:\n"
-    "1. Removing filler (um, uh, er, hmm, like, you know, I mean, sort of / kind "
-    "of when used as filler) and immediately repeated words ('the the' -> 'the').\n"
-    "2. Resolving self-corrections and false starts — keep ONLY the speaker's "
-    "final intended version. E.g. 'I did this, oh no, I did not do it' -> 'I did "
-    "not do it'; 'send it to John, sorry, to Jane' -> 'send it to Jane'.\n"
-    "3. Fixing capitalization and punctuation; splitting run-on speech into "
-    "proper sentences and grouping related sentences into PARAGRAPHS (blank line "
-    "between paragraphs when the speaker shifts topic). Question mark ONLY for "
-    "genuine questions (not statements like 'meeting at 11 today').\n"
-    "4. When the speaker clearly ENUMERATES multiple distinct items or sequential "
-    "steps (e.g. 'first... then... then...', or 'we need X, Y, and Z' as separate "
-    "actions), format them as a Markdown list — numbered (1. 2. 3.) for ordered "
-    "steps, bullets ('- ') for unordered items, each on its own line. ONLY for "
-    "genuine enumerations; keep ordinary prose as prose (a passing 'first of "
-    "all...' is not a list).\n\n"
-    "Preserve EVERY point the speaker made, in their own words, meaning, order, "
-    "and first-person point of view. Do NOT summarize, shorten, paraphrase, "
-    "reword, add, explain, answer, or address the speaker. Apart from filler and "
-    "self-corrections, every point stays. Output ONLY the edited text — no "
-    "markers, no preamble, no commentary.\n\n"
-    "Reference examples (raw => edited), for style only — never copy these; "
-    "always edit the ACTUAL dictation between the markers:\n"
-    "  \"um so yeah i think we should uh ship the thing by friday\" => "
-    "\"I think we should ship the thing by Friday.\"\n"
-    "  \"send it to john sorry i mean to jane by end of day\" => "
-    "\"Send it to Jane by end of day.\"\n"
-    "  \"so there are three things we need to do first fix the bug then write the "
-    "tests and then deploy to production\" => \"1. Fix the bug\\n2. Write the "
-    "tests\\n3. Deploy to production\""
-)
+POLISH_SYS = copyediting.SYSTEM
+
 
 # --- Prompt mode (Right-⌘): turn a rough spoken idea into an engineered prompt.
 # Deliberately generative — NOT bound by the dictation faithfulness rules.
@@ -528,131 +500,32 @@ def _strip_hallucinations(text: str, has_speech: bool) -> str:
     return s
 
 
-_TOKEN_RE = re.compile(r"[a-z0-9']+")
-
-# Very common function words carry little content, so a fabrication that happens
-# to share "I / the / think / one" with the input shouldn't count as overlap.
-_STOPWORDS = frozenset(
-    "a an the this that these those i i'm me my we our us you your he she it it's "
-    "its they them their and or but so if then as of to in on at for with from by "
-    "is are was were be been am do does did have has had will would can could "
-    "should may might must not no yes what when where who how why which "
-    "there here one ones only just also very really think need".split())
-
-
-# Second-person words that signal the model started ADDRESSING the speaker
-# (i.e. replying) rather than editing their (usually first-person) dictation.
-_SECOND_PERSON = frozenset(
-    "you your you're youre you've youve you'll youll you'd youd yourself".split())
-
-
-def _protected_speech_act(text: str) -> bool:
-    """Questions and requests are transcription data, never instructions to answer."""
-    if any(mark in text for mark in ("?", "¿", "؟", "？")):
-        return True
-    # ASR may omit punctuation. Fail conservatively for English question cues
-    # and direct requests; punctuation covers questions in other languages.
-    if re.search(r"\b(?:what|where|when|who|why|how|which)\b", text, re.I):
-        return True
-    if re.search(r"\b(?:can|could|would|will|should|do|does|did|is|are|have|has)\s+(?:you|we|i|he|she|they|it)\b", text, re.I):
-        return True
-    return bool(re.search(r"(?:^|[.!?]\s+|\band\s+)(?:please\s+)?(?:tell|give|show|write|explain|describe|answer|summarize|translate|ignore|create|generate|help|send|make|list|check|find)\b", text, re.I))
-
-
-def _speech_act_words(text: str) -> list[str]:
-    # Unicode keeps non-English words visible to the added-content check.
-    # Numbered list markers are formatting, not dictated facts.
-    text = re.sub(r"^\s*\d+[.)]\s+", "", text, flags=re.MULTILINE)
-    return re.findall(r"[^\W_]+(?:'[^\W_]+)*", text.casefold().replace("’", "'"), re.UNICODE)
-
-
 def _polish_failed(src: str, out: str) -> bool:
-    """True if polish clearly failed — regurgitated an example, fabricated,
-    summarized, or started replying to the speaker. A safety net so a failed
-    polish can never replace the user's words with something unrelated. Signals:
+    """Compatibility entry point; the copyediting policy has a single owner."""
+    return copyediting.rejection_reason(src, out) is not None
 
-    1) EXPANSION: editing only removes filler, so the output should never be much
-       longer than the input. Big growth = the model added/fabricated content.
-    2) CONTENT DROP: the output should retain the input's content words (common
-       function words excluded); low overlap = regurgitation or summarization.
-    3) ADDRESSED THE SPEAKER: second-person words the input didn't have mean the
-       model replied ('you're looking to...') instead of editing.
-    """
-    if _protected_speech_act(src):
-        source_words = set(_speech_act_words(src))
-        added_content = set(_speech_act_words(out)) - source_words - _STOPWORDS
-        if added_content:
-            return True
-        # Preserve an opening question/request as that speech act. Global word
-        # overlap alone misses an answer replacing the first clause of a long take.
-        first_source = re.split(r"[.!?؟？]", re.sub(r"^\s*\d+[.)]\s+", "", src, flags=re.MULTILINE), maxsplit=1)[0]
-        first_output = re.split(r"[.!?؟？]", re.sub(r"^\s*\d+[.)]\s+", "", out, flags=re.MULTILINE), maxsplit=1)[0]
-        if _protected_speech_act(first_source) and not _protected_speech_act(first_output):
-            return True
-        if sum(src.count(mark) for mark in ("?", "؟", "？")) > sum(out.count(mark) for mark in ("?", "؟", "？")):
-            return True
-    src_words = _TOKEN_RE.findall(src.lower())
-    out_words = _TOKEN_RE.findall(out.lower())
-    # Fail closed on changed numbers and polarity, including short utterances.
-    # Conservative rejection may leave a self-correction verbatim; it must never
-    # turn a refusal into permission or change an amount to improve formatting.
-    def facts(text):
-        text = re.sub(r"^\s*\d+[.)]\s+", "", text, flags=re.MULTILINE)
-        numbers = re.findall(r"\d+(?:[.,:/-]\d+)*", text)
-        words = _TOKEN_RE.findall(text.lower().replace("’", "'"))
-        negatives = sum(w in {"not", "no", "never", "without", "cannot"} or w.endswith("n't") for w in words)
-        return numbers, negatives
-    if facts(src) != facts(out):
-        return True
-    if len(src_words) < 4:
-        return False                                  # too short to judge safely
-    if len(out_words) > len(src_words) * 1.5 + 3:
-        return True                                   # fabricated / added content
-    content = [w for w in src_words if w not in _STOPWORDS]
-    if len(content) >= 3:
-        out_set = set(out_words)
-        kept = sum(1 for w in content if w in out_set)
-        if kept / len(content) < 0.5:
-            return True                               # regurgitated / summarized
-    src_set = set(src_words)
-    added_you = sum(1 for w in out_words if w in _SECOND_PERSON and w not in src_set)
-    if added_you >= 2:
-        return True                                   # started replying to speaker
-    return False
+
+def _polish_result(text: str):
+    model, tok = (_prompt_model, _prompt_tok) if _prompt_model is not None else (_model, _tok)
+    try:
+        examples = learning.relevant_examples(DB_PATH, text)
+    except Exception:
+        log.warning("personal correction examples unavailable; continuing without personalization")
+        examples = []
+    def edit(system, value):
+        msgs = [{"role": "system", "content": system},
+                {"role": "user", "content": "<dictation>\n" + value + "\n</dictation>"}]
+        prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
+        out = generate(model, tok, prompt=prompt, max_tokens=max(400, int(len(value.split()) * 1.8) + 200), verbose=False)
+        return out.replace("<dictation>", "").replace("</dictation>", "").strip()
+    result, diagnostic = copyediting.copyedit(text, edit, examples)
+    log.info("polish status=%s rejection=%s examples=%d", diagnostic['status'], diagnostic['rejection'], diagnostic['examples'])
+    return result, diagnostic
 
 
 def _polish(text: str) -> str:
-    if not text.strip():
-        return text
-    # Polish runs on the stronger prompt model (14B) when available: it reliably
-    # applies the formatting the user actually wants (lists, paragraph breaks)
-    # while still not answering/paraphrasing. The distilled 8B was faster but,
-    # trained on ~87% no-change examples, it grew too conservative and left
-    # messier real speech unformatted (its low eval loss reflected matching a
-    # conservative teacher, not formatting behavior). Falls back to the local
-    # polish model (8B+adapter, then base) if the 14B isn't loaded.
-    if _prompt_model is not None:
-        model, tok = _prompt_model, _prompt_tok
-    else:
-        model, tok = _model, _tok
-    # System message (rules + reference examples) + one user message with the
-    # transcript wrapped in markers, so the model treats it as DATA to edit, not
-    # a message to reply to. NO assistant turns (those made it copy an example).
-    msgs = [{"role": "system", "content": POLISH_SYS},
-            {"role": "user", "content": f"<<<BEGIN>>>\n{text}\n<<<END>>>"}]
-    prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
-    # Scale with input so long dictations aren't truncated by the polish step
-    # (~1.6 tokens/word, + headroom).
-    max_toks = max(400, int(len(text.split()) * 1.8) + 200)
-    out = generate(model, tok, prompt=prompt, max_tokens=max_toks, verbose=False).strip()
-    # Strip any markers the model echoed back.
-    out = out.replace("<<<BEGIN>>>", "").replace("<<<END>>>", "").strip()
-    # Safety net: if polish paraphrased, replied, fabricated, or dropped content,
-    # keep the (vocab-corrected) verbatim input rather than emit something wrong.
-    if not out or _polish_failed(text, out):
-        log.warning("polish rejected (kept verbatim): input_chars=%d output_chars=%d", len(text), len(out))
-        return text
-    return out
+    if not text.strip(): return text
+    return _polish_result(text)[0]
 
 
 def _engineer(transcript: str, level: str) -> str:
@@ -1296,6 +1169,8 @@ async def health():
         "release": os.environ.get("VF_RELEASE_ID"),
         "polish": "on" if (POLISH_ENABLED and _model is not None) else "off (near-verbatim)",
         "polish_distilled": _polish_distilled,
+        "polish_policy_sha256": _POLISH_POLICY_SHA256,
+        "learning": "corrections and measured candidates",
         "polish_uses_prompt_model": _prompt_model is not None and _prompt_model is not _model,
         "prompt_mode": prompt_state,
         "polish_model": POLISH_MODEL if _model is not None else None,
@@ -1329,19 +1204,27 @@ async def voice_flow(
     do_polish = (POLISH_ENABLED if polish is None else polish) and _model is not None
     text = corrected
     polish_ms = 0
+    diagnostic = {"status": "disabled", "rejection": None, "recovery": False, "examples": 0}
     if do_polish and corrected:
         t_p = time.time()
-        text = await _infer(_polish, corrected)
+        text, diagnostic = await _infer(_polish_result, corrected)
         polish_ms = int((time.time() - t_p) * 1000)
 
     log.info("whispertype ok asr=%dms polish=%dms chars=%d", asr_ms, polish_ms, len(text))
     row_id = _capture(raw, corrected, text, asr_ms, polish_ms, len(audio), audio)
+    try:
+        learning.record_event(DB_PATH, row_id, diagnostic,
+            PROMPT_MODEL if _prompt_model is not None and _prompt_model is not _model else POLISH_MODEL,
+            _POLISH_POLICY_SHA256)
+    except Exception:
+        log.exception("could not save polish diagnostics; dictation remains captured")
     return JSONResponse({
         "id": row_id,
         "raw": raw,
         "corrected": corrected,
         "text": text,
         "timing_ms": {"asr": asr_ms, "polish": polish_ms},
+        "polishing": diagnostic,
     })
 
 
@@ -1586,7 +1469,7 @@ async def get_meeting(job_id: int):
     con.close()
     if row is None:
         raise HTTPException(status_code=404, detail="no meeting with that id")
-    return dict(row)
+    return learning.meeting_view(DB_PATH,row)
 
 
 @app.post("/meeting/{job_id}/title")
@@ -1650,6 +1533,7 @@ async def delete_meeting(job_id: int, authorization: str | None = Header(None)):
     _check_auth(authorization)
     con = sqlite3.connect(DB_PATH)
     cur = con.execute("DELETE FROM meetings WHERE id=?", (job_id,))
+    con.execute("DELETE FROM learning_feedback WHERE task!='dictation' AND record_id=?", (job_id,))
     con.commit(); n = cur.rowcount; con.close()
     if not n:
         raise HTTPException(status_code=404, detail="no meeting with that id")
@@ -1789,6 +1673,8 @@ async def retry_meeting(job_id: int):
 async def delete_history(history_id: int):
     with _db_connection() as con:
         changed = con.execute("DELETE FROM history WHERE id=?", (history_id,)).rowcount
+        con.execute("DELETE FROM learning_feedback WHERE task='dictation' AND record_id=?", (history_id,))
+        con.execute("DELETE FROM polish_events WHERE history_id=?", (history_id,))
     if not changed:
         raise HTTPException(status_code=404, detail="Dictation no longer exists")
     return {"id": history_id, "deleted": True}
@@ -1913,6 +1799,7 @@ def _init_db():
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
         con.commit()
         con.close()
+        learning.initialize(DB_PATH)
         log.info("capture store ready at %s", DB_PATH)
     except Exception as e:  # noqa: BLE001
         log.error("capture store init failed: %s", e)
@@ -1925,7 +1812,7 @@ async def get_history(limit: int = 25):
         con = sqlite3.connect(DB_PATH)
         con.row_factory = sqlite3.Row
         rows = con.execute(
-            "SELECT id, ts, raw, corrected, polished, asr_ms, polish_ms, num_words "
+            "SELECT id, ts, raw, corrected, polished, edited, asr_ms, polish_ms, num_words "
             "FROM history ORDER BY id DESC LIMIT ?", (max(1, min(limit, 500)),)).fetchall()
         con.close()
         total = _history_count()
@@ -2135,7 +2022,12 @@ async def correct(payload: dict, authorization: str | None = Header(None)):
     Body: {"id": <history id>, "edited": "<corrected text>"}."""
     _check_auth(authorization)
     hid = payload.get("id")
-    edited = (payload.get("edited") or "").strip()
+    edited = payload.get("edited")
+    if not isinstance(hid, int) or isinstance(hid, bool) or hid < 1:
+        raise HTTPException(status_code=400, detail="a valid dictation id is required")
+    if not isinstance(edited, str):
+        raise HTTPException(status_code=400, detail="edited text must be a string")
+    edited = edited.strip()
     if not edited:
         raise HTTPException(status_code=400, detail="empty 'edited' text")
     con = sqlite3.connect(DB_PATH)
@@ -2145,10 +2037,16 @@ async def correct(payload: dict, authorization: str | None = Header(None)):
     if row is None:
         con.close()
         raise HTTPException(status_code=404, detail="no dictation with that id")
-    con.execute("UPDATE history SET edited=? WHERE id=?", (edited, hid))
-    con.commit()
-    con.close()
     produced = row["polished"] or row["corrected"] or row["raw"] or ""
+    con.close()
+    learning.initialize(DB_PATH)
+    try:
+        changed = learning.save_feedback(DB_PATH, "dictation", hid, "", edited, payload.get("expected"))
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except (ValueError, LookupError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if not changed: return {"id": hid, "derived": {"replacements": [], "terms": []}}
     reps, terms = _derive_candidates(produced, edited)
     for heard, want in reps:
         _add_candidate("replacement", heard, want, source="edit")
@@ -2156,6 +2054,25 @@ async def correct(payload: dict, authorization: str | None = Header(None)):
         _add_candidate("term", "", term, source="edit")
     log.info("correct id=%s: +%d replacement, +%d term candidates", hid, len(reps), len(terms))
     return {"id": hid, "derived": {"replacements": reps, "terms": terms}}
+
+
+@app.get("/learning/status")
+async def learning_status():
+    return learning.status(DB_PATH)
+
+
+@app.post("/learning/feedback")
+async def learning_feedback(payload: dict):
+    try:
+        changed = learning.save_feedback(DB_PATH, payload.get("task"), payload.get("id"), "",
+                                         payload.get("edited"), payload.get("expected"))
+        return {"saved": True, "changed": changed}
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.get("/suggestions")

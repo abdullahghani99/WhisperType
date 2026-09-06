@@ -145,6 +145,33 @@ final class SettingsState: ObservableObject {
         }
     }
 
+    @Published var learningSummary = ""
+
+    func loadLearningSummary() {
+        guard let client = client else { return }
+        Task {
+            do {
+                let summary = try await client.learningSummary()
+                await MainActor.run { self.learningSummary = summary }
+            } catch { await MainActor.run { self.learningSummary = "Learning status unavailable" } }
+        }
+    }
+
+    @MainActor func teachCorrection(id: Int, text: String, localID: UUID? = nil) {
+        guard let edited = CorrectionPrompt.run(prefill: text), edited != text, let client = client else { return }
+        Task {
+            do {
+                try await client.correct(id: id, edited: edited, expected: text)
+                if let localID = localID, var entry = try RecordingStore.entries().first(where: { $0.id == localID }) {
+                    entry.text = edited
+                    try RecordingStore.save(entry)
+                }
+                self.status = "Correction saved. Relevant future dictations can learn from this example."
+                self.reload(); self.loadLearningSummary()
+            } catch { self.status = "Could not save correction: \(error.localizedDescription)" }
+        }
+    }
+
     var client: ServerClient?
 
     func loadMics() {
@@ -391,11 +418,14 @@ struct LearningTab: View {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Learning").font(VF.Font.display)
-                        Text("A dictionary that learns with your approval.").foregroundStyle(VF.Color.muted(dark: dark))
+                        Text("Learn from corrections, preserve your meaning.").foregroundStyle(VF.Color.muted(dark: dark))
                     }
                     Spacer()
-                    Button("Refresh") { state.loadSuggestions() }.buttonStyle(VFActionStyle())
+                    Button("Refresh") { state.loadSuggestions(); state.loadLearningSummary() }.buttonStyle(VFActionStyle())
                 }
+                if !state.learningSummary.isEmpty { Text(state.learningSummary).font(VF.Font.heading) }
+                Text("Use Teach correction in History to save the wording you wanted. Relevant examples help future dictations; model updates are evaluated separately. Meeting corrections stay in their own learning set.")
+                    .font(VF.Font.callout).foregroundStyle(VF.Color.muted(dark: dark))
                 Text("Review recurring corrections and names from your history. Approving a suggestion adds it to Dictionary; dismissing leaves your words unchanged.")
                     .font(VF.Font.callout).foregroundStyle(VF.Color.muted(dark: dark)).fixedSize(horizontal: false, vertical: true)
                 if state.suggestions.isEmpty {
@@ -426,7 +456,7 @@ struct LearningTab: View {
                 if state.undoSuggestionID != nil { Button("Undo last action") { state.undoLearning() }.buttonStyle(VFActionStyle()) }
                 if !state.status.isEmpty { Text(state.status).font(VF.Font.callout).foregroundStyle(VF.Color.muted(dark: dark)).textSelection(.enabled) }
             }.font(VF.Font.body).frame(maxWidth: 760, alignment: .leading).padding(32).frame(maxWidth: .infinity, alignment: .top)
-        }.background(VF.Color.canvas(dark: dark))
+        }.background(VF.Color.canvas(dark: dark)).onAppear { state.loadLearningSummary() }
     }
 }
 
@@ -555,6 +585,7 @@ struct HistoryTab: View {
                                 HStack {
                                     Text(item.timestamp).font(VF.Font.caption).foregroundStyle(VF.Color.muted(dark: dark))
                                     Spacer()
+                                    Button("Teach correction") { state.teachCorrection(id: item.id, text: item.text) }.buttonStyle(.plain).font(VF.Font.callout)
                                     Button("Copy") { copy(item.text) }.buttonStyle(.plain).font(VF.Font.callout)
                                     Menu { Button("Delete from server history", role: .destructive) { deleteID = item.id } }
                                         label: { Image(systemName: "ellipsis").frame(width: 24, height: 24) }
@@ -593,6 +624,7 @@ struct HistoryTab: View {
                 Button("Copy") { copy(entry.text) }.buttonStyle(.plain)
                 Menu {
                     Text("Sent · unverified")
+                    if let historyID = entry.historyID { Button("Teach correction") { state.teachCorrection(id: historyID, text: entry.text, localID: entry.id) } }
                     Button("Review sent text") { state.onReviewRecording?(entry.id) }
                     Button("Open saved audio") { NSWorkspace.shared.open(RecordingStore.audioURL(entry.id)) }
                         .disabled(!FileManager.default.fileExists(atPath: RecordingStore.audioURL(entry.id).path))

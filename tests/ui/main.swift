@@ -82,7 +82,7 @@ func render<V:View>(_ view:V,_ name:String,width:CGFloat=1180,height:CGFloat=800
 }
 func previewFailure(_ message: String, file: StaticString = #file, line: UInt = #line) -> Never {
  print("NATIVE CHECK FAILED:", message, "at",file,line)
- previousApp?.activate(options: [])
+ if activePreview { previousApp?.activate(options: []) }
  exit(1)
 }
 func previewCheck(_ value: @autoclosure () -> Bool, _ message: String = "Native assertion failed", file: StaticString = #file, line: UInt = #line) {

@@ -2,6 +2,8 @@ import Foundation
 import Combine
 
 public final class DockState: ObservableObject {
+    @Published public var placementEdge: PillEdge = .bottom
+
     public enum Phase { case idle, starting, listening, transcribing, ready, done, error }
     public enum Mode { case dictation, prompt }
 

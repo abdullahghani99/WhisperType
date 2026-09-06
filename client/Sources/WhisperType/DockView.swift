@@ -13,6 +13,8 @@ public struct DockView: View {
     let onSettings: () -> Void
     let onRecovery: () -> Void
     let micDevices: () -> [(uid: String, name: String)]
+    let onDrag: (PillDragEvent) -> Void
+    let onSelectPosition: (PillEdge) -> Void
     let forceControls: Bool
     let onHoverChanged: (Bool) -> Void
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -29,7 +31,10 @@ public struct DockView: View {
                 onToggleMode: @escaping () -> Void, onMeeting: @escaping () -> Void,
                 onSettings: @escaping () -> Void, micDevices: @escaping () -> [(uid: String, name: String)],
                 onRecovery: @escaping () -> Void = {}, onHoverChanged: @escaping (Bool) -> Void = { _ in },
-                onAcceptCall: @escaping () -> Void = {}) {
+                onAcceptCall: @escaping () -> Void = {},
+                onDrag: @escaping (PillDragEvent) -> Void = { _ in },
+                onSelectPosition: @escaping (PillEdge) -> Void = { _ in }) {
+        self.onDrag = onDrag; self.onSelectPosition = onSelectPosition
         self.state = state; self.forceControls = forceControls; self.onHoverChanged = onHoverChanged
         self.onToggleRecord = onToggleRecord; self.onPickMic = onPickMic
         self.onToggleMode = onToggleMode; self.onMeeting = onMeeting; self.onAcceptCall = onAcceptCall
@@ -37,7 +42,14 @@ public struct DockView: View {
     }
 
     public var body: some View {
-        content
+        HStack(spacing: compact ? 0 : 8) {
+            if !compact {
+                dragSurface(label: "Move pill") { state.collapsePresentation() }
+                    .frame(width: 12, height: 24)
+                    .overlay(Image(systemName: "circle.grid.2x3.fill").font(.system(size: 10)).foregroundStyle(muted).allowsHitTesting(false))
+            }
+            content
+        }
             .font(VF.Font.callout).foregroundStyle(ink)
             .padding(.horizontal, compact ? 8 : 14)
             .padding(.vertical, compact ? 4 : 6).frame(minHeight: compact ? 24 : 40)
@@ -54,9 +66,14 @@ public struct DockView: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .onTapGesture { state.collapsePresentation() }
+                .background(dragSurface(label: nil) { state.collapsePresentation() })
                 .shadow(color: Color.black.opacity(compact ? 0.14 : 0.22), radius: compact ? 5 : 10, x: 0, y: 3)
             }
+            // Native strips cover only unused shell padding, never controls.
+            .overlay(alignment: .top) { shellDrag.frame(height: compact ? 4 : 6) }
+            .overlay(alignment: .bottom) { shellDrag.frame(height: compact ? 4 : 6) }
+            .overlay(alignment: .leading) { shellDrag.frame(width: compact ? 8 : 14) }
+            .overlay(alignment: .trailing) { shellDrag.frame(width: compact ? 8 : 14) }
             .fixedSize()
             .padding(16)
             .preferredColorScheme(.dark)
@@ -124,19 +141,25 @@ public struct DockView: View {
         }
     }
 
-    private var restContent: some View {
-        Button { state.expanded = true } label: {
-            HStack(spacing: 6) {
-                Image(systemName: state.phase == .error ? "exclamationmark.circle.fill" : state.phase == .ready ? "tray.full.fill" : state.mode == .prompt ? "text.bubble" : "mic.fill")
-                    .font(.system(size: 11, weight: .medium))
-                Image(systemName: state.serverOK ? "chevron.up" : "exclamationmark.circle.fill")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(state.serverOK ? ink.opacity(hovering ? 0.9 : 0.5) : VF.Color.attention(dark: true))
-            }.frame(width: 28, height: 16).contentShape(Rectangle())
+    private var shellDrag: some View {
+        dragSurface(label: nil) {
+            if compact { state.expanded = true } else { state.collapsePresentation() }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(state.phase == .ready ? "Result ready in Inbox; expand status" : state.phase == .error ? "\(state.errorText); expand status" : "Open recording controls, \(state.mode == .prompt ? "Prompt" : "Dictation") mode\(state.serverOK ? "" : ", server unavailable")")
-        .help("\(state.mode == .prompt ? "Prompt" : "Dictation") · click for controls, or hold Right Option to record")
+    }
+    private func dragSurface(label: String?, click: @escaping () -> Void) -> some View {
+        DockDragSurface(label: label, edge: state.placementEdge, onClick: click, onDrag: onDrag, onSelect: onSelectPosition)
+    }
+    private var restContent: some View {
+        dragSurface(label: "Open recording controls; drag to move") { state.expanded = true }
+            .frame(width: 28, height: 16)
+            .overlay {
+                HStack(spacing: 6) {
+                    Image(systemName: state.phase == .error ? "exclamationmark.circle.fill" : state.phase == .ready ? "tray.full.fill" : state.mode == .prompt ? "text.bubble" : "mic.fill")
+                        .font(.system(size: 11, weight: .medium))
+                    Image(systemName: state.serverOK ? "chevron.up" : "exclamationmark.circle.fill")
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(state.serverOK ? ink.opacity(0.55) : VF.Color.attention(dark: true))
+                }.allowsHitTesting(false).accessibilityHidden(true)
+            }
     }
 
     private var controls: some View {

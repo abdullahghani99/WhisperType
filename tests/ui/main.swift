@@ -80,7 +80,62 @@ func render<V:View>(_ view:V,_ name:String,width:CGFloat=1180,height:CGFloat=800
  let controller = NSHostingController(rootView:view.frame(width: width, height: height))
  saveView(controller.view,name,width:width,height:height,controller:controller)
 }
+func previewFailure(_ message: String, file: StaticString = #file, line: UInt = #line) -> Never {
+ print("NATIVE CHECK FAILED:", message, "at",file,line)
+ previousApp?.activate(options: [])
+ exit(1)
+}
+func previewCheck(_ value: @autoclosure () -> Bool, _ message: String = "Native assertion failed", file: StaticString = #file, line: UInt = #line) {
+ if !value() { previewFailure(message,file:file,line:line) }
+}
+func probeDockAccessibility() {
+ func probe<V: View>(_ name: String, _ view: V) {
+  let host = NSHostingView(rootView: view)
+  host.frame = NSRect(x:0,y:0,width:620,height:104)
+  let window = NSWindow(contentRect:NSRect(x:-10000,y:-10000,width:620,height:104),styleMask:.borderless,backing:.buffered,defer:false)
+  window.contentView=host;window.isReleasedWhenClosed=false;window.orderBack(nil)
+  pumpPreviewEvents(until:Date().addingTimeInterval(0.5))
+  print("PROBE", name, "fitting", host.fittingSize, "children",host.accessibilityChildren() as Any)
+  window.close()
+ }
+ probe("standard SwiftUI button", Button("Baseline record") {}.accessibilityLabel("Baseline record"))
+ let state=DockState();state.expanded=true
+ probe("actual expanded dock",DockView(state:state,onToggleRecord:{},onPickMic:{_ in},onToggleMode:{},onMeeting:{},onSettings:{},micDevices:{[]}))
+ print("COMPLETE: background accessibility comparison, no audio or foreground window")
+}
 func runReview() {
+ if ProcessInfo.processInfo.environment["VF_UI_DOCK_BACKGROUND"] == "1" {
+  testNativeDockInteraction();print("COMPLETE: background native pill checks; no foreground helper or microphone");exit(0)
+ }
+ if ProcessInfo.processInfo.environment["VF_UI_DOCK_RENDER"] == "1" {
+  let names = ["Idle", "Controls", "Recording", "Saved result", "Attention", "Teams offer"]
+  let states = names.map { name -> DockState in
+   let s=DockState();s.serverOK=true;s.micName="AirPods Pro"
+   if name == "Controls" {s.expanded=true}
+   if name == "Recording" {s.begin();s.elapsed=8;for i in 0..<24{s.setLevel(Float(i % 5 + 1) / 6, at: Double(i) * 0.1)}}
+   if name == "Saved result" {s.ready();s.collapsePresentation()}
+   if name == "Attention" {s.fail("Audio saved in Inbox");s.collapsePresentation()}
+   if name == "Teams offer" {s.ready();s.callOffer=true;s.callTitle="Teams call · fixture"}
+   return s
+  }
+  let gallery=VStack(alignment:.leading,spacing:12) {
+   ForEach(Array(names.enumerated()),id:\.offset) { i,name in
+    HStack(spacing:24) {
+     Text(name).foregroundStyle(.black).frame(width:100,alignment:.leading)
+     DockView(state:states[i],onToggleRecord:{},onPickMic:{_ in},onToggleMode:{},onMeeting:{},onSettings:{},micDevices:{[]})
+     Spacer()
+    }
+   }
+  }.padding(24).background(Color(red:0.91,green:0.94,blue:0.95))
+  render(gallery,"Compact-Pill",width:860,height:570)
+  print("COMPLETE: pill visual review only; no audio");exit(0)
+ }
+ if ProcessInfo.processInfo.environment["VF_UI_PROBE_ONLY"] == "1" { probeDockAccessibility(); exit(0) }
+if ProcessInfo.processInfo.environment["VF_UI_NATIVE_ONLY"] == "1" {
+ testNativeReviewInteraction(); testNativeDockInteraction(); testNativeCaptureControls()
+ print("COMPLETE: native interaction checks only")
+ previousApp?.activate(options: []); exit(0)
+}
 assert(MeetingsView.isMine("Ann: send the report", myName: "Ann"))
 assert(!MeetingsView.isMine("Johann: send the report", myName: "Ann"))
 assert(MeetingsView.isMine("**ALEX:** review the numbers", myName: "Alex"))
@@ -159,6 +214,8 @@ if let panel = prompt.panel {
 }
 renderPillShowcase(out)
 testNativeReviewInteraction()
+testNativeDockInteraction()
+testNativeCaptureControls()
 print("COMPLETE: no AppController, AudioRecorder, MeetingRecorder, or CallWatcher compiled into preview; clients nil; preference writes in-memory")
 if activePreview { previousApp?.activate(options: []) }
 exit(0)

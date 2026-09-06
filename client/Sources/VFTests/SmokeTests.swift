@@ -36,8 +36,9 @@ final class SmokeTests: XCTestCase {
         s.setLevel(0.8)
         XCTAssertEqual(s.level, 0)          // idle → ignored
         s.begin(); s.setLevel(0.8)
-        XCTAssertEqual(s.level, 0.8, accuracy: 0.001)
+        XCTAssertTrue(s.level > 0 && s.level <= 0.8)
+        let previous = s.level
         s.finishRecording(); s.setLevel(0.2)
-        XCTAssertEqual(s.level, 0.8, accuracy: 0.001)   // transcribing → ignored
+        XCTAssertEqual(s.level, previous, accuracy: 0.001)   // transcribing → ignored
     }
 }

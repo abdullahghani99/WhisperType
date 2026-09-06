@@ -37,22 +37,25 @@ enum AudioDevices {
         return devs
     }
 
+    /// Read-only diagnostics: process mute differs from the device's visible mute.
+    static func inputMuteSummary(_ device: AudioInputDevice?) -> String {
+        func value(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector,
+                   _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> String {
+            var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: 0)
+            var result: UInt32 = 0, size = UInt32(MemoryLayout<UInt32>.size)
+            let status = AudioObjectGetPropertyData(id, &address, 0, nil, &size, &result)
+            return status == noErr ? String(result) : "unavailable(\(status))"
+        }
+        let process = value(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessInputMute)
+        guard let device = device else { return "processInputMute=\(process), device=none" }
+        return "processInputMute=\(process), device=\(device.name), deviceProcessMute=\(value(device.id, kAudioDevicePropertyProcessMute, kAudioDevicePropertyScopeInput)), deviceMute=\(value(device.id, kAudioDevicePropertyMute, kAudioDevicePropertyScopeInput))"
+    }
+
     static func deviceID(forUID uid: String) -> AudioDeviceID? {
         inputs().first { $0.uid == uid }?.id
     }
 
-    /// The device WhisperType should actually capture from:
-    ///  - the user's explicit pin, if set;
-    ///  - otherwise, if the system default input is Bluetooth (AirPods / Beats
-    ///    hand back SILENCE for capture), prefer the built-in mic;
-    ///  - otherwise "" = follow the system default.
-    /// This is the fix for the recurring "captured 0 bytes" bug.
-    /// Respect the user's explicit mic choice; otherwise follow the system
-    /// default. Deliberately simple — do NOT override the user's device (an
-    /// earlier "prefer built-in / ignore Bluetooth" heuristic broke a working
-    /// Bluetooth-headset setup: Bluetooth mics DO work for capture). If a device
-    /// genuinely returns silence, the client surfaces that and the user picks
-    /// another in Settings.
+    /// Empty means follow the current system input; a saved UID is an explicit pin.
     static func resolvedInputUID() -> String {
         UserDefaults.standard.string(forKey: defaultsKey) ?? ""
     }
@@ -128,15 +131,6 @@ enum AudioDevices {
         return "System default"
     }
 
-    /// The ONE mic to record from, chosen deterministically so macOS flipping the
-    /// system default to AirPods (silent/wrong) can't break dictation:
-    ///   1. the user's explicit pin, if present;
-    ///   2. else the best physical mic by reliability — wired (USB/Thunderbolt/
-    ///      FireWire) > built-in > Bluetooth — with the system default breaking
-    ///      ties within a tier.
-    /// Wired beats Bluetooth every time, so a PowerConf/Plantronics headset always
-    /// wins over sleepy AirPods. To force a specific mic (e.g. AirPods on the move),
-    /// pin it in Settings.
     // MARK: - Silent-device memory
     //
     // A device can open cleanly and then deliver NOTHING: a disconnected USB mic
@@ -181,7 +175,7 @@ enum AudioDevices {
     /// enumerates but fails `engine.start()` with -10868. Picking only the top
     /// candidate meant every press selected the same dead device forever — the
     /// recorder had no way to move on. Now a failing device is simply skipped.
-    static func preferredInputs() -> [AudioInputDevice] {
+    static func preferredInputs(forWarming: Bool = false) -> [AudioInputDevice] {
         let physical = inputs().filter {
             let lower = $0.name.lowercased()
             return isPhysicalInput($0.id) && !lower.contains("iphone") && !lower.contains("ipad") &&
@@ -190,7 +184,6 @@ enum AudioDevices {
         let pinned = UserDefaults.standard.string(forKey: defaultsKey) ?? ""
         guard !physical.isEmpty else { return [] }
         let def = defaultInputID()
-        let warmBluetooth = Self.warmBluetooth
         func rank(_ d: AudioInputDevice) -> Int {
             // A device that just gave us silence goes to the BACK, whatever its
             // transport — a dead wired mic must not beat a working built-in one.
@@ -207,11 +200,7 @@ enum AudioDevices {
             // the default (AirPods) streamed continuously. Preferring transport
             // over the default picked the two broken devices and avoided the
             // working one, which is how a meeting recorded zero microphone audio.
-            // Preserve the preference for a non-Bluetooth input when warming
-            // is off; an explicit pin still wins. Bluetooth remains an allowed
-            // cold fallback unless vf_allowBluetoothInput is false. Idle
-            // retention is decided against the committed engine, never this rank.
-            if !warmBluetooth, Self.isBluetooth(d.id) { return 80 }
+            // Idle Bluetooth retention must never override the chosen recording input.
             if d.id == def { return 0 }
             switch transportType(d.id) {
             case kAudioDeviceTransportTypeUSB, kAudioDeviceTransportTypeThunderbolt,
@@ -225,12 +214,19 @@ enum AudioDevices {
                 return 4
             }
         }
-        return physical.sorted { a, b in
+        let ranked = physical.sorted { a, b in
             let ra = rank(a), rb = rank(b)
             if ra != rb { return ra < rb }
             if a.id == def && b.id != def { return true }   // default wins the tie
             return false
         }
+        if forWarming && !Self.warmBluetooth {
+            // Follow the same choice as the next recording. Do not wake a
+            // different microphone merely because the chosen headset stays cold.
+            guard let first = ranked.first, !Self.isBluetooth(first.id) else { return [] }
+            return ranked.filter { !Self.isBluetooth($0.id) }
+        }
+        return ranked
     }
 
     /// True only for a REAL microphone (built-in, USB, Bluetooth, Thunderbolt…).

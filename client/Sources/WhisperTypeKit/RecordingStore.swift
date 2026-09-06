@@ -12,6 +12,19 @@ public enum RecordingStore {
         public var error: String
         public var historyID: Int?
         public var variants: [String: String]
+        public var hasResult: Bool {
+            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                variants.values.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        }
+        public var sentUnverified: Bool {
+            status == "sent_unverified" || error.hasPrefix("Keys were sent;")
+        }
+        public var inboxMessage: String {
+            if sentUnverified { return "Typing was sent. Check the destination before inserting again." }
+
+            if status == "ready" && !hasResult { return "No transcript was returned. Your audio is saved." }
+            return error.isEmpty ? (hasResult ? "Ready for review" : "Audio saved") : error
+        }
         public init(id: UUID = UUID(), kind: String) {
             self.id = id; created = Date(); self.kind = kind; status = "pending"
             text = ""; raw = ""; error = ""; variants = [:]

@@ -2,67 +2,82 @@ import SwiftUI
 import WhisperTypeKit
 
 /// The floating pill shares one shell across every state. Controls stay native
-/// buttons; the small, opaque surface stays legible over any document or video.
+/// buttons; native material preserves context while accessibility can make it opaque.
 public struct DockView: View {
     @ObservedObject var state: DockState
     let onToggleRecord: () -> Void
     let onPickMic: (String) -> Void
     let onToggleMode: () -> Void
     let onMeeting: () -> Void
+    let onAcceptCall: () -> Void
     let onSettings: () -> Void
     let onRecovery: () -> Void
     let micDevices: () -> [(uid: String, name: String)]
     let forceControls: Bool
+    let onHoverChanged: (Bool) -> Void
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
     @State private var hovering = false
     private let ink = VF.Color.ink(dark: true)
     private let muted = VF.Color.muted(dark: true)
     private var controlsVisible: Bool { state.expanded || forceControls }
+    private var compact: Bool { state.canCollapsePresentation && !controlsVisible }
 
     public init(state: DockState, forceControls: Bool = false,
                 onToggleRecord: @escaping () -> Void, onPickMic: @escaping (String) -> Void,
                 onToggleMode: @escaping () -> Void, onMeeting: @escaping () -> Void,
                 onSettings: @escaping () -> Void, micDevices: @escaping () -> [(uid: String, name: String)],
-                onRecovery: @escaping () -> Void = {}) {
-        self.state = state; self.forceControls = forceControls
+                onRecovery: @escaping () -> Void = {}, onHoverChanged: @escaping (Bool) -> Void = { _ in },
+                onAcceptCall: @escaping () -> Void = {}) {
+        self.state = state; self.forceControls = forceControls; self.onHoverChanged = onHoverChanged
         self.onToggleRecord = onToggleRecord; self.onPickMic = onPickMic
-        self.onToggleMode = onToggleMode; self.onMeeting = onMeeting
+        self.onToggleMode = onToggleMode; self.onMeeting = onMeeting; self.onAcceptCall = onAcceptCall
         self.onSettings = onSettings; self.micDevices = micDevices; self.onRecovery = onRecovery
     }
 
     public var body: some View {
         content
             .font(VF.Font.callout).foregroundStyle(ink)
-            .padding(.horizontal, state.phase == .idle && !controlsVisible && !state.callOffer && !state.meetingRecording ? 10 : 14)
-            .padding(.vertical, 6).frame(minHeight: 40)
+            .padding(.horizontal, compact ? 8 : 14)
+            .padding(.vertical, compact ? 4 : 6).frame(minHeight: compact ? 24 : 40)
             .background {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(VF.Color.surface(dark: true))
-                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(ink.opacity(contrast == .increased ? 0.6 : 0.16), lineWidth: 1))
-                    .shadow(color: Color.black.opacity(0.22), radius: 10, x: 0, y: 4)
+                ZStack {
+                    if !compact || state.phase != .idle || reduceTransparency || contrast == .increased {
+                        VF.Color.surface(dark: true)
+                    } else {
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .fill(.ultraThinMaterial).overlay(Color.black.opacity(0.32))
+                    }
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(ink.opacity(contrast == .increased ? 0.6 : 0.18), lineWidth: 1)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .onTapGesture { state.collapsePresentation() }
+                .shadow(color: Color.black.opacity(compact ? 0.14 : 0.22), radius: compact ? 5 : 10, x: 0, y: 3)
             }
             .fixedSize()
             .padding(16)
             .preferredColorScheme(.dark)
-            .onHover { hovering = $0 }
+            .onHover { hovering = $0; onHoverChanged($0) }
             .animation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 1), value: state.phase)
             .animation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 1), value: state.expanded)
             .animation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 1), value: state.meetingRecording)
             .animation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 1), value: state.callOffer)
-            .onChange(of: state.phase) { phase in if phase != .idle { state.expanded = false } }
-            .onExitCommand { state.expanded = false }
+            .onExitCommand { state.collapsePresentation() }
     }
 
     @ViewBuilder private var content: some View {
-        if state.meetingRecording && state.phase != .listening && state.phase != .starting {
+        if compact { restContent }
+        else if state.meetingRecording && state.phase != .listening && state.phase != .starting {
             meetingContent
+        } else if state.showsCallOffer {
+            callOfferContent
         } else {
             switch state.phase {
             case .idle:
-                if state.callOffer { callOfferContent }
-                else if controlsVisible { controls }
+                if controlsVisible { controls }
                 else { restContent }
             case .starting:
                 HStack(spacing: 10) {
@@ -93,8 +108,8 @@ public struct DockView: View {
                 }
             case .done:
                 HStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(VF.Color.healthy(dark: true)).accessibilityHidden(true)
-                    Text(state.lastWordCount > 0 ? "\(state.lastWordCount) words sent" : "Text sent")
+                    Image(systemName: state.placementUnverified ? "paperplane" : "checkmark.circle.fill").foregroundStyle(VF.Color.healthy(dark: true)).accessibilityHidden(true)
+                    Text(state.placementUnverified ? "Sent · check destination" : state.lastWordCount > 0 ? "\(state.lastWordCount) words sent" : "Text sent")
                 }.accessibilityElement(children: .combine)
             case .error:
                 HStack(spacing: 10) {
@@ -111,16 +126,16 @@ public struct DockView: View {
 
     private var restContent: some View {
         Button { state.expanded = true } label: {
-            HStack(spacing: 10) {
-                Image(systemName: state.mode == .prompt ? "text.bubble" : "mic.fill")
-                    .font(.system(size: 14, weight: .medium))
+            HStack(spacing: 6) {
+                Image(systemName: state.phase == .error ? "exclamationmark.circle.fill" : state.phase == .ready ? "tray.full.fill" : state.mode == .prompt ? "text.bubble" : "mic.fill")
+                    .font(.system(size: 11, weight: .medium))
                 Image(systemName: state.serverOK ? "chevron.up" : "exclamationmark.circle.fill")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(state.serverOK ? ink.opacity(hovering ? 0.9 : 0.5) : VF.Color.attention(dark: true))
-            }.frame(width: 44, height: 28).contentShape(Rectangle())
+            }.frame(width: 28, height: 16).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Open recording controls, \(state.mode == .prompt ? "Prompt" : "Dictation") mode\(state.serverOK ? "" : ", server unavailable")")
+        .accessibilityLabel(state.phase == .ready ? "Result ready in Inbox; expand status" : state.phase == .error ? "\(state.errorText); expand status" : "Open recording controls, \(state.mode == .prompt ? "Prompt" : "Dictation") mode\(state.serverOK ? "" : ", server unavailable")")
         .help("\(state.mode == .prompt ? "Prompt" : "Dictation") · click for controls, or hold Right Option to record")
     }
 
@@ -190,7 +205,7 @@ public struct DockView: View {
                 Image(nsImage: icon).resizable().frame(width: 18, height: 18).accessibilityHidden(true)
             } else { Image(systemName: "phone").accessibilityHidden(true) }
             Text(state.callTitle).lineLimit(1).frame(maxWidth: 240)
-            textAction("Record", action: onMeeting)
+            textAction("Record", action: onAcceptCall)
             iconAction("xmark", label: "Dismiss meeting offer") { state.callOffer = false }
         }
     }

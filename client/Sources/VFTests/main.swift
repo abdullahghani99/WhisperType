@@ -77,6 +77,9 @@ func run(_ name: String, _ body: () -> Void) {
         run("DockStateTests.testFailEntersErrorWithText") { t.testFailEntersErrorWithText() }
         run("DockStateTests.testToggleModeFlips") { t.testToggleModeFlips() }
         run("DockStateTests.testSetLevelClampsAndStoresWhileListening") { t.testSetLevelClampsAndStoresWhileListening() }
+        run("DockStateTests.testMeterHasStableCadenceAndGentleRelease") { t.testMeterHasStableCadenceAndGentleRelease() }
+        run("DockStateTests.testCallOfferSurfacesOverRecoveryWithoutInterruptingCapture") { t.testCallOfferSurfacesOverRecoveryWithoutInterruptingCapture() }
+        run("DockStateTests.testCollapseRetainsRecoveryAndProtectsCapture") { t.testCollapseRetainsRecoveryAndProtectsCapture() }
     }
     suite("MicHealthTests") {
         let t = MicHealthTests()
@@ -114,6 +117,8 @@ func run(_ name: String, _ body: () -> Void) {
     }
     suite("RecoveryTests") {
         let t = RecoveryTests()
+        run("RecoveryTests.testSentUnverifiedIsDistinctFromMissingPlacement") { t.testSentUnverifiedIsDistinctFromMissingPlacement() }
+        run("RecoveryTests.testEmptySuccessfulResponseCannotBePresentedAsReady") { t.testEmptySuccessfulResponseCannotBePresentedAsReady() }
         run("RecoveryTests.testRapidRecordingsHaveIndependentAudioAndResults") { t.testRapidRecordingsHaveIndependentAudioAndResults() }
         run("RecoveryTests.testInterruptedMetadataDoesNotHideAudio") { t.testInterruptedMetadataDoesNotHideAudio() }
         run("RecoveryTests.testSaveFailureIsReported") { t.testSaveFailureIsReported() }
@@ -140,6 +145,13 @@ func run(_ name: String, _ body: () -> Void) {
         run("SpeakerTextTests.testReturnsEmptyWhenThereAreNoLabels") { t.testReturnsEmptyWhenThereAreNoLabels() }
         run("SpeakerTextTests.testIgnoresBoldThatIsNotASpeakerLabel") { t.testIgnoresBoldThatIsNotASpeakerLabel() }
     }
+    suite("SpokenListTests") {
+        let t = SpokenListTests()
+        run("SpokenListTests.testExplicitQuestionsKeepWordingAndDoNotAnswer") { t.testExplicitQuestionsKeepWordingAndDoNotAnswer() }
+        run("SpokenListTests.testCompleteThreeItemSequencePreservesNumbersAndUnicode") { t.testCompleteThreeItemSequencePreservesNumbersAndUnicode() }
+        run("SpokenListTests.testAmbiguousIncompleteOrAlreadyFormattedTextStaysUnchanged") { t.testAmbiguousIncompleteOrAlreadyFormattedTextStaysUnchanged() }
+        run("SpokenListTests.testCodeTerminalAndUnknownDestinationsStayUnchanged") { t.testCodeTerminalAndUnknownDestinationsStayUnchanged() }
+    }
 
 // --- drift check: every `func test…` on disk must be registered above ---
 let fm = FileManager.default
@@ -151,7 +163,7 @@ if let files = try? fm.contentsOfDirectory(atPath: "Sources/VFTests") {
         }
     }
 }
-let registered = 89
+let registered = 98
 print("")
 if declared > 0 && declared != registered {
     print("  ✘ DRIFT: \(declared) test functions on disk, \(registered) registered.")

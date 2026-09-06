@@ -13,3 +13,5 @@ final class ReviewDefaults {
  func object(forKey k:String)->Any? {data[k]}
  func set(_ v:Any?,forKey k:String) {data[k]=v}
 }
+
+func vlog(_ message: String) { print(message) }

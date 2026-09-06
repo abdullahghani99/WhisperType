@@ -64,6 +64,7 @@ final class SettingsState: ObservableObject {
     var onRequestScreen: (() -> Void)?
     var onRetryRecording: ((UUID) -> Void)?
     var onReviewRecording: ((UUID) -> Void)?
+    var onConfirmPlacement: ((UUID) -> Void)?
     var onCancelRecording: ((UUID) -> Void)?
     var onDiscardRecording: ((UUID) -> Void)?
     var unsavedRecordings: [RecordingStore.Entry] = []
@@ -598,13 +599,16 @@ struct HistoryTab: View {
                     Spacer()
                     Button("Cancel processing") { state.onCancelRecording?(entry.id) }.buttonStyle(VFActionStyle())
                 } else {
-                    Label(entry.error.isEmpty ? (entry.text.isEmpty ? "Audio saved" : "Ready for review") : entry.error,
+                    Label(entry.inboxMessage,
                           systemImage: entry.text.isEmpty ? "arrow.clockwise" : "tray")
                         .font(VF.Font.callout).foregroundStyle(VF.Color.muted(dark: dark))
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
-                    Button(entry.text.isEmpty && entry.variants.isEmpty ? "Retry" : "Review result") {
-                        if entry.text.isEmpty && entry.variants.isEmpty { state.onRetryRecording?(entry.id) }
+                    if entry.sentUnverified {
+                        Button("It’s in place") { state.onConfirmPlacement?(entry.id) }.buttonStyle(VFActionStyle())
+                    }
+                    Button(entry.sentUnverified ? "Review sent text" : entry.hasResult ? "Review result" : "Retry") {
+                        if !entry.hasResult { state.onRetryRecording?(entry.id) }
                         else { state.onReviewRecording?(entry.id) }
                     }.buttonStyle(VFActionStyle(entry.text.isEmpty ? .secondary : .primary))
                 }

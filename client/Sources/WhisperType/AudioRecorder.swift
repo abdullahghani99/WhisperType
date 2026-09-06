@@ -1,3 +1,4 @@
+import Darwin
 import AVFoundation
 import AudioToolbox
 import CoreAudio
@@ -17,10 +18,8 @@ private final class Once {
 
 /// Captures microphone audio and produces a 16 kHz mono 16-bit PCM WAV.
 ///
-/// SMART SINGLE MIC + SELF-HEALING: a fresh engine per recording, pinned to ONE
-/// deterministically chosen mic (`AudioDevices.preferredInput()` — wired >
-/// built-in > Bluetooth, never the silent AirPods default macOS keeps flipping
-/// to).
+/// Captures from the explicit microphone, otherwise the current system input.
+/// Idle warming and Bluetooth eligibility are separate from device selection.
 ///
 /// Resilience: all audio-HAL work runs off the main thread on a serial queue. A
 /// Bluetooth device mid-transition can make a HAL call (`inputFormat` /
@@ -32,10 +31,15 @@ private final class Once {
 /// guarantees a late-unblocking stale attempt can't corrupt current state.
 final class AudioRecorder {
     private var engine: AVAudioEngine?
+    private var sessionInput: SessionMicrophone?
     /// When the committed engine started running. A warm engine that has been up
     /// for a while and still delivered NOTHING has a dead tap -- which is exactly
     /// what an input-device change leaves behind for a few seconds.
     private var engineReadyAt: Date?
+    private var lastSampleAt: Date?
+    private var receivedBytes = 0
+    private var startupStage = "idle"
+    private var currentTap: CaptureTapToken?
     private var converter: AVAudioConverter?
     private var outFormat: AVAudioFormat!
     private var pcm = Data()
@@ -72,7 +76,7 @@ final class AudioRecorder {
     /// then never fired for the real one.
     var isEngineRunning: Bool {
         bufLock.lock(); defer { bufLock.unlock() }
-        return engine != nil
+        return engine != nil || sessionInput != nil
     }
 
     // Replaceable: a wedged BT call leaks its thread, so we abandon the whole
@@ -94,6 +98,7 @@ final class AudioRecorder {
     private let watchdogTimeout: TimeInterval = 8.0
 
     var onLevel: ((Float) -> Void)?
+    var onCaptureFailure: ((String) -> Void)?
     /// Name of the mic used for the last capture (for the dock to display).
     private(set) var lastWinningMic: String?
     private var lastWinningUID: String = ""
@@ -107,10 +112,22 @@ final class AudioRecorder {
     }
 
     private func logError(_ s: String) {
-        let line = "\(ISO8601DateFormatter().string(from: Date())) [audio] \(s)\n"
-        if let h = FileHandle(forWritingAtPath: ProcessInfo.processInfo.environment["VF_LOG_PATH"] ?? "/tmp/whispertype-client.log") {
-            h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile()
+        let line = "\(ISO8601DateFormatter().string(from: Date())) [audio pid=\(ProcessInfo.processInfo.processIdentifier)] \(s)\n"
+        let path = ProcessInfo.processInfo.environment["VF_LOG_PATH"] ?? "/tmp/whispertype-client.log"
+        let fd = Darwin.open(path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
+        guard fd >= 0 else { return }
+        defer { Darwin.close(fd) }
+        line.data(using: .utf8)!.withUnsafeBytes { bytes in
+            _ = Darwin.write(fd, bytes.baseAddress!, bytes.count)
         }
+    }
+
+    private func stage(_ description: String, generation: Int) {
+        bufLock.lock()
+        let current = attempt == generation
+        if current { startupStage = description }
+        bufLock.unlock()
+        if current { logError("startup: " + description) }
     }
 
     /// Keeping the microphone warm removes the device wake-up delay that makes a
@@ -171,14 +188,14 @@ final class AudioRecorder {
             guard let self = self else { return }
             self.teardownCommitted(expected: gen)
             if warm, self.owns(gen) {
-                _ = self.bringUpEngine(generation: gen)
+                _ = self.bringUpEngine(generation: gen, forWarming: true)
                 if !self.prerollEnabled { self.teardownCommitted(expected: gen) }
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + watchdogTimeout) { [weak self] in
             guard let self = self else { return }
             self.bufLock.lock()
-            if self.attempt == gen && self.engine == nil {
+            if self.attempt == gen && self.engine == nil && self.sessionInput == nil {
                 self.attempt += 1
                 self.engineQueue = DispatchQueue(label: "app.whispertype.client.audio.\(self.attempt)")
             }
@@ -215,13 +232,20 @@ final class AudioRecorder {
         // replacement engine or invalidate its buffers after it eventually returns.
         bufLock.lock()
         guard gen == attempt else { bufLock.unlock(); return }
-        let old = engine
-        engine = nil; converter = nil; engineReadyAt = nil
+        let old = engine, oldSession = sessionInput
+        sessionInput = nil
+        engine = nil; converter = nil; engineReadyAt = nil; lastSampleAt = nil; receivedBytes = 0
         committedBluetooth = false
         state.invalidateEngine(); ring.reset()
         bufLock.unlock()
+        if let oldSession = oldSession {
+            stage("stopping Bluetooth input session", generation: gen)
+            oldSession.stop()
+        }
         if let old = old {
+            stage("stopping previous engine", generation: gen)
             old.stop()
+            stage("removing previous tap", generation: gen)
             old.inputNode.removeTap(onBus: 0)
         }
     }
@@ -246,16 +270,22 @@ final class AudioRecorder {
         // the queue is blocked in the HAL (BT transition). Abandon it + reset.
         DispatchQueue.main.asyncAfter(deadline: .now() + watchdogTimeout) { [weak self] in
             guard let self = self else { return }
+            var cleanup: (generation: Int, queue: DispatchQueue)?
             self.bufLock.lock()
             let wedged = (gen == self.attempt) && !self.state.isRecording
+            let phase = self.startupStage
             if wedged {
                 self.attempt += 1   // invalidate the stuck attempt
                 self.engineQueue = DispatchQueue(label: "app.whispertype.client.audio.\(self.attempt)")
                 self.wantRecording = false
+                cleanup = (self.attempt, self.engineQueue)
             }
             self.bufLock.unlock()
+            if let cleanup = cleanup {
+                cleanup.queue.async { [weak self] in self?.teardownCommitted(expected: cleanup.generation) }
+            }
             if wedged {
-                self.logError("engine bring-up wedged >\(Int(self.watchdogTimeout))s (likely Bluetooth transition) — reset audio queue; next recording is clean")
+                self.logError("audio startup timed out after \(Int(self.watchdogTimeout))s at \(phase); reset audio queue")
                 report(false)
             }
         }
@@ -265,10 +295,11 @@ final class AudioRecorder {
         // from it, so a device wake-up delay cannot eat the first words — the
         // reason a short press used to come back as a 44-byte header.
         bufLock.lock()
-        if engine != nil && converter != nil {
+        if (engine != nil && converter != nil) || sessionInput != nil {
             let seed = Data(ring.drain())
             let age = Date().timeIntervalSince(engineReadyAt ?? .distantPast)
-            let stale = (seed.isEmpty && age > 0.5) ||
+            let sampleAge = Date().timeIntervalSince(lastSampleAt ?? .distantPast)
+            let stale = sampleAge > 0.5 || (seed.isEmpty && age > 0.5) ||
                 (seed.count >= Self.staleSeedBytes && Self.isAllZero(seed))
             if !stale, state.beginRecording() {
                 pcm = seed
@@ -287,6 +318,26 @@ final class AudioRecorder {
                 self.bufLock.unlock()
                 report(false); return
             }
+            // AVAudioEngine.start succeeding does not mean the input streams.
+            // Wait for actual converted PCM before showing Listening; preserve
+            // those first buffers even when Bluetooth idle warming is disabled.
+            self.stage("waiting for converted input samples", generation: gen)
+            let deadline = Date().addingTimeInterval(2)
+            var hasSamples = false
+            while self.owns(gen) && Date() < deadline {
+                self.bufLock.lock(); hasSamples = self.receivedBytes > 0; self.bufLock.unlock()
+                if hasSamples { break }
+                Thread.sleep(forTimeInterval: 0.02)
+            }
+            guard hasSamples else {
+                self.bufLock.lock(); let diagnostics = self.currentTap?.summary ?? "no tap"; self.bufLock.unlock()
+                self.logError("input produced no PCM within readiness window; \(diagnostics); recording not started")
+                self.bufLock.lock()
+                if self.attempt == gen { self.wantRecording = false }
+                self.bufLock.unlock()
+                self.teardownCommitted(expected: gen)
+                report(false); return
+            }
             self.bufLock.lock()
             guard self.attempt == gen, self.wantRecording, self.state.beginRecording() else {
                 self.bufLock.unlock()
@@ -302,17 +353,61 @@ final class AudioRecorder {
     /// Returns the committed epoch, or nil if no device would start.
     /// MUST run on engineQueue.
     @discardableResult
-    private func bringUpEngine(generation gen: Int) -> Int? {
+    private func bringUpEngine(generation gen: Int, forWarming: Bool = false) -> Int? {
         guard owns(gen) else { return nil }
         teardownCommitted(expected: gen)
         guard owns(gen) else { return nil }
-        let candidates = AudioDevices.preferredInputs()
-        guard !candidates.isEmpty else { logError("no physical input device available"); return nil }
+        stage("reading input devices", generation: gen)
+        let candidates = AudioDevices.preferredInputs(forWarming: forWarming)
+        guard !candidates.isEmpty else { logError(forWarming ? "input left idle by warming policy" : "no physical input device available"); return nil }
         for dev in candidates {
             guard owns(gen) else { return nil }
+            logError("input diagnostics before start: " + AudioDevices.inputMuteSummary(dev))
+            if AudioDevices.isBluetooth(dev.id) {
+                stage("opening input-only session for \(dev.name)", generation: gen)
+                let capture = SessionMicrophone(), tap = CaptureTapToken()
+                capture.onPCM = { [weak self] data in
+                    tap.received(frames: data.count / 2)
+                    guard let epoch = tap.epoch else { return }
+                    tap.converted(frames: data.count / 2, status: 0, error: nil)
+                    self?.appendPCM(data, epoch: epoch)
+                }
+                do {
+                    guard try capture.start(device: dev, isCurrent: { self.owns(gen) }) else {
+                        capture.stop()
+                        if !owns(gen) { return nil }
+                        continue
+                    }
+                } catch {
+                    capture.stop(); logError("skip \(dev.name): input session failed (\(error.localizedDescription))")
+                    continue
+                }
+                bufLock.lock()
+                guard attempt == gen, !suspended else { bufLock.unlock(); capture.stop(); return nil }
+                let epoch = state.commitEngine()
+                sessionInput = capture; engineReadyAt = Date(); lastSampleAt = nil; receivedBytes = 0
+                committedBluetooth = true; lastWinningMic = dev.name; lastWinningUID = dev.uid
+                currentTap = tap; tap.publish(epoch)
+                bufLock.unlock()
+                capture.onFailure = { [weak self] message in
+                    guard let self = self, self.state.route(epoch: epoch) == .recording else { return }
+                    self.onCaptureFailure?(message)
+                }
+                logError("input diagnostics after start: " + AudioDevices.inputMuteSummary(dev))
+                logError("input session up on \(dev.name) (Bluetooth, warm=\(AudioDevices.warmBluetooth))")
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, self.owns(gen) else { return }
+                    self.onDeviceChanged?(dev.name)
+                }
+                return epoch
+            }
+            stage("creating engine for \(dev.name)", generation: gen)
             let e = AVAudioEngine()
+            stage("opening input node for \(dev.name)", generation: gen)
             let input = e.inputNode
+            guard owns(gen) else { e.stop(); return nil }
             if let au = input.audioUnit {
+                stage("pinning \(dev.name)", generation: gen)
                 // Pinning a Bluetooth device fails with -10851 while the link is
                 // still coming up — the same not-ready state that makes it report
                 // zero input channels a moment later. Observed on AirPods Pro
@@ -338,6 +433,7 @@ final class AudioRecorder {
                     e.stop(); continue
                 }
             }
+            guard owns(gen) else { e.stop(); return nil }
             // A Bluetooth headset reports ZERO input channels while it negotiates
             // the mic link — measured on AirPods Pro: "24000.0Hz/0ch", repeatedly,
             // for a second or so after it becomes the input device. Treating that
@@ -347,6 +443,7 @@ final class AudioRecorder {
             // synchronous on the engine queue -- the previous attempt at handling
             // this was a background timer that retried every 2s forever and
             // segfaulted the app.
+            stage("reading format for \(dev.name)", generation: gen)
             var inFormat = input.inputFormat(forBus: 0)
             if inFormat.channelCount == 0 || inFormat.sampleRate == 0 {
                 for _ in 0..<6 {                       // up to ~1.2s
@@ -359,6 +456,7 @@ final class AudioRecorder {
                     logError("\(dev.name) was not ready; it settled at \(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch")
                 }
             }
+            guard owns(gen) else { e.stop(); return nil }
             guard inFormat.channelCount > 0, inFormat.sampleRate > 0,
                   let conv = AVAudioConverter(from: inFormat, to: outFormat) else {
                 logError("skip \(dev.name): invalid format (\(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch)")
@@ -368,11 +466,20 @@ final class AudioRecorder {
             // Tap converter and publication token belong to this local engine.
             // No shared CaptureState changes until engine.start has succeeded.
             let tap = CaptureTapToken()
+            let outputFormat = input.outputFormat(forBus: 0)
+            logError("input formats: hardware=\(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch, output=\(outputFormat.sampleRate)Hz/\(outputFormat.channelCount)ch")
             input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { [weak self] buf, _ in
+                tap.received(frames: Int(buf.frameLength))
                 guard let epoch = tap.epoch else { return }
-                self?.append(buf, epoch: epoch, converter: conv)
+                self?.append(buf, epoch: epoch, converter: conv, statistics: tap)
             }
-            do { e.prepare(); try e.start() }
+            do {
+                stage("preparing \(dev.name) at \(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch", generation: gen)
+                e.prepare()
+                guard owns(gen) else { e.stop(); input.removeTap(onBus: 0); return nil }
+                stage("starting \(dev.name)", generation: gen)
+                try e.start()
+            }
             catch {
                 logError("skip \(dev.name): engine start failed (\(error))")
                 e.stop(); input.removeTap(onBus: 0)
@@ -386,10 +493,10 @@ final class AudioRecorder {
                 return nil
             }
             let epoch = state.commitEngine()
-            engine = e; converter = conv; engineReadyAt = Date()
+            engine = e; converter = conv; engineReadyAt = Date(); lastSampleAt = nil; receivedBytes = 0
             committedBluetooth = bluetooth
             lastWinningMic = dev.name; lastWinningUID = dev.uid
-            tap.publish(epoch)
+            currentTap = tap; tap.publish(epoch)
             bufLock.unlock()
             logError("engine up on \(dev.name) (bluetooth=\(bluetooth), " +
                      "warmBluetooth=\(AudioDevices.warmBluetooth), candidates=\(candidates.map { $0.name }.joined(separator: " > ")))")
@@ -409,7 +516,12 @@ final class AudioRecorder {
         bufLock.lock()
         wantRecording = false
         attempt += 1                    // invalidate any in-flight bring-up
-        guard state.isRecording else { bufLock.unlock(); return Data() }
+        guard state.isRecording else {
+            let gen = attempt, q = engineQueue
+            bufLock.unlock()
+            q.async { [weak self] in self?.teardownCommitted(expected: gen) }
+            return Data()
+        }
         state.endRecording()            // engine STAYS committed; tap stays valid
         let captured = pcm
         let gen = attempt
@@ -419,7 +531,9 @@ final class AudioRecorder {
         let q = engineQueue
         let uid = lastWinningUID
         let name = lastWinningMic ?? "mic"
+        let sampleAge = lastSampleAt.map { Date().timeIntervalSince($0) }
         bufLock.unlock()
+        logError("capture ended on \(name): pcmBytes=\(captured.count), lastSampleAge=\(sampleAge.map { String(format: "%.3f", $0) } ?? "none")")
 
         // Release the microphone unless the human asked us to keep it warm.
         // Pre-roll removes the device wake-up delay, but it also means the mic is
@@ -438,8 +552,8 @@ final class AudioRecorder {
         //
         // Byte count alone is not enough: a broken device can stream ZERO-VALUED
         // buffers, which makes `captured` large while containing no audio at all.
-        // A real mic in a silent room still carries a noise floor, so an
-        // all-zero buffer means the hardware is dead, not that the room is quiet.
+        // Exact digital silence means this capture delivered no usable signal.
+        // It does not identify whether the cause is the device, OS or audio graph.
         // Tri-state, unit-tested in WhisperTypeKit: all-zero audio means a dead
         // device at any length, a short press is evidence of NOTHING, and only a
         // long non-zero capture proves the mic works.
@@ -485,32 +599,40 @@ final class AudioRecorder {
         return wav(from: captured)
     }
 
-    private func append(_ buffer: AVAudioPCMBuffer, epoch: Int, converter: AVAudioConverter) {
+    private func append(_ buffer: AVAudioPCMBuffer, epoch: Int, converter: AVAudioConverter, statistics: CaptureTapToken) {
         let ratio = outFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1024
         guard let outBuf = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else { return }
         var fed = false
         var err: NSError?
-        converter.convert(to: outBuf, error: &err) { _, status in
+        let status = converter.convert(to: outBuf, error: &err) { _, status in
             if fed { status.pointee = .noDataNow; return nil }
             fed = true; status.pointee = .haveData; return buffer
         }
+        statistics.converted(frames: Int(outBuf.frameLength), status: Int(status.rawValue), error: err?.code)
         guard err == nil, let ch = outBuf.int16ChannelData else { return }
         let count = Int(outBuf.frameLength)
         guard count > 0 else { return }
         let d = Data(bytes: ch[0], count: count * MemoryLayout<Int16>.size)
+        appendPCM(d, epoch: epoch)
+    }
 
+    private func appendPCM(_ d: Data, epoch: Int) {
+        let count = d.count / MemoryLayout<Int16>.size
+        guard count > 0 else { return }
         var recording = false
         var recordingAttempt = 0
         bufLock.lock()
         switch state.route(epoch: epoch) {
         case .recording:
+            lastSampleAt = Date(); receivedBytes += d.count
             pcm.append(d)
             recording = true
             recordingAttempt = attempt
         case .preroll:
             // Fixed-capacity ring: no allocation or compaction on the audio thread.
-            if keepWarmLocked { ring.append([UInt8](d)) }
+            lastSampleAt = Date(); receivedBytes += d.count
+            if keepWarmLocked || wantRecording { ring.append([UInt8](d)) }
         case .discard:
             bufLock.unlock()
             return   // from an engine we have already replaced
@@ -519,7 +641,13 @@ final class AudioRecorder {
         bufLock.unlock()
         if recording, let cb = onLevel {
             var sum = 0.0
-            for i in 0..<count { let s = Double(ch[0][i]) / 32768.0; sum += s * s }
+            d.withUnsafeBytes { bytes in
+                for i in 0..<count {
+                    let value = bytes.loadUnaligned(fromByteOffset: i * 2, as: Int16.self)
+                    let sample = Double(Int16(littleEndian: value)) / 32768.0
+                    sum += sample * sample
+                }
+            }
             let level = Float(min(1.0, (sum / Double(count)).squareRoot() * 3.5))
             let capturedAttempt = recordingAttempt
             DispatchQueue.main.async { [weak self] in
@@ -568,6 +696,14 @@ final class AudioRecorder {
 private final class CaptureTapToken {
     private let lock = NSLock()
     private var value: Int?
+    private var callbacks = 0, inputFrames = 0, outputFrames = 0, lastStatus = -1
+    private var lastError: Int?
+    func received(frames: Int) { lock.lock(); callbacks += 1; inputFrames += frames; lock.unlock() }
+    func converted(frames: Int, status: Int, error: Int?) { lock.lock(); outputFrames += frames; lastStatus = status; lastError = error; lock.unlock() }
+    var summary: String {
+        lock.lock(); defer { lock.unlock() }
+        return "tapCallbacks=\(callbacks), inputFrames=\(inputFrames), outputFrames=\(outputFrames), converterStatus=\(lastStatus), converterError=\(lastError.map(String.init) ?? "none")"
+    }
     var epoch: Int? { lock.lock(); defer { lock.unlock() }; return value }
     func publish(_ epoch: Int) { lock.lock(); value = epoch; lock.unlock() }
 }

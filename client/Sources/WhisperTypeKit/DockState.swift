@@ -38,10 +38,18 @@ public final class DockState: ObservableObject {
 
     public init() {}
 
-    public func starting() { phase = .starting; elapsed = 0; errorText = "" }
-    public func ready() { phase = .ready }
+    public var showsCallOffer: Bool {
+        callOffer && !meetingRecording && [.idle, .ready, .done, .error].contains(phase)
+    }
+    public var canCollapsePresentation: Bool {
+        !meetingRecording && !callOffer && [.idle, .ready, .done, .error].contains(phase)
+    }
+    public func collapsePresentation() { if canCollapsePresentation { expanded = false } }
+    public func starting() { expanded = false; phase = .starting; elapsed = 0; errorText = "" }
+    public func ready() { phase = .ready; expanded = true }
     public func begin() {
-        phase = .listening; elapsed = 0; level = 0; errorText = ""
+        expanded = false; phase = .listening; elapsed = 0; level = 0; errorText = ""
+        meterAt = nil; publishedMeterAt = nil; smoothedLevel = 0
         levels = Array(repeating: 0, count: 24)
     }
     /// The last N levels, oldest first — so the waveform shows speech TRAVELLING
@@ -50,20 +58,34 @@ public final class DockState: ObservableObject {
     /// indices meaning nothing.
     @Published public var levels: [Float] = Array(repeating: 0, count: 24)
 
-    public func setLevel(_ v: Float) {
+    private var meterAt: TimeInterval?
+    private var publishedMeterAt: TimeInterval?
+    private var smoothedLevel: Float = 0
+
+    /// Smooth the meter independently of captured PCM. Ten history samples per
+    /// second keep the visible time span stable across microphone buffer sizes.
+    public func setLevel(_ v: Float, at now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard phase == .listening else { return }
         let clamped = max(0, min(1, v))
-        level = clamped
+        let dt = max(0, now - (meterAt ?? (now - 0.1)))
+        let tau = clamped > smoothedLevel ? 0.08 : 0.28
+        smoothedLevel += (clamped - smoothedLevel) * Float(1 - exp(-dt / tau))
+        meterAt = now
+        guard publishedMeterAt == nil || now - publishedMeterAt! >= 0.099 else { return }
+        publishedMeterAt = now
+        level = smoothedLevel
         levels.removeFirst()
-        levels.append(clamped)
+        levels.append(level)
     }
     public func finishRecording() { if phase == .listening || phase == .starting { phase = .transcribing } }
     /// Words inserted by the last dictation, so the success state can say what
     /// actually happened instead of falling back to an instruction hint.
+    @Published public var placementUnverified = false
     @Published public var lastWordCount: Int = 0
 
-    public func complete(words: Int = 0) { lastWordCount = words; phase = .done }
-    public func returnToIdle() { phase = .idle; level = 0 }
-    public func fail(_ msg: String) { phase = .error; errorText = msg }
+    public func complete(words: Int = 0) { placementUnverified = false; lastWordCount = words; phase = .done; expanded = true }
+    public func sentUnverified() { placementUnverified = true; phase = .done; expanded = true }
+    public func returnToIdle() { phase = .idle; level = 0; expanded = false }
+    public func fail(_ msg: String) { phase = .error; errorText = msg; expanded = true }
     public func toggleMode() { mode = (mode == .dictation) ? .prompt : .dictation }
 }

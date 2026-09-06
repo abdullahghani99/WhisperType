@@ -55,3 +55,25 @@ Dictionary contains corrections, terms, and snippets. Learning suggestions requi
 ## Verify a checkout
 
 Build the client and remote agent, run the `vf-tests` executable, then run the server reliability/learning tests, transport checks and agent protocol checks. The UI preview uses synthetic data and requires an active console for keyboard interaction. Physical microphones, Screen Recording, VoiceOver and real destination typing require the relevant permissions; a build or screenshot does not prove those paths.
+
+### Persistent pairing and limited accessibility receipts
+
+The client also reads `~/Library/Application Support/WhisperType/RemotePairing.json` with the same `VF_REMOTE_AGENT_URL`, `VF_REMOTE_AGENT_KEY` and `VF_REMOTE_WINDOW_MATCH` keys. Environment values take precedence. Keep the file mode 0600 and do not commit it. With the intended Screen Sharing window focused, the signed client's `--diagnose-destination --save-remote-window-match` command saves that window's identity without typing or recording.
+
+An existing authenticated SSH connection can forward a local loopback port to the paired Mac's loopback-only agent. For a persistent tunnel use a separate login item with `ssh -NT`, `ExitOnForwardFailure=yes`, keepalive options and an explicit loopback forwarding address. Keep the agent pairing key enabled even through the tunnel. Verify health through the client endpoint and check that unauthenticated insertion is rejected before use. The paired Mac must be unlocked and the agent's actual signed app must have Accessibility permission.
+
+The `--diagnose-destination` support command reports permission, process identity and focused roles without field text or window titles. It may request the target application's accessibility tree. Chromium/Electron can expose that tree on demand: see [Chromium accessibility](https://www.chromium.org/developers/design-documents/accessibility/) and [Electron accessibility](https://github.com/electron/electron/blob/main/docs/tutorial/accessibility.md).
+
+Some editors and terminals accept typing but cannot expose an exact plain-text receipt. Those entries are marked sent but unverified and are never automatically repeated. Check the destination, then use **It’s in place** to acknowledge successful placement, or review the retained text carefully before choosing another insertion.
+
+
+### Spoken lists and finishing pending work
+
+Dictation keeps the server cleanup result and applies a narrow local list fallback when one explicit announcement (two to five things, points, items, questions or steps) is followed by a complete consecutive one/two sequence. It preserves every item's wording and never answers dictated questions. Existing multiline text, code-like text, terminal/editor destinations and unknown remote app identities are left unchanged. The paired agent supplies its captured application name; Screen Sharing itself is not treated as the destination editor. The server history retains the server result; Inbox and local placement use the formatted text.
+
+Quitting waits for queued dictation processing and insertion verification to finish before the application exits. New captures are held while quitting; active recording and unsaved-audio protections remain in place. Typing without an exact receipt remains explicitly unverified and is never automatically replayed.
+
+
+Manual **Record meeting** stays manual even while a call offer is visible. Only the offer's **Record** action gives the call permission to stop that meeting when the call ends. This ownership is tested without capturing audio.
+
+The optional `--diagnose-destination --inspect-receipt-shape` support probe reports field/selection lengths, newline/nonbreaking-space counts and a selection consistency flag. It reads the currently focused field without changing it; no field content is logged and no keyboard events or microphone capture occur. An untrusted command-line process returns permission-unavailable rather than requesting a new grant.

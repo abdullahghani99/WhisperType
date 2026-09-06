@@ -22,21 +22,21 @@ func testNativeReviewInteraction() {
         pumpPreviewEvents(until: Date().addingTimeInterval(0.1))
     }
     key("2", code: 19, modifiers: .command)
-    precondition(variants["concise"] == "Edited short draft")
-    precondition(review.textView?.string == "Long draft")
+    previewCheck(variants["concise"] == "Edited short draft")
+    previewCheck(review.textView?.string == "Long draft")
     review.textView?.string = "Edited long draft"
     review.panel?.performClose(nil)
-    precondition(!review.isVisible && choices == 1 && picked == nil)
-    precondition(variants["detailed"] == "Edited long draft")
+    previewCheck(!review.isVisible && choices == 1 && picked == nil)
+    previewCheck(variants["detailed"] == "Edited long draft")
     review.showText("Second review") { value in choices += 1; picked = value }
     pumpPreviewEvents(until: Date().addingTimeInterval(0.15))
     key("\r", code: 36, modifiers: .command)
-    precondition(choices == 2 && picked == "Second review" && !review.isVisible)
+    previewCheck(choices == 2 && picked == "Second review" && !review.isVisible)
     review.showText("Save failure", onDraft: { _,_ in throw CocoaError(.fileWriteOutOfSpace) }) { _ in choices += 1 }
     pumpPreviewEvents(until: Date().addingTimeInterval(0.1))
     review.panel?.performClose(nil)
-    precondition(review.isVisible && choices == 2, "Disk error must preserve the open edit")
+    previewCheck(review.isVisible && choices == 2, "Disk error must preserve the open edit")
     review.discardOpenReview()
-    precondition(!review.isVisible && choices == 3)
+    previewCheck(!review.isVisible && choices == 3)
     print("NATIVE REVIEW PASS: key focus, Cmd2, variant draft persistence, title-bar close, reopen, CmdReturn, disk-failure retention, explicit discard")
 }

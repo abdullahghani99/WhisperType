@@ -38,7 +38,7 @@
     "client/Sources/WhisperType/SessionMicrophone.swift": "6263cd82f648da3c6f411f51360fcd0a7eeec6e599e81a1d3284c529d2586182",
     "client/Sources/WhisperType/SettingsWindow.swift": "a89d48c3633561f3be6fe1b7c6372d10d1e8f2f0c15fdbdb2892dd60118882f0",
     "client/Sources/WhisperType/SoundFeedback.swift": "df9cf3cc1a29c962cbcfeff5f983753740f0a6eb9e944a5bb9b13117848b88c2",
-    "client/Sources/WhisperType/main.swift": "c736e5486c0d2bdc9f858e4b51a0950629fecbfdd074c6da4ebbd28df7e24369",
+    "client/Sources/WhisperType/main.swift": "57236218f6282f60e0abe2683d5acb3f63767926c608b4edf361e42115d94fb3",
     "client/Sources/WhisperTypeKit/BoundedProcess.swift": "ea2b422c2d3343dd33efdb47047e65cfb885c1b3ef1dacb57b9475bc21c6ff2b",
     "client/Sources/WhisperTypeKit/CallDetector.swift": "a7f4d800e65c6c03a82b74a36dc0cdb16e2e14056dcc75e66f6f658785696a2a",
     "client/Sources/WhisperTypeKit/CallSource.swift": "d958eff74108789cb95cf1d2a5923d759db83da75fb1d6cea47a0cf25968894d",

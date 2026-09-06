@@ -193,6 +193,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.isRecording ? self.endRecording() : self.beginRecording(prompt: self.dockController.state.mode == .prompt, trigger: "pill")
         }
         dockController.onMeeting = { [weak self] in self?.toggleMeeting() }
+        dockController.onAcceptCall = { [weak self] in self?.startMeeting(fromCall: true) }
         dockController.onSettings = { [weak self] in
             guard let self = self else { return }
             self.mainWC.show(client: self.client)
@@ -440,11 +441,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if meetingRecorder.isRecording || meetingRecorder.isStarting || meetingStarting { stopMeeting() } else { startMeeting() }
     }
 
-    private func startMeeting() {
+    private func startMeeting(fromCall: Bool = false) {
         guard !terminationPending, !isRecording, !meetingStarting, !meetingFinishing, !meetingRecorder.isRecording else { return }
         let attempt = UUID(); meetingAttemptID = attempt
         meetingStarting = true
-        meetingFromCall = dockController.state.callOffer
+        meetingFromCall = fromCall && dockController.state.callOffer
         mainWC.settings.captureStatus = "Starting meeting…"
         Task {
             let available = await withCheckedContinuation { continuation in
@@ -1437,6 +1438,9 @@ if CommandLine.arguments.contains("--diagnose-destination") {
     vlog("\(identity) trusted=\(AXIsProcessTrusted())")
     let target = CaptureDestination.capture { vlog("\(identity) \($0)") }
     vlog("\(identity) editable-target=\(target != nil)")
+    if CommandLine.arguments.contains("--inspect-receipt-shape"), let target = target, !target.isRemote {
+        vlog("\(identity) receipt-shape \(target.receiptShapeDiagnostic())")
+    }
     if CommandLine.arguments.contains("--profile-focus"), let target = target {
         for _ in 0..<3 {
             let start = ProcessInfo.processInfo.systemUptime

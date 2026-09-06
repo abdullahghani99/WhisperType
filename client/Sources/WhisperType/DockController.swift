@@ -48,6 +48,7 @@ final class DockController {
     var onPickMic: (String) -> Void = { _ in }
     var onToggleMode: () -> Void = {}
     var onMeeting: () -> Void = {}
+    var onAcceptCall: () -> Void = {}
     var onSettings: () -> Void = {}
     var onRecovery: () -> Void = {}
     var micDevices: () -> [(uid: String, name: String)] = { [] }
@@ -87,7 +88,8 @@ final class DockController {
             onSettings: { [weak self] in self?.onSettings() },
             micDevices: { [weak self] in self?.micDevices() ?? [] },
             onRecovery: { [weak self] in self?.onRecovery() },
-            onHoverChanged: { [weak self] over in self?.hoverChanged(over) }
+            onHoverChanged: { [weak self] over in self?.hoverChanged(over) },
+            onAcceptCall: { [weak self] in self?.onAcceptCall() }
         )
         let host = DockHostingView(rootView: view)
         if #available(macOS 13.0, *) { host.sizingOptions = [.intrinsicContentSize] }

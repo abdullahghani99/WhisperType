@@ -177,6 +177,27 @@ struct CaptureDestination {
         let first = zip(before, after).enumerated().first(where: { $0.element.0 != $0.element.1 })?.offset
         return "expectedUTF16=\(before.count) actualUTF16=\(after.count) firstDifference=\(first.map(String.init) ?? "none-in-shared-prefix")"
     }
+    /// Explicit support probe: reads only the captured field, reports counts and
+    /// consistency flags, and never logs text, changes focus or posts events.
+    func receiptShapeDiagnostic() -> String {
+        func read(_ key: String) -> CFTypeRef? {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(field, key as CFString, &value) == .success else { return nil }
+            return value
+        }
+        guard let value = read(kAXValueAttribute) as? String else { return "value-unavailable" }
+        let ns = value as NSString
+        var result = "valueUTF16=\(ns.length) lineBreaks=\(value.filter { $0 == "\n" || $0 == "\r" }.count) nonbreakingSpaces=\(value.filter { $0 == "\u{00A0}" }.count)"
+        guard let selection = read(kAXSelectedTextRangeAttribute), CFGetTypeID(selection) == AXValueGetTypeID() else { return result + " selection-unavailable" }
+        var range = CFRange()
+        guard AXValueGetValue(selection as! AXValue, .cfRange, &range), range.location >= 0, range.length >= 0,
+              range.location <= ns.length, range.length <= ns.length - range.location else { return result + " selection-outside-value" }
+        result += " selectionOffset=\(range.location) selectionLength=\(range.length)"
+        if let selected = read(kAXSelectedTextAttribute) as? String {
+            result += " selectionMatchesValue=\(ns.substring(with: NSRange(location: range.location, length: range.length)) == selected)"
+        }
+        return result
+    }
     func containsVerifiedValue(_ expected: String?) -> Bool {
         guard let expected = expected else { return false }
         var actual: CFTypeRef?

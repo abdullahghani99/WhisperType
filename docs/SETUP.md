@@ -72,3 +72,8 @@ Some editors and terminals accept typing but cannot expose an exact plain-text r
 Dictation keeps the server cleanup result and applies a narrow local list fallback when one explicit announcement (two to five things, points, items, questions or steps) is followed by a complete consecutive one/two sequence. It preserves every item's wording and never answers dictated questions. Existing multiline text, code-like text, terminal/editor destinations and unknown remote app identities are left unchanged. The paired agent supplies its captured application name; Screen Sharing itself is not treated as the destination editor. The server history retains the server result; Inbox and local placement use the formatted text.
 
 Quitting waits for queued dictation processing and insertion verification to finish before the application exits. New captures are held while quitting; active recording and unsaved-audio protections remain in place. Typing without an exact receipt remains explicitly unverified and is never automatically replayed.
+
+
+Manual **Record meeting** stays manual even while a call offer is visible. Only the offer's **Record** action gives the call permission to stop that meeting when the call ends. This ownership is tested without capturing audio.
+
+The optional `--diagnose-destination --inspect-receipt-shape` support probe reports field/selection lengths, newline/nonbreaking-space counts and a selection consistency flag. It reads the currently focused field without changing it; no field content is logged and no keyboard events or microphone capture occur. An untrusted command-line process returns permission-unavailable rather than requesting a new grant.

@@ -9,6 +9,7 @@ public struct DockView: View {
     let onPickMic: (String) -> Void
     let onToggleMode: () -> Void
     let onMeeting: () -> Void
+    let onAcceptCall: () -> Void
     let onSettings: () -> Void
     let onRecovery: () -> Void
     let micDevices: () -> [(uid: String, name: String)]
@@ -27,10 +28,11 @@ public struct DockView: View {
                 onToggleRecord: @escaping () -> Void, onPickMic: @escaping (String) -> Void,
                 onToggleMode: @escaping () -> Void, onMeeting: @escaping () -> Void,
                 onSettings: @escaping () -> Void, micDevices: @escaping () -> [(uid: String, name: String)],
-                onRecovery: @escaping () -> Void = {}, onHoverChanged: @escaping (Bool) -> Void = { _ in }) {
+                onRecovery: @escaping () -> Void = {}, onHoverChanged: @escaping (Bool) -> Void = { _ in },
+                onAcceptCall: @escaping () -> Void = {}) {
         self.state = state; self.forceControls = forceControls; self.onHoverChanged = onHoverChanged
         self.onToggleRecord = onToggleRecord; self.onPickMic = onPickMic
-        self.onToggleMode = onToggleMode; self.onMeeting = onMeeting
+        self.onToggleMode = onToggleMode; self.onMeeting = onMeeting; self.onAcceptCall = onAcceptCall
         self.onSettings = onSettings; self.micDevices = micDevices; self.onRecovery = onRecovery
     }
 
@@ -203,7 +205,7 @@ public struct DockView: View {
                 Image(nsImage: icon).resizable().frame(width: 18, height: 18).accessibilityHidden(true)
             } else { Image(systemName: "phone").accessibilityHidden(true) }
             Text(state.callTitle).lineLimit(1).frame(maxWidth: 240)
-            textAction("Record", action: onMeeting)
+            textAction("Record", action: onAcceptCall)
             iconAction("xmark", label: "Dismiss meeting offer") { state.callOffer = false }
         }
     }

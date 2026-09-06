@@ -203,6 +203,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Settings ▸ Microphone. Nothing is stored: the pre-roll is 1.5s held in
         // memory and overwritten continuously.
         UserDefaults.standard.register(defaults: ["vf_preroll": true])
+        if ProcessInfo.processInfo.environment["VF_VALIDATION"] == "1" { vlog("input diagnostics at launch: " + AudioDevices.inputMuteSummary(AudioDevices.preferredInput())) }
         if ProcessInfo.processInfo.environment["VF_VALIDATION"] != "1", AVCaptureDevice.authorizationStatus(for: .audio) == .authorized { recorder.configurePreroll() }
 
         // Ambient meetings: offer to record when a call starts, and stop by
@@ -880,6 +881,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } catch { settings.status = "Could not remove recording: \(error.localizedDescription)" }
         }
         recorder.onDeviceChanged = { [weak self] _ in self?.refreshDockMic() }
+        recorder.onCaptureFailure = { [weak self] message in
+            guard let self = self, self.isRecording else { return }
+            if let id = self.activeRecordingID { self.destinations.removeValue(forKey: id) }
+            self.endRecording()
+            self.mainWC.settings.status = "Microphone interrupted: \(message). Any captured audio is retained in Inbox."
+        }
         meetingRecorder.onCaptureFailure = { [weak self] message in
             guard let self = self else { return }
             self.mainWC.settings.status = message
@@ -1067,6 +1074,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !isRecording, !meetingStarting, !meetingFinishing, !meetingRecorder.isRecording else { return }
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { requestMicPermission(); return }
         let id = UUID()
+        vlog("capture begin: pid=\(ProcessInfo.processInfo.processIdentifier), id=\(id), source=\(Bundle.main.bundleIdentifier ?? "unbundled")")
         activeRecordingID = id; presentationID = id
         captureDestination = CaptureDestination.capture()
         if let target = captureDestination {
@@ -1082,6 +1090,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         recorder.onLevel = { [weak self] level in self?.dockController.state.setLevel(level) }
         recorder.start { [weak self] ok in
             guard let self = self, self.activeRecordingID == id, self.isRecording else { return }
+            vlog("capture startup completed: id=\(id), ready=\(ok)")
             if ok {
                 self.dockController.state.begin()
                 self.mainWC.settings.captureStatus = "Listening"
@@ -1175,19 +1184,26 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do {
             entry.status = "processing"; entry.error = ""; try RecordingStore.save(entry); recordingsChanged()
             let wav = try Data(contentsOf: RecordingStore.audioURL(id), options: .mappedIfSafe)
+            guard !AudioRecorder.isAllZero(Data(wav.dropFirst(44))) else {
+                throw NSError(domain: "whispertype.capture", code: 2, userInfo: [NSLocalizedDescriptionKey: "No microphone signal was captured. Your audio is saved; check the selected input before recording again."])
+            }
             if entry.kind == "prompt" {
                 let result = try await client.engineer(wav: wav)
                 try Task.checkCancellation()
                 entry.raw = result.raw
                 entry.variants = ["concise": result.concise, "detailed": result.detailed, "coding": result.coding]
-                entry.text = result.concise; entry.status = "ready"
+                entry.text = result.concise
+                guard entry.hasResult else { throw emptyTranscriptionError() }
+                entry.status = "ready"
                 try RecordingStore.save(entry); recordingsChanged()
                 if presentationID == id && !isRecording && !promptReview.isVisible { reviewRecording(id) }
                 else if presentationID == id && !isRecording { dockController.state.ready() }
             } else {
                 let result = try await client.transcribe(wav: wav)
                 try Task.checkCancellation()
-                entry.raw = result.raw; entry.text = result.text; entry.historyID = result.id; entry.status = "ready"
+                entry.raw = result.raw; entry.text = result.text; entry.historyID = result.id
+                guard entry.hasResult else { throw emptyTranscriptionError() }
+                entry.status = "ready"
                 try RecordingStore.save(entry); recordingsChanged()
                 addToHistory(result.text); lastDictationId = result.id; lastDictationText = result.text
                 if !isRecording, let target = destinations[id], target.isCurrent() {
@@ -1205,12 +1221,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         } catch {
-            entry.status = entry.text.isEmpty ? "pending" : "ready"
+            entry.status = entry.hasResult ? "ready" : "pending"
             entry.error = error is CancellationError ? "Processing canceled. Audio retained; retry when ready." : error.localizedDescription
             do { try RecordingStore.save(entry) } catch { mainWC.settings.status = "Could not update recovery metadata: \(error.localizedDescription)" }
             if presentationID == id && !isRecording { dockController.state.fail("\(entry.error) · open Inbox") }
         }
         recordingsChanged()
+    }
+
+    private func emptyTranscriptionError() -> NSError {
+        NSError(domain: "whispertype.capture", code: 3, userInfo: [NSLocalizedDescriptionKey: "No transcript was returned. Your audio is saved; check the microphone before recording again."])
     }
 
     private func reviewRecording(_ id: UUID) {

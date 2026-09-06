@@ -22,6 +22,9 @@ for path in (root/'Sources/ReviewPreview').glob('*.swift'):
  s=path.read_text().replace('UserDefaults.standard','ReviewDefaults.shared')
  if path.name=='PromptReview.swift': s=s.replace('private var panel','var panel').replace('private var levels','var levels').replace('private var textView','var textView').replace('private func buildPanel','func buildPanel').replace('private func render','func render')
  if path.name=='DockController.swift': s=s.replace('private var panel','var panel').replace('private var hosting','var hosting').replace('DockPlacement(store: .standard)','DockPlacement(store: dockReviewDefaults)')
+ if path.name=='DockController.swift':
+  s=s.replace('panel?.orderFrontRegardless()', 'if ProcessInfo.processInfo.environment["VF_UI_DOCK_BACKGROUND"] == "1" { panel?.setFrameOrigin(NSPoint(x: -10000, y: -10000)); panel?.orderBack(nil) } else { panel?.orderFrontRegardless() }')
+  s=s.replace('    private func startDockWatch() {', '    private func startDockWatch() {\n        if ProcessInfo.processInfo.environment["VF_UI_DOCK_BACKGROUND"] == "1" { return }')
  path.write_text(s)
 PY
 swift build --package-path "$SCRATCH" --product ReviewPreview > "$OUT/build.log" 2>&1

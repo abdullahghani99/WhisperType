@@ -61,7 +61,12 @@ struct MainView: View {
             .safeAreaInset(edge: .top) {
                 HStack(spacing: VF.Space.sm) {
                     Image(systemName: "waveform").foregroundStyle(VF.Color.accent)
-                    Text("WhisperType").font(VF.Font.title)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("WhisperType").font(VF.Font.title)
+                        if Bundle.main.bundleIdentifier?.hasSuffix(".review.client") == true {
+                            Text("Review · test recordings").font(VF.Font.caption).foregroundStyle(VF.Color.muted(dark: dark))
+                        }
+                    }
                     Spacer()
                 }.padding(.horizontal, VF.Space.lg).padding(.top, VF.Space.lg).padding(.bottom, VF.Space.sm)
             }
@@ -73,7 +78,7 @@ struct MainView: View {
             detail
                 .frame(minWidth: 560, minHeight: 520)
                 .background(VF.Color.canvas(dark: dark))
-                .navigationTitle(nav.section.rawValue)
+                .navigationTitle((Bundle.main.bundleIdentifier?.hasSuffix(".review.client") == true ? "WhisperType Review — " : "") + nav.section.rawValue)
 
         }
     }

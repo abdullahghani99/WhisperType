@@ -14,7 +14,7 @@ final class DockHostingView<Content: View>: NSHostingView<Content> {
         let box = NSRect(x: (bounds.width - content.width) / 2,
                          y: (bounds.height - content.height) / 2,
                          width: content.width, height: content.height)
-        return box.contains(point) ? super.hitTest(point) : nil
+        return box.insetBy(dx: 16, dy: 16).contains(point) ? super.hitTest(point) : nil
     }
 }
 import Combine
@@ -86,7 +86,8 @@ final class DockController {
             onMeeting: { [weak self] in self?.onMeeting() },
             onSettings: { [weak self] in self?.onSettings() },
             micDevices: { [weak self] in self?.micDevices() ?? [] },
-            onRecovery: { [weak self] in self?.onRecovery() }
+            onRecovery: { [weak self] in self?.onRecovery() },
+            onHoverChanged: { [weak self] over in self?.hoverChanged(over) }
         )
         let host = DockHostingView(rootView: view)
         if #available(macOS 13.0, *) { host.sizingOptions = [.intrinsicContentSize] }
@@ -121,6 +122,22 @@ final class DockController {
 
     // MARK: - Sizing / positioning
 
+    private var collapseTimer: Timer?
+    private var pointerOverDock = false
+    private var lastExpanded = false
+    private func hoverChanged(_ over: Bool) {
+        pointerOverDock = over
+        collapseTimer?.invalidate(); collapseTimer = nil
+        if !over { scheduleCollapse(after: 1.2) }
+    }
+    private func scheduleCollapse(after delay: TimeInterval = 4) {
+        collapseTimer?.invalidate(); collapseTimer = nil
+        guard state.expanded, state.canCollapsePresentation else { return }
+        collapseTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            guard let self = self, !self.pointerOverDock, self.panel?.isKeyWindow != true else { return }
+            self.state.collapsePresentation()
+        }
+    }
     private var elapsedTimer: Timer?
     private var successTimer: Timer?
     private var lastPhase: DockState.Phase = .idle
@@ -160,6 +177,10 @@ final class DockController {
             }
         } else {
             elapsedTimer?.invalidate(); elapsedTimer = nil
+        }
+        if state.phase != lastPhase || state.expanded != lastExpanded {
+            scheduleCollapse()
+            lastExpanded = state.expanded
         }
         if state.phase != lastPhase {
             lastPhase = state.phase
@@ -346,11 +367,17 @@ final class DockController {
     /// Follow the Dock: rest low when it is hidden, glide up when it appears.
     private func startDockWatch() {
         dockWatchTimer?.invalidate()
-        let t = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            self?.followDockVisibility()
+        let screen = Self.activeScreen()
+        let nearDock = screen.map { NSEvent.mouseLocation.y < $0.visibleFrame.minY + 180 } ?? false
+        let delay = nearDock ? 0.1 : 0.75
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            guard let self = self, self.panel?.isVisible == true else { return }
+            self.followDockVisibility()
+            self.startDockWatch()
         }
-        RunLoop.main.add(t, forMode: .common)
-        dockWatchTimer = t
+        timer.tolerance = nearDock ? 0.02 : 0.15
+        RunLoop.main.add(timer, forMode: .common)
+        dockWatchTimer = timer
     }
 
     /// Behind `vf_dock_debug`, so a placement complaint can be diagnosed from a

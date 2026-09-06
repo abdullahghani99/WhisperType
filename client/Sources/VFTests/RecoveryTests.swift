@@ -2,6 +2,21 @@ import Foundation
 import WhisperTypeKit
 
 final class RecoveryTests: XCTestCase {
+    func testEmptySuccessfulResponseCannotBePresentedAsReady() {
+        var entry = RecordingStore.Entry(kind: "dictation")
+        entry.status = "ready"; entry.error = "Result ready. Review it in Inbox to choose placement."
+        XCTAssertFalse(entry.hasResult)
+        XCTAssertEqual(entry.inboxMessage, "No transcript was returned. Your audio is saved.")
+        entry.text = " \n "
+        XCTAssertFalse(entry.hasResult)
+        entry.variants = ["concise": " ", "detailed": "\n"]
+        XCTAssertFalse(entry.hasResult)
+        entry.variants["detailed"] = "A preserved draft"
+        XCTAssertTrue(entry.hasResult)
+        entry.variants = [:]; entry.text = "A preserved transcript"
+        XCTAssertTrue(entry.hasResult)
+    }
+
     private func temporary(_ body: (URL) throws -> Void) {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: url) }

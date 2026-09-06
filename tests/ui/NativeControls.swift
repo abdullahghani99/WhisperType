@@ -34,29 +34,29 @@ func testNativeCaptureControls() {
         walk(controller.view)
         let labels = nodes.compactMap { attribute($0,"accessibilityLabel") as? String }
         guard let node = nodes.first(where: { attribute($0,"accessibilityLabel") as? String == label }) else {
-            preconditionFailure("Native capture control missing: \(label); \(labels)")
+            previewFailure("Native capture control missing: \(label); \(labels)")
         }
         return node
     }
     func bool(_ node: NSObject, _ method: String) -> Bool {
         let selector=NSSelectorFromString(method)
-        precondition(node.responds(to:selector))
+        previewCheck(node.responds(to:selector))
         typealias Invoke = @convention(c) (AnyObject, Selector) -> Bool
         return unsafeBitCast(node.method(for:selector),to:Invoke.self)(node,selector)
     }
-    precondition(bool(find("Record dictation"),"accessibilityPerformPress") && recordings == 1)
-    precondition(bool(find("Start meeting"),"accessibilityPerformPress") && meetings == 1)
+    previewCheck(bool(find("Record dictation"),"accessibilityPerformPress") && recordings == 1)
+    previewCheck(bool(find("Start meeting"),"accessibilityPerformPress") && meetings == 1)
     state.meetingCapturing = true
-    precondition(!bool(find("Record dictation"),"isAccessibilityEnabled"), "Meeting must disable dictation action")
+    previewCheck(!bool(find("Record dictation"),"isAccessibilityEnabled"), "Meeting must disable dictation action")
     state.meetingCapturing = false; state.capturing = true
-    precondition(!bool(find("Start meeting"),"isAccessibilityEnabled"), "Dictation must disable meeting action")
-    precondition(bool(find("Stop recording"),"accessibilityPerformPress") && recordings == 2)
+    previewCheck(!bool(find("Start meeting"),"isAccessibilityEnabled"), "Dictation must disable meeting action")
+    previewCheck(bool(find("Stop recording"),"accessibilityPerformPress") && recordings == 2)
     state.capturing = false; state.captureMode = .prompt
-    precondition(bool(find("Record prompt"),"accessibilityPerformPress") && recordings == 3)
-    precondition(bool(find("Import a recording…"),"accessibilityPerformPress") && imports == 1)
+    previewCheck(bool(find("Record prompt"),"accessibilityPerformPress") && recordings == 3)
+    previewCheck(bool(find("Import a recording…"),"accessibilityPerformPress") && imports == 1)
     state.importing = true
-    precondition(!bool(find("Import a recording…"),"isAccessibilityEnabled"))
-    precondition(bool(find("Cancel import"),"accessibilityPerformPress") && cancels == 1)
-    precondition(bool(find("Open Inbox"),"accessibilityPerformPress") && nav.section == .inbox)
+    previewCheck(!bool(find("Import a recording…"),"isAccessibilityEnabled"))
+    previewCheck(bool(find("Cancel import"),"accessibilityPerformPress") && cancels == 1)
+    previewCheck(bool(find("Open Inbox"),"accessibilityPerformPress") && nav.section == .inbox)
     print("NATIVE CAPTURE PASS: real accessible recording/prompt/meeting actions, mutual exclusion, import/cancel, Inbox navigation; callbacks isolated")
 }

@@ -29,4 +29,16 @@ final class DockStateTests: XCTestCase {
         let s = DockState(); s.begin(); s.setLevel(2.0)
         XCTAssertEqual(s.level, 1.0, accuracy: 0.001)
     }
+    func testCollapseRetainsRecoveryAndProtectsCapture() {
+        let s = DockState()
+        s.ready(); s.collapsePresentation()
+        XCTAssertEqual(s.phase, .ready); XCTAssertFalse(s.expanded)
+        s.fail("Audio saved"); s.collapsePresentation()
+        XCTAssertEqual(s.phase, .error); XCTAssertEqual(s.errorText, "Audio saved")
+        s.begin(); s.expanded = true; s.collapsePresentation()
+        XCTAssertTrue(s.expanded); XCTAssertEqual(s.phase, .listening)
+        s.finishRecording(); s.collapsePresentation(); XCTAssertTrue(s.expanded)
+        s.returnToIdle(); XCTAssertFalse(s.expanded)
+        s.meetingRecording = true; s.expanded = true; s.collapsePresentation(); XCTAssertTrue(s.expanded)
+    }
 }

@@ -12,6 +12,14 @@ public enum RecordingStore {
         public var error: String
         public var historyID: Int?
         public var variants: [String: String]
+        public var hasResult: Bool {
+            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                variants.values.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        }
+        public var inboxMessage: String {
+            if status == "ready" && !hasResult { return "No transcript was returned. Your audio is saved." }
+            return error.isEmpty ? (hasResult ? "Ready for review" : "Audio saved") : error
+        }
         public init(id: UUID = UUID(), kind: String) {
             self.id = id; created = Date(); self.kind = kind; status = "pending"
             text = ""; raw = ""; error = ""; variants = [:]

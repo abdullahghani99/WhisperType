@@ -38,10 +38,14 @@ public final class DockState: ObservableObject {
 
     public init() {}
 
-    public func starting() { phase = .starting; elapsed = 0; errorText = "" }
-    public func ready() { phase = .ready }
+    public var canCollapsePresentation: Bool {
+        !meetingRecording && !callOffer && [.idle, .ready, .done, .error].contains(phase)
+    }
+    public func collapsePresentation() { if canCollapsePresentation { expanded = false } }
+    public func starting() { expanded = false; phase = .starting; elapsed = 0; errorText = "" }
+    public func ready() { phase = .ready; expanded = true }
     public func begin() {
-        phase = .listening; elapsed = 0; level = 0; errorText = ""
+        expanded = false; phase = .listening; elapsed = 0; level = 0; errorText = ""
         levels = Array(repeating: 0, count: 24)
     }
     /// The last N levels, oldest first — so the waveform shows speech TRAVELLING
@@ -62,8 +66,8 @@ public final class DockState: ObservableObject {
     /// actually happened instead of falling back to an instruction hint.
     @Published public var lastWordCount: Int = 0
 
-    public func complete(words: Int = 0) { lastWordCount = words; phase = .done }
-    public func returnToIdle() { phase = .idle; level = 0 }
-    public func fail(_ msg: String) { phase = .error; errorText = msg }
+    public func complete(words: Int = 0) { lastWordCount = words; phase = .done; expanded = true }
+    public func returnToIdle() { phase = .idle; level = 0; expanded = false }
+    public func fail(_ msg: String) { phase = .error; errorText = msg; expanded = true }
     public func toggleMode() { mode = (mode == .dictation) ? .prompt : .dictation }
 }

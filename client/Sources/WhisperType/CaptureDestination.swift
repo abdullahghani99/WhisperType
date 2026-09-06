@@ -116,7 +116,36 @@ struct CaptureDestination {
         guard let pid = candidate, pid > 0, pid != ownPID else { return nil }
         return pid
     }
+    /// Per-event validation keeps the captured identity instead of rediscovering
+    /// the application and its editable role for every character. AX read failures
+    /// still stop typing, including permission loss. Secure-field transitions are
+    /// rechecked, and app/window/field/title identity must all remain unchanged.
     func isCurrent(diagnose: (String) -> Void = { _ in }) -> Bool {
+        guard AXIsProcessTrusted() else { diagnose("accessibility-denied"); return false }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier else {
+            diagnose("application-changed"); return false
+        }
+        let application = AXUIElementCreateApplication(app.processIdentifier)
+        func attribute(_ object: AXUIElement, _ key: String) -> CFTypeRef? {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(object, key as CFString, &value) == .success else { return nil }
+            return value
+        }
+        guard let currentWindow = attribute(application, kAXFocusedWindowAttribute), CFEqual(window, currentWindow) else {
+            diagnose("window-changed-or-unavailable"); return false
+        }
+        guard let currentField = attribute(application, kAXFocusedUIElementAttribute), CFEqual(field, currentField) else {
+            diagnose("field-changed-or-unavailable"); return false
+        }
+        guard (attribute(window, kAXTitleAttribute) as? String ?? "") == title else {
+            diagnose("window-title-changed"); return false
+        }
+        guard isRemote || (attribute(field, kAXSubroleAttribute) as? String) != kAXSecureTextFieldSubrole else {
+            diagnose("secure-field"); return false
+        }
+        return true
+    }
+    func isCurrentByRecapturing(diagnose: (String) -> Void = { _ in }) -> Bool {
         guard let current = Self.capture(diagnose: diagnose) else { return false }
         guard app.processIdentifier == current.app.processIdentifier else { diagnose("application-changed"); return false }
         guard CFEqual(window, current.window) else { diagnose("window-changed"); return false }

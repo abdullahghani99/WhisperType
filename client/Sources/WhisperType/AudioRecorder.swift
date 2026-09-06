@@ -1,3 +1,4 @@
+import Darwin
 import AVFoundation
 import AudioToolbox
 import CoreAudio
@@ -112,8 +113,12 @@ final class AudioRecorder {
 
     private func logError(_ s: String) {
         let line = "\(ISO8601DateFormatter().string(from: Date())) [audio pid=\(ProcessInfo.processInfo.processIdentifier)] \(s)\n"
-        if let h = FileHandle(forWritingAtPath: ProcessInfo.processInfo.environment["VF_LOG_PATH"] ?? "/tmp/whispertype-client.log") {
-            h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile()
+        let path = ProcessInfo.processInfo.environment["VF_LOG_PATH"] ?? "/tmp/whispertype-client.log"
+        let fd = Darwin.open(path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
+        guard fd >= 0 else { return }
+        defer { Darwin.close(fd) }
+        line.data(using: .utf8)!.withUnsafeBytes { bytes in
+            _ = Darwin.write(fd, bytes.baseAddress!, bytes.count)
         }
     }
 

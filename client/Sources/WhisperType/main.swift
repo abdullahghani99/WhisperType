@@ -1,3 +1,4 @@
+import Darwin
 import Cocoa
 import SwiftUI
 import AVFoundation
@@ -13,10 +14,11 @@ func vlog(_ s: String) {
     voiceFlowLogLock.lock(); defer { voiceFlowLogLock.unlock() }
     let line = "\(ISO8601DateFormatter().string(from: Date())) \(s)\n"
     let path = ProcessInfo.processInfo.environment["VF_LOG_PATH"] ?? "/tmp/whispertype-client.log"
-    if let h = FileHandle(forWritingAtPath: path) {
-        h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile()
-    } else {
-        try? line.data(using: .utf8)!.write(to: URL(fileURLWithPath: path))
+    let fd = Darwin.open(path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
+    guard fd >= 0 else { return }
+    defer { Darwin.close(fd) }
+    line.data(using: .utf8)!.withUnsafeBytes { bytes in
+        _ = Darwin.write(fd, bytes.baseAddress!, bytes.count)
     }
 }
 
@@ -1412,6 +1414,16 @@ if CommandLine.arguments.contains("--diagnose-destination") {
     vlog("\(identity) trusted=\(AXIsProcessTrusted())")
     let target = CaptureDestination.capture { vlog("\(identity) \($0)") }
     vlog("\(identity) editable-target=\(target != nil)")
+    if CommandLine.arguments.contains("--profile-focus"), let target = target {
+        for _ in 0..<3 {
+            let start = ProcessInfo.processInfo.systemUptime
+            let old = target.isCurrentByRecapturing()
+            let middle = ProcessInfo.processInfo.systemUptime
+            let fast = target.isCurrent()
+            let end = ProcessInfo.processInfo.systemUptime
+            vlog("\(identity) focus-profile recaptureMs=\(Int((middle-start)*1000)) identityMs=\(Int((end-middle)*1000)) recaptureCurrent=\(old) identityCurrent=\(fast)")
+        }
+    }
     if CommandLine.arguments.contains("--save-remote-window-match") {
         guard let target = target, target.isRemote, !target.title.isEmpty else { exit(2) }
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("WhisperType")

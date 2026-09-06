@@ -7,7 +7,8 @@ This product uses the following third-party components:
 Models (downloaded at runtime, not distributed with this software):
   - Whisper Large V3 — © OpenAI, MIT License
   - Qwen2.5-7B-Instruct — © Alibaba Cloud, Apache License 2.0
-  (Both retrieved via the mlx-community organization on Hugging Face.
+  - Qwen2.5-14B-Instruct — © Alibaba Cloud, Apache License 2.0
+  (Retrieved via the mlx-community organization on Hugging Face.
    If you swap in a Llama model, Meta's Llama Community License applies.)
 
 Libraries:
@@ -21,3 +22,7 @@ Libraries:
 "Whisper" is a trademark/name of OpenAI; "Qwen" of Alibaba. WhisperType is an
 independent open-source project and is not affiliated with, endorsed by, or
 sponsored by OpenAI, Alibaba, Apple, or any commercial dictation product.
+
+Bundled fonts:
+  - Inter — Copyright (c) 2016 The Inter Project Authors, SIL Open Font License 1.1.
+    Full license: client/Sources/WhisperType/Resources/Inter-OFL.txt

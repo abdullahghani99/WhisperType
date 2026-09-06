@@ -12,17 +12,36 @@ final class MeetingsState: ObservableObject {
     /// here used to swallow its error with `try?`, so a failed rename did nothing
     /// visible and a dead server rendered identically to an empty account.
     @Published var loadError: String?
+    @Published var actionError: String?
     var client: ServerClient?
     private var timer: Timer?
+    @Published var selectedID: Int?
+    private var detailGeneration = 0
+    private var refreshing = false
+
+    func retry(_ id: Int) {
+        guard let client = client else { return }
+        Task {
+            do {
+                try await client.retryMeeting(id: id)
+                await MainActor.run { self.actionError = nil; self.refresh(); self.open(id) }
+            } catch { await MainActor.run { self.actionError = error.localizedDescription } }
+        }
+    }
 
     func refresh() {
-        guard let client = client else { return }
+        guard let client = client, !refreshing else { return }
+        refreshing = true
         Task {
             do {
                 let list = try await client.meetings()
                 await MainActor.run {
+                    self.refreshing = false
                     self.loadError = nil
                     self.items = list
+                    if let id = self.selectedID ?? self.selected?.id, list.contains(where: { $0.id == id }) {
+                        self.open(id, showLoading: false)
+                    }
                     // Auto-poll every 5s while anything is still processing.
                     let anyProcessing = list.contains { $0.status == "processing" }
                     if anyProcessing && self.timer == nil {
@@ -37,24 +56,28 @@ final class MeetingsState: ObservableObject {
                 await MainActor.run {
                     // Keep whatever was already listed — losing it as well as the
                     // connection helps nobody.
+                    self.refreshing = false
                     self.loadError = error.localizedDescription
-                    self.timer?.invalidate(); self.timer = nil
                 }
             }
         }
     }
 
-    func open(_ id: Int) {
+    func open(_ id: Int, showLoading: Bool = true) {
         guard let client = client else { return }
-        loadingDetail = true
+        selectedID = id; detailGeneration += 1
+        let generation = detailGeneration
+        if showLoading { loadingDetail = true }
         Task {
             do {
                 let m = try await client.meeting(id: id)
                 await MainActor.run {
+                    guard self.detailGeneration == generation, self.selectedID == id else { return }
                     self.selected = m; self.loadingDetail = false; self.loadError = nil
                 }
             } catch {
                 await MainActor.run {
+                    guard self.detailGeneration == generation else { return }
                     self.loadingDetail = false
                     self.loadError = error.localizedDescription
                 }
@@ -95,7 +118,7 @@ final class MeetingsState: ObservableObject {
                 try await client.deleteMeeting(id: id)
                 await MainActor.run {
                     self.loadError = nil
-                    if self.selected?.id == id { self.selected = nil }
+                    if self.selected?.id == id { self.selected = nil; self.selectedID = nil; self.detailGeneration += 1 }
                     self.refresh()
                 }
             } catch {
@@ -126,6 +149,10 @@ struct MeetingsView: View {
 
     private enum Tab: String, CaseIterable { case summary = "Summary", transcript = "Transcript" }
     @State private var tab: Tab = .summary
+    @State private var search = ""
+    private var visibleMeetings: [ServerClient.MeetingSummary] {
+        state.items.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }
+    }
 
     var body: some View {
         HSplitView {
@@ -152,7 +179,10 @@ struct MeetingsView: View {
                                detail: "Record one from the dock.", isError: false)
                 }
 
-                List(state.items) { m in
+                TextField("Search meeting titles", text: $search).textFieldStyle(.roundedBorder)
+                    .padding(.horizontal, VF.Space.md).accessibilityLabel("Search meeting titles")
+                if !search.isEmpty && visibleMeetings.isEmpty { listNotice("No matching meetings", detail: "Try a different title.", isError: false) }
+                List(visibleMeetings, selection: $state.selectedID) { m in
                     let isSelected = state.selected?.id == m.id
                     HStack(alignment: .top, spacing: 0) {
                         // Accent rail marks the row you are reading. Identity and
@@ -183,12 +213,13 @@ struct MeetingsView: View {
                     // gave it zero contrast and made the selection invisible.
                     .background(isSelected ? VF.Color.surface(dark: dark) : Color.clear)
                     .contentShape(Rectangle())
-                    .onTapGesture { state.open(m.id) }
+                    .tag(m.id)
                     .contextMenu {
                         Button("Rename\u{2026}") { promptRename(m) }
                         Button("Delete", role: .destructive) { confirmDelete(m) }
                     }
                 }
+                .onChange(of: state.selectedID) { id in if let id = id { state.open(id) } }
                 .scrollContentBackground(.hidden)
                 .background(VF.Color.surfaceHover(dark: dark))
             }
@@ -242,12 +273,20 @@ struct MeetingsView: View {
 
                     metaRow(m, summary)
 
+                    if let error = state.actionError {
+                        HStack(alignment: .top, spacing: 12) {
+                            Label(error, systemImage: "exclamationmark.circle").font(VF.Font.callout).textSelection(.enabled)
+                            Spacer()
+                            Button("Dismiss") { state.actionError = nil }.buttonStyle(VFActionStyle())
+                        }.foregroundStyle(VF.Color.attention(dark: dark))
+                    }
+
                     tabBar
 
                     speakerBar(m)
 
                     if m.status == "processing" {
-                        Label("Still processing on the server. This updates itself.",
+                        Label(m.transcript.isEmpty ? "Transcribing and identifying speakers…" : "Transcript ready. Preparing notes…",
                               systemImage: "clock")
                             .font(VF.Font.body)
                             .foregroundColor(VF.Color.muted(dark: dark))
@@ -257,10 +296,14 @@ struct MeetingsView: View {
                             .font(VF.Font.body)
                             .foregroundColor(VF.Color.accent)
                     }
+                    if m.status == "error" || (m.status != "processing" && m.notesStatus == "error") {
+                        Button(m.transcript.isEmpty ? "Retry processing" : "Retry notes") { state.retry(m.id) }
+                            .buttonStyle(VFActionStyle())
+                    }
 
                     if tab == .summary {
                         if m.notes.isEmpty {
-                            Text("No notes for this meeting.")
+                            Text(m.status == "processing" ? "Notes will appear when ready." : m.notesStatus == "error" ? "Notes could not be generated. Your transcript is safe." : "No notes were generated for this meeting.")
                                 .font(VF.Font.body)
                                 .foregroundColor(VF.Color.muted(dark: dark))
                         } else {
@@ -268,7 +311,7 @@ struct MeetingsView: View {
                         }
                     } else {
                         if m.transcript.isEmpty {
-                            Text("No transcript for this meeting.")
+                            Text(m.status == "processing" ? "Your recording is queued or transcribing." : "No transcript is available.")
                                 .font(VF.Font.body)
                                 .foregroundColor(VF.Color.muted(dark: dark))
                         } else {
@@ -309,6 +352,7 @@ struct MeetingsView: View {
                                       _ summary: ServerClient.MeetingSummary?) -> some View {
         let text = tab == .summary ? m.notes : m.transcript
         HStack(spacing: VF.Space.md) {
+            if !text.isEmpty {
             Text(VF.readTime(wordCount: text
                                 .split(whereSeparator: { $0 == " " || $0 == "\n" }).count))
                 .font(VF.Font.caption)
@@ -321,11 +365,12 @@ struct MeetingsView: View {
                         .fill(VF.Color.surfaceHover(dark: dark))
                 )
 
+            }
             Spacer()
 
             if let s = summary {
                 Button("Rename") { promptRename(s) }.controlSize(.small)
-                Button("Export notes\u{2026}") { save(m) }.controlSize(.small)
+                Button("Export notes\u{2026}") { save(m) }.controlSize(.small).disabled(m.notes.isEmpty && m.transcript.isEmpty)
                 Divider().frame(height: 14)
                 Button("Delete") { confirmDelete(s) }
                     .controlSize(.small)
@@ -441,7 +486,7 @@ struct MeetingsView: View {
     /// True when an action item is owned by the person using the app.
     static func isMine(_ line: String, myName: String?) -> Bool {
         guard let me = myName?.lowercased(), !me.isEmpty else { return false }
-        return line.lowercased().contains(me)
+        return line.lowercased().range(of: "(?<![\\p{L}\\p{N}_])" + NSRegularExpression.escapedPattern(for: me) + "(?![\\p{L}\\p{N}_])", options: .regularExpression) != nil
     }
 
     /// The text of a markdown list item, or nil when the line is not one.
@@ -537,6 +582,7 @@ struct MeetingsView: View {
                                 )
                         }
                         .buttonStyle(.plain)
+                        .disabled(m.status == "processing")
                         .help("Rename this speaker")
                     }
                 }
@@ -595,8 +641,10 @@ struct MeetingsView: View {
         panel.nameFieldStringValue = "\(title.replacingOccurrences(of: "/", with: "-")).md"
         panel.canCreateDirectories = true
         if panel.runModal() == .OK, let url = panel.url {
-            try? md.data(using: .utf8)!.write(to: url)
-            NSWorkspace.shared.open(url)
+            do {
+                try RecordingStore.durableWrite(Data(md.utf8), to: url)
+                NSWorkspace.shared.open(url)
+            } catch { state.actionError = "Export failed: \(error.localizedDescription). Choose Export to retry." }
         }
     }
 }

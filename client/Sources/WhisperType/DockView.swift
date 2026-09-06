@@ -1,491 +1,221 @@
 import SwiftUI
 import WhisperTypeKit
 
-// The dock is the floating layer over other apps, so it uses the DARK side of
-// the palette. All values come from VF — no local hex.
-private extension Color {
-    static let vfSurfaceTop = VF.Color.surfaceHover(dark: true)
-    static let vfSurfaceBottom = VF.Color.canvas(dark: true)
-    static let vfWarmWhite = VF.Color.ink(dark: true)
-    static let vfMuted = VF.Color.muted(dark: true)
-    static let vfAccent = VF.Color.accent
-    static let vfGreen = VF.Color.healthy(dark: true)
-    static let vfAmber = VF.Color.attention(dark: true)
-}
-
-/// Fixed sine-shaped envelope for the 24-bar waveform: tall in the middle,
-/// tapering at the edges, so the waveform reads as "a waveform" even at
-/// silence — `state.level` only modulates amplitude on top of this shape,
-/// it never changes which bars exist.
-private let vfWaveformEnvelope: [CGFloat] = (0 ..< 24).map { i in
-    let t = Double(i + 1) / 25.0
-    return CGFloat(sin(t * .pi))
-}
-
-/// The two center bars carry the accent tint — one of the only three places
-/// red appears in the dock (record dot, waveform center, active-mic check).
-private let vfWaveformAccentIndices: Set<Int> = [11, 12]
-
-private let vfWaveformBarCount = vfWaveformEnvelope.count
-private let vfWaveformBarMaxHeight: CGFloat = 22
-
-/// ONE shell for every state. The dock previously used four heights (30/44/46/52)
-/// and therefore four corner radii, because Capsule derives its radius from
-/// height — and the eye reads corner radius as object identity. Four radii meant
-/// four objects. Now only WIDTH ever changes, so the dock reads as one thing
-/// that morphs rather than a set of components being swapped.
-private let vfShellHeight: CGFloat = 36
-private let vfShellRadius: CGFloat = 18
-
-// MARK: - DockView
-
-/// The floating dock: a warm-black capsule that is the visual centerpiece of
-/// the app. Idle / listening / transcribing / error states live inside the
-/// same capsule; hovering reveals a secondary control row (mic, mode,
-/// meeting, settings) below it.
+/// The floating pill shares one shell across every state. Controls stay native
+/// buttons; the small, opaque surface stays legible over any document or video.
 public struct DockView: View {
     @ObservedObject var state: DockState
-
     let onToggleRecord: () -> Void
     let onPickMic: (String) -> Void
     let onToggleMode: () -> Void
     let onMeeting: () -> Void
     let onSettings: () -> Void
+    let onRecovery: () -> Void
     let micDevices: () -> [(uid: String, name: String)]
-
-    @State private var transcribingPulse = false
-    @State private var hovering = false
-    /// Honour the system setting rather than assuming everyone wants movement.
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Preview/testability only: force the hover control row visible for
-    /// screenshot verification. Default false — no runtime behavior change.
     let forceControls: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
+    @State private var hovering = false
+    private let ink = VF.Color.ink(dark: true)
+    private let muted = VF.Color.muted(dark: true)
+    private var controlsVisible: Bool { state.expanded || forceControls }
 
-    public init(
-        state: DockState,
-        forceControls: Bool = false,
-        onToggleRecord: @escaping () -> Void,
-        onPickMic: @escaping (String) -> Void,
-        onToggleMode: @escaping () -> Void,
-        onMeeting: @escaping () -> Void,
-        onSettings: @escaping () -> Void,
-        micDevices: @escaping () -> [(uid: String, name: String)]
-    ) {
-        self.state = state
-        self.forceControls = forceControls
-        self.onToggleRecord = onToggleRecord
-        self.onPickMic = onPickMic
-        self.onToggleMode = onToggleMode
-        self.onMeeting = onMeeting
-        self.onSettings = onSettings
-        self.micDevices = micDevices
+    public init(state: DockState, forceControls: Bool = false,
+                onToggleRecord: @escaping () -> Void, onPickMic: @escaping (String) -> Void,
+                onToggleMode: @escaping () -> Void, onMeeting: @escaping () -> Void,
+                onSettings: @escaping () -> Void, micDevices: @escaping () -> [(uid: String, name: String)],
+                onRecovery: @escaping () -> Void = {}) {
+        self.state = state; self.forceControls = forceControls
+        self.onToggleRecord = onToggleRecord; self.onPickMic = onPickMic
+        self.onToggleMode = onToggleMode; self.onMeeting = onMeeting
+        self.onSettings = onSettings; self.micDevices = micDevices; self.onRecovery = onRecovery
     }
 
     public var body: some View {
-        Group {
-            if state.callOffer && state.phase == .idle {
-                callOfferBar
-                    .animation(.spring(response: 0.34, dampingFraction: 0.82), value: state.callOffer)
-            } else if state.phase == .idle {
-                // Minimal: at rest a tiny mic pill; one CLICK reveals ONLY the
-                // control bar. Click the bar's empty space to collapse.
-                if state.expanded || forceControls {
-                    controlRow.onTapGesture { state.expanded = false }
-                } else {
-                    restPill
+        content
+            .font(VF.Font.callout).foregroundStyle(ink)
+            .padding(.horizontal, state.phase == .idle && !controlsVisible && !state.callOffer && !state.meetingRecording ? 10 : 14)
+            .padding(.vertical, 6).frame(minHeight: 40)
+            .background {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(VF.Color.surface(dark: true))
+                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(ink.opacity(contrast == .increased ? 0.6 : 0.16), lineWidth: 1))
+                    .shadow(color: Color.black.opacity(0.22), radius: 10, x: 0, y: 4)
+            }
+            .fixedSize()
+            .padding(16)
+            .preferredColorScheme(.dark)
+            .onHover { hovering = $0 }
+            .animation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 1), value: state.phase)
+            .animation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 1), value: state.expanded)
+            .animation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 1), value: state.meetingRecording)
+            .animation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 1), value: state.callOffer)
+            .onChange(of: state.phase) { phase in if phase != .idle { state.expanded = false } }
+            .onExitCommand { state.expanded = false }
+    }
+
+    @ViewBuilder private var content: some View {
+        if state.meetingRecording && state.phase != .listening && state.phase != .starting {
+            meetingContent
+        } else {
+            switch state.phase {
+            case .idle:
+                if state.callOffer { callOfferContent }
+                else if controlsVisible { controls }
+                else { restContent }
+            case .starting:
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small).accessibilityLabel("Starting microphone")
+                    Text("Starting microphone…")
+                    textAction("Cancel", action: onToggleRecord)
                 }
-            } else {
-                mainCapsule   // listening / transcribing / done / error
-            }
-        }
-        .padding(16)   // room for the capsule's drop shadow
-        .fixedSize()
-        // At rest the dock sits over whatever you are reading, so it steps back:
-        // translucent while idle and untouched, fully present the moment you
-        // point at it or it has something to say. This is the difference between
-        // a tool that waits and one that is in the way.
-        .opacity(shellOpacity)
-        .onHover { hovering = $0 }
-        // Motion is now safe: the panel is a fixed oversized window, so nothing
-        // clips mid-animation. A state change is exactly where motion is earned —
-        // this surface changes state six times per dictation, and instant cuts
-        // are what made it read as separate components rather than one object.
-        .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86),
-                   value: state.phase)
-        .animation(reduceMotion ? nil : .spring(response: 0.30, dampingFraction: 0.88),
-                   value: state.expanded)
-        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.82),
-                   value: state.callOffer)
-        .onChange(of: state.phase) { newPhase in
-            if newPhase != .idle { state.expanded = false }
-        }
-    }
-
-    /// Fully present whenever something is happening or the pointer is near;
-    /// quietly out of the way otherwise.
-    private var shellOpacity: Double {
-        if hovering { return 1.0 }
-        if state.phase != .idle { return 1.0 }      // listening, polishing, done, error
-        if state.callOffer || state.meetingRecording { return 1.0 }
-        if state.expanded { return 1.0 }            // you opened it, so you are using it
-        return 0.55
-    }
-
-    /// The single resting state: JUST the mic glyph — no circle chrome. Bigger and
-    /// cleaner, floating over your work. Two soft shadows keep it legible on any
-    /// background (dark or light). It stays warm-white when all's well and tints
-    /// amber only if the server is unreachable — the one status worth a glance.
-    /// Click to reveal controls; auto-expands to the waveform while recording.
-    private var restPill: some View {
-        ZStack {
-            // Built from the SAME dockSurface as every other state. It used to be
-            // a flat fill with a different stroke and a shallower shadow — a
-            // literally different component for the state seen 95% of the time.
-            Image(systemName: "mic.fill")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(state.serverOK ? .vfWarmWhite : .vfAmber)
-                .frame(width: vfShellHeight, height: vfShellHeight)
-                .background(dockSurface)
-        }
-        .overlay(alignment: .topTrailing) {
-            if state.meetingRecording {
-                // Amber, not accent, when the mic is not being picked up: the
-                // recording dot otherwise looks identical whether or not your
-                // voice is being captured.
-                Circle()
-                    .fill(state.meetingMicTrouble ? Color.vfAmber : Color.vfAccent)
-                    .overlay(Circle().stroke(Color.white.opacity(0.6), lineWidth: 1))
-                    .frame(width: 10, height: 10)
-                    .offset(x: 1, y: -1)
-            }
-        }
-        // Visual stays compact; the TARGET is 44pt so it is comfortably hittable.
-        .contentShape(Rectangle())
-        .frame(width: 44, height: 44)
-        .onTapGesture { state.expanded = true }
-    }
-
-    /// A call is happening — offer to record it, once, quietly. One click starts;
-    /// ignoring it lets it fade. It never records on its own, because not every
-    /// call is one you want captured.
-    private var callOfferBar: some View {
-        HStack(spacing: VF.Space.md) {
-            // The calling app's own icon: the offer should feel attached to the
-            // call, not like a notification from somewhere else.
-            if let data = state.callIconPNG, let img = NSImage(data: data) {
-                Image(nsImage: img)
-                    .resizable()
-                    .frame(width: 20, height: 20)
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
-            } else {
-                Circle().fill(VF.Color.accent).frame(width: 8, height: 8)
-            }
-
-            // "Record it?" sat 20pt from a button labelled Record. Deleting it
-            // removes the redundancy AND lets the offer share the one shell
-            // height instead of being the odd one out at 52pt.
-            Text(state.callTitle)
-                .font(VF.Font.callout)
-                .foregroundColor(.vfWarmWhite)
-
-            Button(action: onMeeting) {
-                Text("Record")
-                    .font(VF.Font.caption)
-                    .foregroundColor(.vfSurfaceBottom)
-                    .padding(.horizontal, VF.Space.md)
-                    .padding(.vertical, VF.Space.xs)
-                    .background(Capsule().fill(Color.vfWarmWhite))
-            }
-            .buttonStyle(.plain)
-
-            Button(action: { state.callOffer = false }) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(.vfMuted)
-            }
-            .buttonStyle(.plain)
-            .help("Not this one")
-        }
-        .padding(.horizontal, VF.Space.lg)
-        .frame(height: vfShellHeight)
-        .fixedSize(horizontal: true, vertical: false)
-        .background(dockSurface)
-        // Arrive gently rather than snapping into existence — the one place a
-        // little motion is earned, because something just happened in the world.
-        .transition(.move(edge: .bottom).combined(with: .opacity))
-    }
-
-    // MARK: Main capsule
-
-    private var mainCapsule: some View {
-        phaseContent
-            .padding(.horizontal, 18)
-            .frame(height: vfShellHeight)
-            .fixedSize(horizontal: true, vertical: false)   // hug content — idle stays compact
-            .background(dockSurface)
-            .contentShape(RoundedRectangle(cornerRadius: vfShellRadius, style: .continuous))
-            .onTapGesture {
-                // Click toggles the controls (mic/mode/settings). Recording is
-                // driven by the ⌥ hotkey, which auto-expands the waveform.
-                if state.phase == .idle { state.expanded.toggle() }
-            }
-    }
-
-    private var dockSurface: some View {
-        RoundedRectangle(cornerRadius: vfShellRadius, style: .continuous)
-            .fill(
-                LinearGradient(
-                    colors: [.vfSurfaceTop, .vfSurfaceBottom],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: vfShellRadius, style: .continuous)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
-            )
-            .shadow(color: VF.Shadow.layer3.color, radius: 16, x: 0, y: 8)
-    }
-
-    @ViewBuilder
-    private var phaseContent: some View {
-        switch state.phase {
-        case .done:
-            doneContent
-        case .idle:
-            idleContent
-        case .listening:
-            listeningContent
-        case .transcribing:
-            transcribingContent
-        case .error:
-            errorContent
-        }
-    }
-
-    // MARK: Idle
-
-    private var idleContent: some View {
-        HStack(spacing: 9) {
-            Image(systemName: "mic.fill")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(.vfWarmWhite)
-            Text("Hold \u{2325} to talk")
-                .font(VF.Font.callout)
-                .foregroundColor(.vfWarmWhite.opacity(0.9))
-            Circle()
-                .fill(state.serverOK ? Color.vfGreen : Color.vfAmber)
-                .frame(width: 7, height: 7)
-                .padding(.leading, 2)
-        }
-    }
-
-    /// The moment the product exists for: your words landed. This used to fall
-    /// through to the idle hint, so every successful dictation was celebrated
-    /// with "Hold ⌥ to talk" — an instruction for a beginner, shown to someone
-    /// who had just finished speaking.
-    private var doneContent: some View {
-        HStack(spacing: VF.Space.sm) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.vfGreen)
-            Text(state.lastWordCount > 0
-                 ? "\(state.lastWordCount) words"
-                 : "Inserted")
-                .font(VF.Font.callout)
-                .foregroundColor(.vfWarmWhite)
-        }
-    }
-
-    // MARK: Listening
-
-    private var listeningContent: some View {
-        HStack(spacing: 12) {
-            Circle()
-                .fill(Color.vfAccent)
-                .frame(width: 10, height: 10)
-
-            waveform
-
-            Text(elapsedString)
-                .font(VF.Font.heading.monospacedDigit())
-                // Inter ships proportional figures by default and SwiftUI's
-                // monospacedDigit() is not reliable on a custom face, so 0:11 and
-                // 0:88 render at different widths and the whole dock shifts every
-                // second. A fixed width pins it regardless.
-                .frame(width: 38, alignment: .trailing)
-                .foregroundColor(.vfWarmWhite)
-        }
-    }
-
-    private var waveform: some View {
-        HStack(spacing: 3) {
-            ForEach(0 ..< vfWaveformBarCount, id: \.self) { i in
-                Capsule()
-                    .fill(i == loudestIndex
-                          ? Color.vfAccent
-                          : Color.vfWarmWhite.opacity(0.85))
-                    .frame(width: 2.5, height: barHeight(at: i))
-            }
-        }
-        .frame(height: vfWaveformBarMaxHeight)
-    }
-
-    private func barHeight(at index: Int) -> CGFloat {
-        let history = state.levels
-        let sample = index < history.count ? CGFloat(history[index]) : 0
-        // Envelope keeps it reading as a waveform even in silence; the sample is
-        // what makes it YOUR voice rather than a decoration.
-        let shaped = 0.18 + 0.82 * sample
-        return max(2, vfWaveformEnvelope[index] * vfWaveformBarMaxHeight * shaped)
-    }
-
-    /// The accent follows the loudest bar in the window, so the red is the peak
-    /// of your own voice moving through the dock. It used to sit at fixed
-    /// indices 11 and 12, which made it decoration rather than signal.
-    private var loudestIndex: Int? {
-        let history = state.levels
-        guard let maxV = history.max(), maxV > 0.08 else { return nil }
-        return history.firstIndex(of: maxV)
-    }
-
-    private var elapsedString: String {
-        let total = Int(state.elapsed.rounded(.down))
-        let minutes = total / 60
-        let seconds = total % 60
-        return String(format: "%d:%02d", minutes, seconds)
-    }
-
-    // MARK: Transcribing
-
-    private var transcribingContent: some View {
-        Text("Polishing\u{2026}")
-            .font(VF.Font.body)
-            .foregroundColor(.vfMuted)
-            .opacity(transcribingPulse ? 0.55 : 1.0)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
-                    transcribingPulse = true
+            case .listening:
+                HStack(spacing: 12) {
+                    Circle().fill(VF.Color.accent).frame(width: 8, height: 8).accessibilityHidden(true)
+                    waveform.accessibilityHidden(true)
+                    Text(elapsed(state.elapsed)).monospacedDigit().frame(minWidth: 36)
+                        .accessibilityLabel("Recording, \(Int(state.elapsed)) seconds")
+                    iconAction("stop.fill", label: state.mode == .prompt ? "Stop prompt recording" : "Stop dictation", action: onToggleRecord)
+                }
+            case .transcribing:
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small).accessibilityLabel("Processing recording")
+                    Text(state.mode == .prompt ? "Preparing prompt…" : "Transcribing…")
+                    textAction("Inbox", action: onRecovery)
+                }
+            case .ready:
+                HStack(spacing: 10) {
+                    Image(systemName: "tray.full").accessibilityHidden(true)
+                    Text("Result ready")
+                    textAction("Review", action: onRecovery)
+                    iconAction("xmark", label: "Dismiss status; result remains in Inbox") { state.returnToIdle() }
+                }
+            case .done:
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(VF.Color.healthy(dark: true)).accessibilityHidden(true)
+                    Text(state.lastWordCount > 0 ? "\(state.lastWordCount) words sent" : "Text sent")
+                }.accessibilityElement(children: .combine)
+            case .error:
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.circle.fill").foregroundStyle(VF.Color.attention(dark: true)).accessibilityHidden(true)
+                    Text(state.errorText.isEmpty ? "Recording needs attention" : state.errorText)
+                        .lineLimit(2).frame(maxWidth: 280, alignment: .leading)
+                        .help(state.errorText)
+                    textAction("Inbox", action: onRecovery)
+                    iconAction("xmark", label: "Dismiss status; saved recordings remain in Inbox") { state.returnToIdle() }
                 }
             }
-            // @State survives the view's disappearance, so without this the flag
-            // stays true and every later dictation renders "Polishing..." frozen
-            // at the pulse floor — invisible from the second one onward.
-            .onDisappear { transcribingPulse = false }
-    }
-
-    // MARK: Error
-
-    private var errorContent: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundColor(.vfAccent)
-            // Warm-white, not red: red across a whole capsule is accent-as-
-            // decoration and measured 2.94:1, below AA. The triangle carries the
-            // signal; the words just have to be readable.
-            Text(state.errorText.isEmpty ? "That did not reach the server." : state.errorText)
-                .font(VF.Font.body)
-                .foregroundColor(.vfWarmWhite)
-                .lineLimit(1)
         }
     }
 
-    // MARK: Hover control row
-
-    private var controlRow: some View {
-        HStack(spacing: 12) {
-            micChip
-
-            Rectangle()
-                .fill(Color.white.opacity(0.12))
-                .frame(width: 1, height: 18)
-
-            modeSegment
-
-            // Meeting record/stop. Turns into a red STOP icon while capturing so
-            // it's unmistakable whether a meeting is recording (the button used to
-            // stay identical, giving no start/stop feedback).
-            Button(action: onMeeting) {
-                Image(systemName: state.meetingRecording ? "stop.circle.fill" : "record.circle")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(state.meetingRecording ? .vfAccent : .vfWarmWhite)
-            }
-            .buttonStyle(.plain)
-            .help(state.meetingRecording ? "Stop meeting recording" : "Record a meeting")
-
-            Button(action: onSettings) {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundColor(.vfWarmWhite)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 16)
-        .frame(height: vfShellHeight)
-        .fixedSize(horizontal: true, vertical: false)   // hug content — no label truncation
-        .background(dockSurface)
-    }
-
-    private var micChip: some View {
-        Menu {
-            ForEach(micDevices(), id: \.uid) { device in
-                Button {
-                    onPickMic(device.uid)
-                } label: {
-                    HStack {
-                        Text(device.name)
-                        if device.name == state.micName {
-                            Image(systemName: "checkmark").foregroundColor(.vfAccent)
-                        }
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "mic.fill")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.vfWarmWhite)
-                Text(state.micName)
-                    .font(VF.Font.callout)
-                    .foregroundColor(.vfWarmWhite)
-                    .lineLimit(1)
-                    .frame(maxWidth: 130, alignment: .leading)   // keep the bar compact
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(.vfMuted)
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-    }
-
-    private var modeSegment: some View {
-        HStack(spacing: 2) {
-            modeButton(title: "Dictation", isActive: state.mode == .dictation)
-            modeButton(title: "Prompt", isActive: state.mode == .prompt)
-        }
-        .padding(3)
-        .background(
-            Capsule()
-                .fill(Color.black.opacity(0.25))
-        )
-    }
-
-    private func modeButton(title: String, isActive: Bool) -> some View {
-        Button {
-            if !isActive { onToggleMode() }
-        } label: {
-            Text(title)
-                .font(VF.Font.caption)
-                .foregroundColor(isActive ? .vfSurfaceBottom : .vfMuted)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    Capsule()
-                        .fill(isActive ? Color.vfWarmWhite : Color.clear)
-                )
+    private var restContent: some View {
+        Button { state.expanded = true } label: {
+            HStack(spacing: 10) {
+                Image(systemName: state.mode == .prompt ? "text.bubble" : "mic.fill")
+                    .font(.system(size: 14, weight: .medium))
+                Image(systemName: state.serverOK ? "chevron.up" : "exclamationmark.circle.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(state.serverOK ? ink.opacity(hovering ? 0.9 : 0.5) : VF.Color.attention(dark: true))
+            }.frame(width: 44, height: 28).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Open recording controls, \(state.mode == .prompt ? "Prompt" : "Dictation") mode\(state.serverOK ? "" : ", server unavailable")")
+        .help("\(state.mode == .prompt ? "Prompt" : "Dictation") · click for controls, or hold Right Option to record")
+    }
+
+    private var controls: some View {
+        HStack(spacing: 8) {
+            Button(action: onToggleRecord) {
+                Label("Record", systemImage: "mic.fill").font(VF.Font.caption)
+                    .padding(.horizontal, 10).frame(height: 28)
+                    .background(ink, in: Capsule()).foregroundStyle(VF.Color.canvas(dark: true))
+            }.buttonStyle(.plain).accessibilityLabel("Record \(state.mode == .prompt ? "prompt" : "dictation")")
+            micMenu
+            Rectangle().fill(ink.opacity(0.16)).frame(width: 1, height: 18).padding(.horizontal, 2)
+            modeControls
+            iconAction("person.wave.2", label: "Record meeting", action: onMeeting)
+            iconAction("slider.horizontal.3", label: "Open WhisperType settings", action: onSettings)
+            iconAction("chevron.down", label: "Collapse recording controls") { state.expanded = false }
+        }
+    }
+
+    private var micMenu: some View {
+        Menu {
+            Button("Follow system default") { onPickMic("") }
+            Divider()
+            ForEach(micDevices(), id: \.uid) { device in
+                Button(device.name) { onPickMic(device.uid) }
+            }
+            Divider()
+            Text("Active: \(state.micName)")
+        } label: {
+            Label {
+                Text(state.micName).lineLimit(1).truncationMode(.middle).frame(maxWidth: 115, alignment: .leading)
+            } icon: { Image(systemName: "mic") }
+            .font(VF.Font.caption).frame(height: 28)
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+        .accessibilityLabel("Microphone, \(state.micName)").help("Active microphone: \(state.micName)")
+    }
+
+    private var modeControls: some View {
+        HStack(spacing: 2) {
+            modeButton("Dictation", active: state.mode == .dictation)
+            modeButton("Prompt", active: state.mode == .prompt)
+        }.padding(2).background(Color.black.opacity(0.22), in: Capsule())
+    }
+    private func modeButton(_ title: String, active: Bool) -> some View {
+        Button { if !active { onToggleMode() } } label: {
+            Text(title).font(VF.Font.caption).padding(.horizontal, 9).frame(height: 24)
+                .foregroundStyle(active ? VF.Color.canvas(dark: true) : ink.opacity(0.78))
+                .background(active ? ink : Color.clear, in: Capsule())
+        }.buttonStyle(.plain)
+            .accessibilityLabel("\(title) mode").accessibilityValue(active ? "Selected" : "Not selected")
+    }
+
+    private var meetingContent: some View {
+        HStack(spacing: 10) {
+            Image(systemName: state.meetingMicTrouble ? "exclamationmark.circle.fill" : "record.circle.fill")
+                .foregroundStyle(state.meetingMicTrouble ? VF.Color.attention(dark: true) : VF.Color.accent).accessibilityHidden(true)
+            Text(state.meetingMicTrouble ? "Microphone needs attention" : "Meeting")
+            Text(elapsed(state.meetingElapsed)).monospacedDigit().frame(minWidth: 40)
+            if state.meetingMicTrouble { iconAction("slider.horizontal.3", label: "Check microphone", action: onSettings) }
+            iconAction("stop.fill", label: "Finish meeting recording", action: onMeeting)
+        }.help(state.meetingMicTrouble ? "System audio is still recording. Check microphone input." : "Recording meeting · \(state.micName)")
+    }
+    private var callOfferContent: some View {
+        HStack(spacing: 10) {
+            if let data = state.callIconPNG, let icon = NSImage(data: data) {
+                Image(nsImage: icon).resizable().frame(width: 18, height: 18).accessibilityHidden(true)
+            } else { Image(systemName: "phone").accessibilityHidden(true) }
+            Text(state.callTitle).lineLimit(1).frame(maxWidth: 240)
+            textAction("Record", action: onMeeting)
+            iconAction("xmark", label: "Dismiss meeting offer") { state.callOffer = false }
+        }
+    }
+    private var waveform: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<24, id: \.self) { index in
+                let level = reduceMotion ? state.level : state.levels[index]
+                Capsule().fill(ink.opacity(0.88)).frame(width: 2, height: max(2, CGFloat(level) * 22))
+            }
+        }.frame(width: 94, height: 24)
+    }
+    private func elapsed(_ seconds: TimeInterval) -> String {
+        let value = max(0, Int(seconds))
+        return String(format: "%d:%02d", value / 60, value % 60)
+    }
+    private func textAction(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(VF.Font.caption).padding(.horizontal, 10).frame(height: 28)
+                .background(ink.opacity(0.12), in: Capsule()).contentShape(Capsule())
+        }.buttonStyle(.plain)
+    }
+    private func iconAction(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 12, weight: .medium))
+                .frame(width: 28, height: 28).contentShape(Circle())
+        }.buttonStyle(.plain).accessibilityLabel(label).help(label)
     }
 }

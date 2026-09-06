@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import WhisperTypeKit
 
 /// Converts an arbitrary audio/video recording (m4a, mp3, mp4, mov…) into the
 /// 16 kHz mono 16-bit PCM WAV the server's ASR expects. Used by meeting mode's
@@ -17,30 +18,19 @@ enum MeetingCapture {
 
     static func convertToWav16k(_ url: URL) throws -> Data {
         if let ff = ffmpegPaths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-            if let wav = try? convertViaFfmpeg(url, ffmpeg: ff), wav.count > 44 {
-                return wav
-            }
-            // fall through to AVFoundation if ffmpeg produced nothing usable
+            return try convertViaFfmpeg(url, ffmpeg: ff)
         }
         return try convertViaAVFoundation(url)
     }
 
     /// Resilient decode via ffmpeg → 16 kHz mono s16le WAV on stdout.
     private static func convertViaFfmpeg(_ url: URL, ffmpeg: String) throws -> Data {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: ffmpeg)
-        p.arguments = ["-nostdin", "-v", "error",
-                       "-err_detect", "ignore_err", "-fflags", "+discardcorrupt",
-                       "-i", url.path, "-ac", "1", "-ar", "16000",
-                       "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"]
-        let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
-        // Read the pipe on a background queue so a large output can't deadlock.
-        var data = Data()
-        let g = DispatchGroup(); g.enter()
-        let h = out.fileHandleForReading
-        DispatchQueue.global().async { data = h.readDataToEndOfFile(); g.leave() }
-        try p.run(); p.waitUntilExit(); g.wait()
-        return data
+        let output = try BoundedProcess.run(executable: URL(fileURLWithPath: ffmpeg),
+            arguments: ["-nostdin", "-v", "error", "-xerror", "-i", url.path,
+                        "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"],
+            isCancelled: { Task.isCancelled })
+        guard output.data.count > 44 else { throw ConvertError.noAudioTrack }
+        return output.data
     }
 
     private static func convertViaAVFoundation(_ url: URL) throws -> Data {
@@ -67,9 +57,13 @@ enum MeetingCapture {
         }
 
         var pcm = Data()
+        let deadline = Date().addingTimeInterval(600)
         while let sample = output.copyNextSampleBuffer() {
+            if Task.isCancelled { reader.cancelReading(); throw CancellationError() }
+            if Date() > deadline { reader.cancelReading(); throw URLError(.timedOut) }
             if let block = CMSampleBufferGetDataBuffer(sample) {
                 let len = CMBlockBufferGetDataLength(block)
+                guard pcm.count + len <= 1_024 * 1_024 * 1_024 else { reader.cancelReading(); throw CocoaError(.fileReadTooLarge) }
                 var bytes = [UInt8](repeating: 0, count: len)
                 CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: len, destination: &bytes)
                 pcm.append(contentsOf: bytes)

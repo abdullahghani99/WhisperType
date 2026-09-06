@@ -1,9 +1,56 @@
 import Foundation
 
-/// Talks to the WhisperType server.
+/// Talks to the whispertype server on the server Mac.
 struct ServerClient {
     let baseURL: URL
     let apiKey: String?
+    var session: URLSession = .shared
+
+    /// One authenticated, status-checked boundary for every client operation.
+    private func request(_ original: URLRequest) async throws -> (Data, URLResponse) {
+        var req = original
+        if let key = apiKey, !key.isEmpty {
+            req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard (200..<300).contains(http.statusCode) else {
+            let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"] as? String
+            throw NSError(domain: "whispertype.http", code: http.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey: detail ?? "Server returned HTTP \(http.statusCode). Try again."])
+        }
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw URLError(.cannotParseResponse)
+        }
+        let endpoint = req.url?.lastPathComponent ?? ""
+        func require(_ valid: Bool) throws { if !valid { throw URLError(.cannotParseResponse) } }
+        if req.httpMethod == nil || req.httpMethod == "GET" {
+            switch endpoint {
+            case "health": try require(object["status"] as? String == "ok")
+            case "vocab":
+                try require(object["terms"] is [String] && object["replacements"] is [String: String] && object["snippets"] is [String: String])
+            case "history", "meetings", "suggestions":
+                guard let items = object["items"] as? [[String: Any]] else { throw URLError(.cannotParseResponse) }
+                for item in items {
+                    try require(item["id"] is Int)
+                    if endpoint == "history" { try require(item["polished"] is String || item["corrected"] is String) }
+                    if endpoint == "meetings" { try require(item["status"] is String && item["title"] is String) }
+                    if endpoint == "suggestions" { try require(item["kind"] is String && item["to_val"] is String) }
+                }
+            default:
+                if req.url?.deletingLastPathComponent().lastPathComponent == "meeting" {
+                    try require(object["id"] is Int && object["status"] is String && object["transcript"] is String && object["notes"] is String)
+                }
+            }
+        } else if endpoint == "whispertype" {
+            try require(object["text"] is String && object["raw"] is String)
+        } else if endpoint == "engineer" {
+            try require(object["raw"] is String && object["concise"] is String && object["detailed"] is String && object["coding"] is String)
+        } else if endpoint == "meeting" {
+            try require(object["id"] is Int)
+        }
+        return (data, response)
+    }
 
     struct Result {
         let id: Int?      // history row id — used to teach a correction later
@@ -31,7 +78,7 @@ struct ServerClient {
     func health() async throws -> String {
         var req = URLRequest(url: baseURL.appendingPathComponent("health"))
         req.timeoutInterval = 8
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await request(req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
         return "HTTP \(code): \(String(data: data, encoding: .utf8) ?? "")"
     }
@@ -46,7 +93,7 @@ struct ServerClient {
     func getVocab() async throws -> Vocab {
         var req = URLRequest(url: baseURL.appendingPathComponent("vocab"))
         req.timeoutInterval = 8
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, _) = try await request(req)
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
         return Vocab(
             replacements: obj["replacements"] as? [String: String] ?? [:],
@@ -67,7 +114,7 @@ struct ServerClient {
             "replacements": replacements, "terms": terms, "snippets": snippets,
         ])
         req.timeoutInterval = 10
-        _ = try await URLSession.shared.data(for: req)
+        _ = try await request(req)
     }
 
     /// Fetch recent dictations (polished text) for the menu-bar history list.
@@ -77,7 +124,7 @@ struct ServerClient {
         comps.queryItems = [URLQueryItem(name: "limit", value: String(limit))]
         var req = URLRequest(url: comps.url!)
         req.timeoutInterval = 8
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, _) = try await request(req)
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
         let items = obj["items"] as? [[String: Any]] ?? []
         return items.compactMap { ($0["polished"] as? String) ?? ($0["corrected"] as? String) }
@@ -101,6 +148,7 @@ struct ServerClient {
         let speakers: Int
         let error: String
         let chars: Int
+        var notesStatus: String = "not_requested"
     }
 
     /// Full meeting result.
@@ -111,6 +159,7 @@ struct ServerClient {
         let notes: String
         let speakers: Int
         let error: String
+        var notesStatus: String = "not_requested"
     }
 
     /// Submit a meeting recording for ASYNC processing. Returns the job id
@@ -136,7 +185,7 @@ struct ServerClient {
         body.append(wav)
         add("\r\n--\(boundary)--\r\n")
         req.httpBody = body
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await request(req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw NSError(domain: "whispertype", code: 5,
                           userInfo: [NSLocalizedDescriptionKey: String(data: data, encoding: .utf8) ?? "upload failed"])
@@ -151,7 +200,7 @@ struct ServerClient {
                                   resolvingAgainstBaseURL: false)!
         comps.queryItems = [URLQueryItem(name: "limit", value: String(limit))]
         var req = URLRequest(url: comps.url!); req.timeoutInterval = 10
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, _) = try await request(req)
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
         return (obj["items"] as? [[String: Any]] ?? []).compactMap { d in
             guard let id = d["id"] as? Int else { return nil }
@@ -160,7 +209,8 @@ struct ServerClient {
                                   status: d["status"] as? String ?? "",
                                   speakers: d["speakers"] as? Int ?? 0,
                                   error: d["error"] as? String ?? "",
-                                  chars: d["chars"] as? Int ?? 0)
+                                  chars: d["chars"] as? Int ?? 0,
+                                  notesStatus: d["notes_status"] as? String ?? "not_requested")
         }
     }
 
@@ -168,7 +218,7 @@ struct ServerClient {
     func meeting(id: Int) async throws -> Meeting {
         var req = URLRequest(url: baseURL.appendingPathComponent("meeting/\(id)"))
         req.timeoutInterval = 15
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await request(req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw NSError(domain: "whispertype", code: 6,
                           userInfo: [NSLocalizedDescriptionKey: "fetch failed"])
@@ -179,7 +229,8 @@ struct ServerClient {
                        transcript: obj["transcript"] as? String ?? "",
                        notes: obj["notes"] as? String ?? "",
                        speakers: obj["speakers"] as? Int ?? 0,
-                       error: obj["error"] as? String ?? "")
+                       error: obj["error"] as? String ?? "",
+                       notesStatus: obj["notes_status"] as? String ?? "not_requested")
     }
 
     /// Rename a meeting.
@@ -193,7 +244,7 @@ struct ServerClient {
         req.timeoutInterval = 10
         let enc = title.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? title
         req.httpBody = "title=\(enc)".data(using: .utf8)
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await request(req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw NSError(domain: "whispertype", code: 7,
                           userInfo: [NSLocalizedDescriptionKey: String(data: data, encoding: .utf8) ?? "rename failed"])
@@ -214,7 +265,7 @@ struct ServerClient {
             s.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? s
         }
         req.httpBody = "frm=\(enc(from))&to=\(enc(to))".data(using: .utf8)
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await request(req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw NSError(domain: "whispertype", code: 9,
                           userInfo: [NSLocalizedDescriptionKey:
@@ -230,7 +281,7 @@ struct ServerClient {
             req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
         req.timeoutInterval = 10
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await request(req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw NSError(domain: "whispertype", code: 8,
                           userInfo: [NSLocalizedDescriptionKey: String(data: data, encoding: .utf8) ?? "delete failed"])
@@ -257,7 +308,7 @@ struct ServerClient {
         add("\r\n--\(boundary)--\r\n")
         req.httpBody = body
 
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await request(req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let msg = String(data: data, encoding: .utf8) ?? "unknown"
             throw NSError(domain: "whispertype", code: 4,
@@ -270,7 +321,7 @@ struct ServerClient {
                           coding: obj["coding"] as? String ?? "")
     }
 
-    /// POST the WAV to /WhisperType and return the polished transcript.
+    /// POST the WAV to /whispertype and return the polished transcript.
     func transcribe(wav: Data) async throws -> Result {
         let boundary = "vf-\(UUID().uuidString)"
         var req = URLRequest(url: baseURL.appendingPathComponent("dictate"))
@@ -293,7 +344,7 @@ struct ServerClient {
         // timeout silently drops them. Allow up to 5 minutes.
         req.timeoutInterval = 300
 
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await request(req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let msg = String(data: data, encoding: .utf8) ?? "unknown"
             throw NSError(domain: "whispertype", code: 1,
@@ -315,7 +366,7 @@ struct ServerClient {
         }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         req.timeoutInterval = 15
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await request(req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let msg = String(data: data, encoding: .utf8) ?? "unknown"
             throw NSError(domain: "whispertype", code: 3,
@@ -338,7 +389,7 @@ struct ServerClient {
         comps.queryItems = [URLQueryItem(name: "limit", value: String(limit))]
         var req = URLRequest(url: comps.url!)
         req.timeoutInterval = 10
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, _) = try await request(req)
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
         let items = obj["items"] as? [[String: Any]] ?? []
         return items.compactMap { d in
@@ -359,4 +410,37 @@ struct ServerClient {
     func dismissSuggestion(id: Int) async throws {
         try await postJSON("suggestions/dismiss", ["id": id])
     }
+    struct HistoryItem: Identifiable {
+        let id: Int
+        let timestamp: String
+        let text: String
+    }
+    func historyItems(limit: Int = 500) async throws -> [HistoryItem] {
+        var components = URLComponents(url: baseURL.appendingPathComponent("history"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "limit", value: String(limit))]
+        let (data, _) = try await request(URLRequest(url: components.url!))
+        let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        return (object["items"] as! [[String: Any]]).map {
+            HistoryItem(id: $0["id"] as! Int, timestamp: $0["ts"] as? String ?? "",
+                        text: $0["polished"] as? String ?? $0["corrected"] as? String ?? "")
+        }
+    }
+    func removeVocab(kind: String, key: String, value: String) async throws {
+        try await postJSON("vocab/remove", ["kind": kind, "key": key, "value": value])
+    }
+    func undoSuggestion(id: Int) async throws { try await postJSON("suggestions/undo", ["id": id]) }
+    func retryMeeting(id: Int) async throws { try await postJSON("meeting/\(id)/retry", [:]) }
+    func restoreVocab(kind: String, key: String, value: String) async throws {
+        var req = URLRequest(url: baseURL.appendingPathComponent("vocab/restore"))
+        req.httpMethod = "POST"; req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["kind": kind, "key": key, "value": value])
+        _ = try await request(req)
+    }
+
+    func deleteHistory(id: Int) async throws {
+        var req = URLRequest(url: baseURL.appendingPathComponent("history/\(id)"))
+        req.httpMethod = "DELETE"; req.timeoutInterval = 10
+        _ = try await request(req)
+    }
+
 }

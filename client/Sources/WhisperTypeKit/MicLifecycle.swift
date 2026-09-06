@@ -34,6 +34,7 @@ public final class MicLifecycle {
     }
 
     private var phase: Phase = .idle
+    private var sessionGeneration = 0
     /// Identifies the engine a tap belongs to. A callback carrying a stale
     /// generation must do nothing at all.
     private var tapGeneration = 0
@@ -62,6 +63,8 @@ public final class MicLifecycle {
     }
 
     public var currentPhase: Phase { locked { phase } }
+    public var sessionID: Int { locked { sessionGeneration } }
+    public func isCurrentSession(_ id: Int) -> Bool { locked { sessionGeneration == id && (phase == .starting || phase == .recording) } }
 
     // MARK: meeting lifecycle
 
@@ -71,6 +74,7 @@ public final class MicLifecycle {
     public func requestStart() -> StartDecision {
         locked {
             guard phase == .idle else { return .busy(phase) }
+            sessionGeneration &+= 1
             phase = .starting
             recoveries = 0          // per MEETING: left cumulative, a later
             gaveUp = false          // meeting gave up without ever trying
@@ -84,14 +88,20 @@ public final class MicLifecycle {
 
     /// A start that failed before capture began returns the machine to idle.
     public func abandonStart() {
-        locked { if phase == .starting { phase = .idle } }
+        locked {
+            if phase == .starting {
+                phase = .idle; attemptInFlight = false
+                attemptToken &+= 1; tapGeneration &+= 1
+            }
+        }
     }
 
     /// Claim the right to stop. Returns false when there is nothing to stop, or a
     /// stop is already running.
     public func requestStop() -> Bool {
         locked {
-            guard phase == .recording else { return false }
+            guard phase == .recording || phase == .starting else { return false }
+            sessionGeneration &+= 1
             phase = .stopping
             // Invalidate BOTH: silencing taps is not enough, because an attempt
             // wedged in engine start would still publish its engine afterwards
@@ -113,6 +123,15 @@ public final class MicLifecycle {
 
     public func newTapGeneration() -> Int {
         locked { tapGeneration &+= 1; return tapGeneration }
+    }
+
+    /// A stale candidate must not invalidate a replacement's live tap.
+    public func newTapGeneration(forAttempt token: Int) -> Int? {
+        locked {
+            guard token == attemptToken, phase == .starting || phase == .recording else { return nil }
+            tapGeneration &+= 1
+            return tapGeneration
+        }
     }
 
     /// Called from the real-time audio thread for every buffer.
@@ -150,6 +169,25 @@ public final class MicLifecycle {
     /// overwrite the shared converter and probe counter on its way to the check.
     public func isCurrentAttempt(_ token: Int) -> Bool {
         locked { token == attemptToken && (phase == .starting || phase == .recording) }
+    }
+
+    /// Atomic publication boundary: stop/watchdog cannot invalidate between a
+    /// successful ownership check and the caller publishing its local engine.
+    public func publishAttempt(_ token: Int, _ publish: () -> Void) -> Bool {
+        locked {
+            guard token == attemptToken, phase == .starting || phase == .recording else { return false }
+            publish()
+            return true
+        }
+    }
+
+    /// Detach first, then the caller performs potentially blocking HAL teardown.
+    public func detachEngine<T>(attempt token: Int? = nil, _ detach: () -> T) -> T? {
+        locked {
+            if let token = token, token != attemptToken { return nil }
+            tapGeneration &+= 1
+            return detach()
+        }
     }
 
     /// Has the in-flight attempt hung? Abandoning it frees the slot and moves the

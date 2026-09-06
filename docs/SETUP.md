@@ -1,65 +1,57 @@
-# WhisperType — Setup
+# WhisperType setup
 
-## 0. Prerequisites
-- An **Apple-Silicon Mac** to act as the server (M1/M2/M3…), macOS 13+, ~16 GB RAM+.
-- Python 3.12 and Swift (Xcode command-line tools) on the machines you build on.
-- Optional: [Tailscale](https://tailscale.com/) so clients can reach the server from anywhere.
+Use an Apple Silicon Mac for the model server, Python 3.13, and macOS 13 or later. Build the client and optional insertion agent with the Xcode command-line tools. Model memory needs depend on which transcription, prompt and polishing models you enable; allow room for all models that run together.
 
-## 1. Server (runs the models)
-```bash
+## Server
+
+Create a fresh environment on the model Mac:
+
+```sh
 cd server
-python3.12 -m venv .venv
-.venv/bin/pip install -r requirements-lock.txt
-.venv/bin/python -m uvicorn server:app --host 0.0.0.0 --port 8790
+python3.13 -m venv .venv
+.venv/bin/python -m pip install -r requirements-lock.txt
+.venv/bin/python -m pip check
+.venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8790
 ```
-- First run downloads Whisper Large V3 + Qwen2.5-7B (~8 GB) and warms them in memory.
-- Check it: `curl http://localhost:8790/health`
 
-### Keep it always-warm (launchd)
-Create `~/Library/LaunchAgents/app.whispertype.server.plist` pointing at
-`.venv/bin/python -m uvicorn server:app --host 0.0.0.0 --port 8790` with
-`RunAtLoad` + `KeepAlive` true, then `launchctl load` it. (A template is easy to
-adapt from Apple's launchd docs.)
+The first run needs access to download the configured models. The client must use a reachable address if the server runs on a different Mac; choose the bind address and private network deliberately. Configure `VF_API_KEY` to require authentication on all data routes. An unset key keeps the server open within its network boundary. `/health` reports model readiness.
 
-## 2. Client (menu-bar app)
-```bash
+For speaker separation, create a second environment from `requirements-diarize-lock.txt`. Set `VF_DIARIZE_PY` to its Python executable and `VF_DIARIZE_SCRIPT` to `server/diarize.py`. The pyannote model may require accepting its model license and supplying your Hugging Face token for the initial download. Audio processing then runs on your server. Keep tokens out of source control.
+
+For a persistent service, `scripts/deploy_server.py --host user@server` stages the full source and both locked environments. It preserves existing configuration. `--activate` is an explicit service change; staging alone does not replace a running server. See [Operations](OPERATIONS.md) for rollback and environment overrides.
+
+## Client
+
+```sh
 cd client
-./build_app.sh          # builds WhisperType.app (ad-hoc signed by default)
+./build_app.sh
 open WhisperType.app
 ```
-- Grant **Microphone** (prompted) and **Accessibility** (System Settings ▸
-  Privacy & Security ▸ Accessibility), then **relaunch** — Accessibility only
-  takes effect on relaunch.
-- Point it at your server if it's not local:
-  ```bash
-  VF_SERVER_URL=http://<server-tailscale-ip>:8790 open WhisperType.app
-  ```
-- **Dictate:** hold **Right-Option** and speak, or set a **mouse-button toggle**
-  from the menu (click to start, click to stop).
 
-> Tip: ad-hoc signing means macOS may ask you to re-grant Accessibility after a
-> rebuild. To make it stick, sign `WhisperType.app` with an Apple Development
-> certificate (build_app.sh auto-detects one) or a self-signed cert.
+For installation and login startup, use `./install.sh`. To configure another server without exposing a key in command arguments, create a private JSON file containing `VF_SERVER_URL` and, when needed, `VF_API_KEY`, then pass `./install.sh --environment /path/to/client-environment.json`. Use file permissions `0600`; unspecified existing settings survive an upgrade. The file contains string-valued environment variables, not app preferences.
 
-## 3. Remote agent (optional — for Screen Sharing / VNC)  {#remote-agent}
-Synthetic modifier keys can't cross the Screen Sharing boundary, so to dictate
-into a Mac you're screen-sharing *into*, run the tiny agent **on that Mac**:
-```bash
-# on the target Mac
-cd remote-agent
-swift build -c release
-# wrap .build/release/vfinsert in a .app bundle + LaunchAgent, grant it
-# Accessibility, and it will listen on :8791
-```
-Then on the client set:
-```bash
-VF_REMOTE_AGENT_URL=http://<target-mac-ip>:8791
-```
-The client auto-detects when Screen Sharing is frontmost and routes the
-transcript to the agent, which types it locally on the far Mac (modifiers work).
+Grant Microphone and Accessibility from the app's Microphone page. Meeting system audio additionally needs Screen Recording permission. Return to the app after granting access; relaunch is not required for the permission recheck. Ad-hoc builds may need a fresh grant after rebuilding; a stable signing identity avoids changing the app's designated identity.
 
-## 4. Teaching it your vocabulary
-Open the app's **Settings ▸ Dictionary**:
-- **Corrections**: `heard → correct` (e.g. a name Whisper mishears).
-- **Terms**: names/jargon it should spell right (biased into Whisper itself).
-Changes apply instantly — no restart.
+Open Capture or click the compact pill to record into Inbox. To place dictation in another application, focus its text field, hold Right Option, wait for Listening, speak, and release. The destination is checked before typing. A changed destination or uncertain insertion keeps the result in Inbox. Prompt mode offers three editable variants before insertion. Import a recording from Capture or the menu to process existing audio/video.
+
+## Remote insertion
+
+The insertion agent runs on the Mac you are controlling through Screen Sharing. Stage it with `remote-agent/deploy_agent.py --host user@destination`; provide a stable unlocked identity with `--sign` when available. Before activation, configure a private environment JSON containing `VF_AGENT_KEY` (at least 32 bytes), `VF_AGENT_HOST` (a reachable private interface), and optionally `VF_AGENT_PORT` (default 8791). Missing pairing configuration rejects activation or insertion.
+
+The client needs three matching settings in its own environment JSON:
+
+- `VF_REMOTE_AGENT_URL`: the agent's reachable address and port.
+- `VF_REMOTE_AGENT_KEY`: the same pairing key.
+- `VF_REMOTE_WINDOW_MATCH`: text identifying the intended Screen Sharing window.
+
+Grant Accessibility to the agent on that Mac and focus an editable field there before recording. The agent prepares the target before capture, checks it again before insertion, and saves a receipt before sending keys. It does not fall back to typing blindly into a different local or remote window.
+
+## Dictionary, recovery and removal
+
+Dictionary contains corrections, terms, and snippets. Learning suggestions require approval; removal and learning actions offer conflict-aware undo. History and Inbox explain where each result is stored. Recordings survive processing errors and can be retried. An unsaved edit remains open if the disk write fails.
+
+`client/install.sh --uninstall` removes the app and login item while retaining user recordings, preferences and server data. See [Operations](OPERATIONS.md) for the separate deletion and backup boundaries.
+
+## Verify a checkout
+
+Build the client and remote agent, run the `vf-tests` executable, then run the server reliability/learning tests, transport checks and agent protocol checks. The UI preview uses synthetic data and requires an active console for keyboard interaction. Physical microphones, Screen Recording, VoiceOver and real destination typing require the relevant permissions; a build or screenshot does not prove those paths.

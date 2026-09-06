@@ -37,8 +37,13 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     /// work, dropping buffers — which this code would then read as the very stall
     /// it exists to detect.
     private var lockPrimitive = os_unfair_lock_s()
-    private var systemPCM = Data()   // 16 kHz mono int16
-    private var micPCM = Data()
+    private var journal: MeetingAudioJournal?
+    private var systemCount: Int { journal?.count(.system) ?? 0 }
+    private var micCount: Int { journal?.count(.microphone) ?? 0 }
+    private(set) var savedRecordingURL: URL?
+    var journalDirectory: URL? { journal?.directory }
+    var onCaptureFailure: ((String) -> Void)?
+    var isStarting: Bool { life.currentPhase == .starting }
     /// True only when the mic proved it delivers samples. The caller warns the
     /// user when this is false — silently recording half a meeting is not OK.
     private(set) var micLive = false
@@ -87,7 +92,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func log(_ s: String) {
         let line = "\(ISO8601DateFormatter().string(from: Date())) [meeting] \(s)\n"
-        if let h = FileHandle(forWritingAtPath: "/tmp/whispertype-client.log") {
+        if let h = FileHandle(forWritingAtPath: ProcessInfo.processInfo.environment["VF_LOG_PATH"] ?? "/tmp/whispertype-client.log") {
             h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile()
         }
     }
@@ -98,6 +103,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     @discardableResult
     func start() async throws -> Bool {
         guard case .start = life.requestStart() else { return false }
+        let session = life.sessionID
         // A throw below must leave NOTHING running. Returning the state machine to
         // idle was not enough: startMic happens before the ScreenCaptureKit setup,
         // so a throw there left a live engine and tap behind while the app
@@ -105,15 +111,19 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         // built a competing engine over the orphan.
         var began = false
         defer {
-            if !began {
+            if !began && life.isCurrentSession(session) {
                 tearDownMic()
                 if let s = stream { Task { try? await s.stopCapture() } }
-                stream = nil
+                setStream(nil)
                 life.abandonStart()
             }
         }
-        systemPCM = Data(); systemPCM.reserveCapacity(3_840_000)
-        micPCM = Data(); micPCM.reserveCapacity(3_840_000)
+        journal = try MeetingAudioJournal(parent: RecordingStore.recordingsDirectory())
+        savedRecordingURL = nil
+        journal?.onFailure = { [weak self] error in
+            guard let self = self, self.life.isCurrentSession(session) else { return }
+            self.onCaptureFailure?("Recording storage failed: \(error.localizedDescription). Saved fragments are retained.")
+        }
         // Per MEETING, not per launch. Left cumulative, three recoveries in one
         // meeting meant every later meeting gave up without trying at all.
         micStalled = false
@@ -123,6 +133,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         // --- system audio via ScreenCaptureKit ---
         let content = try await SCShareableContent.excludingDesktopWindows(false,
                                                                            onScreenWindowsOnly: false)
+        guard life.isCurrentSession(session) else { throw CancellationError() }
         guard let display = content.displays.first else {
             throw NSError(domain: "whispertype", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "no display for capture"])
@@ -139,17 +150,44 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         // Bring the MIC up first: its liveness probe takes time, and if system
         // capture were already running that delay would become a permanent
         // offset between the two tracks.
-        startMic()
+        // Arm before entering any HAL call; a native startup may never return.
+        let initialToken = life.beginAttempt(at: Date().timeIntervalSince1970)
+        if let token = initialToken {
+            _ = life.publishAttempt(token) { micHealth = MicHealth(startedAt: Date().timeIntervalSince1970) }
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let once = MeetingStartCompletion()
+            micQ.async { [weak self] in
+                guard let self = self, self.life.isCurrentSession(session) else {
+                    once.run { continuation.resume() }; return
+                }
+                if let token = initialToken {
+                    self.startMic(reservedToken: token)
+                    self.life.endAttempt(token)
+                }
+                once.run { continuation.resume() }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8.1) { [weak self] in
+                if let self = self, self.life.isCurrentSession(session),
+                   self.life.abandonIfWedged(at: Date().timeIntervalSince1970) {
+                    self.micQ = DispatchQueue(label: "vf.meeting.mic")
+                }
+                once.run { continuation.resume() }
+            }
+        }
+        guard life.isCurrentSession(session) else { throw CancellationError() }
 
         let s = SCStream(filter: filter, configuration: cfg, delegate: self)
         try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: sysQ)
         try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: sysQ)  // ignored; SCK wants it
         try await s.startCapture()
-        stream = s
+        guard life.isCurrentSession(session) else {
+            try? await s.stopCapture(); throw CancellationError()
+        }
+        setStream(s)
 
         // Both streams are live now — discard probe/preroll audio and start the
         // clock for both tracks at the same instant.
-        resetBuffersForCapture()
         life.markRecording()
         began = true
         startMicWatchdog()
@@ -165,34 +203,17 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
 
-    /// Clear both tracks and reserve their capacity, under the lock.
-    ///
-    /// Deliberately NOT inline in `start()`. `os_unfair_lock` must be locked and
-    /// unlocked on the same thread, and an async function can resume on a
-    /// different one — so the compiler refuses it there ("unavailable from
-    /// asynchronous contexts") and Swift 6 makes it an error. There was no
-    /// `await` between the lock and unlock, so it was safe in practice, but
-    /// "safe as long as nobody adds an await" is not a property worth relying on.
-    /// A synchronous helper makes suspension impossible by construction.
-    private func resetBuffersForCapture() {
-        os_unfair_lock_lock(&lockPrimitive)
-        // ~2 minutes each (16kHz mono int16). Enough to absorb the early growth
-        // that would otherwise reallocate while an audio callback holds the lock,
-        // without reserving 76MB up front on a machine that has memory pressure.
-        // Longer meetings grow amortised, as they always did.
-        systemPCM = Data(); systemPCM.reserveCapacity(3_840_000)
-        micPCM = Data(); micPCM.reserveCapacity(3_840_000)
-        os_unfair_lock_unlock(&lockPrimitive)
-    }
-
     func stop() async -> Data {
         // requestStop invalidates taps AND in-flight publications, so a recovery
         // wedged in AVAudioEngine.start() cannot hand us an engine afterwards.
         guard life.requestStop() else { return Data() }
         defer { life.finishStop() }
         micWatchdog?.invalidate(); micWatchdog = nil
-        try? await stream?.stopCapture()
-        stream = nil
+        // Invalidate publication before asking ScreenCaptureKit to stop. Its
+        // completion can stall; it must not postpone microphone release or the
+        // final durable journal. Late callbacks cannot append after requestStop.
+        if let previous = stream { Task { try? await previous.stopCapture() } }
+        setStream(nil)
         // Do NOT wait for an in-flight recovery. AVAudioEngine.start() can wedge
         // on a Bluetooth transition -- AudioRecorder abandons a whole queue over
         // exactly this -- and micQ.sync would then never return, stranding the
@@ -202,23 +223,23 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         // AVAudioEngine.start() would still PUBLISH its engine after stop, leaving
         // a mic running past the end of the meeting and interfering with the next
         // one. Moving the start token invalidates that publication too.
-        tearDownMic()
+        tearDownMic(waitForHardware: false)
         // Streams are stopped now, so no callback can be appending — safe to read
         // without the lock (which isn't allowed from this async context anyway).
-        let sys = systemPCM, mic = micPCM
+        let sysBytes = systemCount, micBytes = micCount
         // Report COVERAGE and SIGNAL, not just byte counts. "mic 17833984B" read
         // as success for a meeting that captured none of the user's voice; bytes
         // were never the question.
-        let secs = Double(sys.count) / 32_000.0                 // 16kHz mono int16
-        let micSecs = Double(mic.count) / 32_000.0
+        let secs = Double(sysBytes) / 32_000.0                 // 16kHz mono int16
+        let micSecs = Double(micBytes) / 32_000.0
         // Coverage must measure DELIVERED audio, not the silence we padded in to
         // hold alignment -- otherwise a dead microphone reports 100%.
-        let coverage = MicLifecycle.coveragePercent(systemBytes: sys.count,
-                                                    micBytes: mic.count,
+        let coverage = MicLifecycle.coveragePercent(systemBytes: sysBytes,
+                                                    micBytes: micBytes,
                                                     paddedBytes: micPaddedBytes)
         let carried = micHealth?.everCarriedAudio ?? false
-        log("recording stopped (system \(sys.count)B / \(String(format: "%.0f", secs))s, " +
-            "mic \(mic.count)B / \(String(format: "%.0f", micSecs))s = \(coverage)% coverage, " +
+        log("recording stopped (system \(sysBytes)B / \(String(format: "%.0f", secs))s, " +
+            "mic \(micBytes)B / \(String(format: "%.0f", micSecs))s = \(coverage)% coverage, " +
             "mic carried audio: \(carried ? "YES" : "NO"))")
         if micLive && (coverage < 60 || !carried) {
             log("mic: WARNING — the microphone track is incomplete; the human should be told")
@@ -228,7 +249,17 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                     : "Your microphone captured NO audio in that meeting.")
             }
         }
-        return wav(from: mix(sys, mic))
+        do {
+            guard let journal = journal else { return Data() }
+            let data = try journal.finish()
+            savedRecordingURL = journal.wavURL
+            return data
+        } catch {
+            DispatchQueue.main.async { [weak self] in
+                self?.onCaptureFailure?("Could not finish recording: \(error.localizedDescription). Recover the saved fragments from Recordings.")
+            }
+            return Data()
+        }
     }
 
     // MARK: system audio callback
@@ -263,13 +294,26 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         } else {
             pcm = Data(bytes: data, count: Int(abl.mBuffers.mDataByteSize))
         }
-        if life.isCapturing {
-            os_unfair_lock_lock(&lockPrimitive); systemPCM.append(pcm); os_unfair_lock_unlock(&lockPrimitive)
-        }
+        os_unfair_lock_lock(&lockPrimitive)
+        if life.isCapturing && stream === self.stream { journal?.append(pcm, to: .system) }
+        os_unfair_lock_unlock(&lockPrimitive)
+    }
+
+    private func setStream(_ value: SCStream?) {
+        os_unfair_lock_lock(&lockPrimitive); stream = value; os_unfair_lock_unlock(&lockPrimitive)
+    }
+    private func ownsStream(_ value: SCStream) -> Bool {
+        os_unfair_lock_lock(&lockPrimitive); defer { os_unfair_lock_unlock(&lockPrimitive) }
+        return stream === value && life.isCapturing
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         log("stream stopped with error: \(error)")
+        guard ownsStream(stream) else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.ownsStream(stream) else { return }
+            self.onCaptureFailure?("System audio stopped: \(error.localizedDescription). Finishing the recoverable recording.")
+        }
     }
 
     // MARK: mic
@@ -290,13 +334,17 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     /// EXC_BAD_ACCESS before, and that listener fires on exactly the device
     /// changes this recovery path exists to handle. Bumping the generation first
     /// makes any in-flight callback a no-op before it can touch replaced state.
-    private func tearDownMic() {
-        life.invalidateTap()
-        guard let e = micEngine else { micConverter = nil; return }
-        micEngine = nil
-        e.stop()
-        e.inputNode.removeTap(onBus: 0)
-        micConverter = nil
+    private func tearDownMic(attempt: Int? = nil, waitForHardware: Bool = true) {
+        let detached: AVAudioEngine?? = life.detachEngine(attempt: attempt) {
+            let old = micEngine
+            micEngine = nil; micConverter = nil
+            return old
+        }
+        if let wrapped = detached, let old = wrapped {
+            let stop = { old.stop(); old.inputNode.removeTap(onBus: 0) }
+            if waitForHardware { stop() }
+            else { DispatchQueue.global(qos: .utility).async(execute: stop) }
+        }
     }
 
     /// `reservedToken` is passed when recovery already reserved the attempt slot;
@@ -315,7 +363,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         // ONE function-level defer. Placed inside the else branch it fired at the
         // end of that branch, releasing the slot it had just claimed.
         defer { if ownsSlot { life.endAttempt(myToken) } }
-        micLive = false
+        guard life.publishAttempt(myToken, { micLive = false }) else { return }
         for dev in AudioDevices.preferredInputs() {
             // Check FIRST, every iteration. An abandoned attempt used to run on
             // and overwrite micConverter, pendingHealth and the probe counter, and
@@ -337,9 +385,9 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                   let conv = AVAudioConverter(from: inFormat, to: out16k) else {
                 log("mic: skip \(dev.name) (invalid format)"); continue
             }
-            micConverter = conv
+            guard life.isCurrentAttempt(myToken) else { e.stop(); return }
             let probe = ProbeCounter()            // one per candidate, not shared
-            let gen = life.newTapGeneration()
+            guard let gen = life.newTapGeneration(forAttempt: myToken) else { e.stop(); return }
             let health = MicHealth(startedAt: Date().timeIntervalSince1970)
             // Read the fault-injection flag ONCE, here, not on the audio thread.
             let fakeStall = Self.stallSimulationEnabled()
@@ -348,7 +396,6 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 probe.add(Int(buf.frameLength))
                 self.appendMic(buf, gen: gen, conv: conv, health: health, fakeStall: fakeStall)
             }
-            pendingHealth = health
             do { e.prepare(); try e.start() }
             catch {
                 log("mic: skip \(dev.name) (engine start failed: \(error))")
@@ -365,35 +412,31 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             let got = probe.value
             if got == 0 || got <= firstWindow {
                 log("mic: skip \(dev.name) (\(got == 0 ? "delivered NO samples" : "stalled after \(got) frames"))")
-                AudioDevices.markSilent(uid: dev.uid)
-                e.stop(); input.removeTap(onBus: 0); micConverter = nil
+                if life.isCurrentAttempt(myToken) { AudioDevices.markSilent(uid: dev.uid) }
+                e.stop(); input.removeTap(onBus: 0)
                 continue
             }
 
-            // A superseded attempt must not publish its engine over a newer one.
-            if !life.isCurrentAttempt(myToken) {
-                log("mic: discarding \(dev.name) — this attempt was superseded")
-                e.stop(); input.removeTap(onBus: 0)
-                return
+            let accepted = life.publishAttempt(myToken) {
+                micEngine = e; micConverter = conv
+                micLive = true; micStalled = false
+                micName = dev.name; lastMicUID = dev.uid; micHealth = health
+            }
+            guard accepted else {
+                e.stop(); input.removeTap(onBus: 0); return
             }
             AudioDevices.markWorking(uid: dev.uid)
-            micEngine = e
-            micLive = true
-            micStalled = false
-            micName = dev.name
-            lastMicUID = dev.uid
-            micHealth = pendingHealth
             log("mic: capturing from \(dev.name) (\(got) frames in probe)")
             return
         }
-        micEngine = nil
-        micConverter = nil
-        lastMicUID = ""
+        guard life.publishAttempt(myToken, {
+            micEngine = nil; micConverter = nil; lastMicUID = ""
+            micHealth = MicHealth(startedAt: Date().timeIntervalSince1970)
+        }) else { return }
         // Arm the clock anyway. Previously micHealth stayed nil when nothing was
         // accepted, so the watchdog returned early and NEVER retried -- a
         // Bluetooth headset that was two seconds from being ready was lost for
         // the whole meeting.
-        micHealth = MicHealth(startedAt: Date().timeIntervalSince1970)
         log("mic: NO working input device — this meeting will record OTHER participants only")
     }
 
@@ -418,10 +461,10 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // earlier and land over the wrong system audio.
             os_unfair_lock_lock(&self.lockPrimitive)
             if self.life.isCapturing {
-                let pad = MicLifecycle.padBytes(systemCount: self.systemPCM.count,
-                                                micCount: self.micPCM.count,
+                let pad = MicLifecycle.padBytes(systemCount: self.systemCount,
+                                                micCount: self.micCount,
                                                 minPad: Self.minPadBytes)
-                if pad > 0 { self.micPCM.append(Data(count: pad)); self.micPaddedBytes += pad }
+                if pad > 0 { self.journal?.append(Data(count: pad), to: .microphone); self.micPaddedBytes += pad }
             }
             os_unfair_lock_unlock(&self.lockPrimitive)
 
@@ -482,8 +525,8 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 // gap between the two let later ticks spend the whole retry budget
                 // while this closure was still queued.
                 defer { self.life.endAttempt(token) }
-                guard self.isRecording else { return }
-                self.tearDownMic()
+                guard self.isRecording, self.life.isCurrentAttempt(token) else { return }
+                self.tearDownMic(attempt: token)
                 self.startMic(reservedToken: token)
             }
         }
@@ -546,52 +589,23 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // earlier and lay it over the wrong system audio. System capture runs
             // continuously, so it is the clock: pad the mic with silence up to it
             // before appending. Cheap, and it self-heals every gap.
-            let gap = systemPCM.count - micPCM.count
+            let gap = systemCount - micCount
             if gap >= Self.minPadBytes {
-                micPCM.append(Data(count: gap))
+                journal?.append(Data(count: gap), to: .microphone)
                 micPaddedBytes += gap          // excluded from coverage, like the timer's
             }
-            micPCM.append(d)
+            journal?.append(d, to: .microphone)
         }
         os_unfair_lock_unlock(&lockPrimitive)
     }
 
-    // MARK: mix + wav
-    /// Sum two 16 kHz mono int16 streams sample-wise (clip), pad the shorter.
-    /// Writes into ONE preallocated buffer — must stay fast for long meetings.
-    /// (The previous per-sample allocating loop effectively hung on ~40M-sample
-    /// recordings, so a 44-min meeting never reached the upload step.)
-    private func mix(_ a: Data, _ b: Data) -> Data {
-        let na = a.count / 2, nb = b.count / 2, n = max(na, nb)
-        if n == 0 { return Data() }
-        var out = [Int16](repeating: 0, count: n)
-        out.withUnsafeMutableBufferPointer { o in
-            a.withUnsafeBytes { (pa: UnsafeRawBufferPointer) in
-                b.withUnsafeBytes { (pb: UnsafeRawBufferPointer) in
-                    let sa = pa.bindMemory(to: Int16.self)
-                    let sb = pb.bindMemory(to: Int16.self)
-                    for i in 0..<n {
-                        let va = i < na ? Int32(sa[i]) : 0
-                        let vb = i < nb ? Int32(sb[i]) : 0
-                        o[i] = Int16(max(-32768, min(32767, va + vb)))
-                    }
-                }
-            }
-        }
-        return out.withUnsafeBytes { Data($0) }
-    }
+ }
 
-    private func wav(from pcm: Data) -> Data {
-        let sr: UInt32 = 16_000, ch: UInt16 = 1, bits: UInt16 = 16
-        let byteRate = sr * UInt32(ch) * UInt32(bits / 8)
-        let blockAlign = ch * (bits / 8)
-        let dataLen = UInt32(pcm.count)
-        var d = Data()
-        func str(_ s: String) { d.append(s.data(using: .ascii)!) }
-        func u32(_ v: UInt32) { var x = v.littleEndian; d.append(Data(bytes: &x, count: 4)) }
-        func u16(_ v: UInt16) { var x = v.littleEndian; d.append(Data(bytes: &x, count: 2)) }
-        str("RIFF"); u32(36 + dataLen); str("WAVE"); str("fmt "); u32(16); u16(1); u16(ch)
-        u32(sr); u32(byteRate); u16(blockAlign); u16(bits); str("data"); u32(dataLen); d.append(pcm)
-        return d
+private final class MeetingStartCompletion {
+    private let lock = NSLock()
+    private var completed = false
+    func run(_ body: () -> Void) {
+        lock.lock(); let first = !completed; completed = true; lock.unlock()
+        if first { body() }
     }
 }

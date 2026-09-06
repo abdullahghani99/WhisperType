@@ -48,13 +48,14 @@ find "$BIN_DIR" -name "*.bundle" -maxdepth 1 -print0 2>/dev/null | while IFS= re
   find "$b" -name "Inter-*.ttf" -exec cp {} "$APP/Contents/Resources/" \; 2>/dev/null || true
 done
 [ -d Sources/WhisperType/Resources ] && cp Sources/WhisperType/Resources/Inter-*.ttf "$APP/Contents/Resources/" 2>/dev/null || true
+cp Sources/WhisperType/Resources/Inter-OFL.txt "$APP/Contents/Resources/Inter-OFL.txt"
 
 # Prefer a stable, trusted identity so TCC (Accessibility/Microphone) grants
 # persist across rebuilds. Order: Apple Development > self-signed "WhisperType
 # Dev" > ad-hoc. Ad-hoc changes identity every build and loses permissions.
-IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | grep 'Apple Development' | head -1 | awk '{print $2}')"
+IDENTITY="${VF_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development/ { print $2; exit }' || true)}"
 if [ -z "$IDENTITY" ]; then
-    IDENTITY="$(security find-identity -v 2>/dev/null | grep 'WhisperType Dev' | head -1 | awk '{print $2}')"
+    IDENTITY="$(security find-identity -v 2>/dev/null | awk '/WhisperType Dev/ { print $2; exit }' || true)"
 fi
 SIGN="${IDENTITY:--}"   # fall back to ad-hoc "-" if nothing found
 
@@ -68,8 +69,9 @@ codesign --force --deep --sign "$SIGN" \
   <key>com.apple.security.device.audio-input</key><true/>
 </dict></plist>
 EOF
-) "$APP" 2>&1 | tail -2 || codesign --force --deep --sign "$SIGN" "$APP"
+) "$APP"
+codesign --verify --strict "$APP"
 
 echo "==> done: $(pwd)/$APP  (signed: ${IDENTITY:-ad-hoc})"
 echo "First run: grant Microphone (prompted) and Accessibility"
-echo "(System Settings > Privacy & Security > Accessibility), then relaunch."
+echo "(Microphone settings in the app), then return to WhisperType."

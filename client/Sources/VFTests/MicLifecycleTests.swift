@@ -34,7 +34,7 @@ final class MicLifecycleTests: XCTestCase {
         let l = MicLifecycle()
         XCTAssertFalse(l.requestStop())
         _ = l.requestStart()
-        XCTAssertFalse(l.requestStop(), "a meeting still coming up has nothing to stop")
+        XCTAssertTrue(l.requestStop(), "cancel must invalidate an in-flight startup")
     }
 
     func testAFailedStartReturnsToIdleRatherThanWedgingTheMachine() {

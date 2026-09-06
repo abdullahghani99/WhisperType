@@ -32,7 +32,7 @@ final class DesignSystemTests: XCTestCase {
         XCTAssertEqual(VF.sentenceCase("Transfer Pricing Audit Review"),
                        "Transfer pricing audit review")
         // All-caps tokens are acronyms and must survive.
-        XCTAssertEqual(VF.sentenceCase("VAT And ISO Review"), "VAT and ISO review")
+        XCTAssertEqual(VF.sentenceCase("VAT And ERP42 Review"), "VAT and ERP42 review")
         XCTAssertEqual(VF.sentenceCase(""), "")
     }
 

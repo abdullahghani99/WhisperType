@@ -13,6 +13,43 @@ final class RecoveryTests: XCTestCase {
         XCTAssertFalse(entry.sentUnverified)
     }
 
+    func testCompletedSendLeavesInboxWithoutDeletingRecovery() {
+        temporary { directory in
+            var entry = try RecordingStore.create(wav: Data([3,4,5]), kind: "dictation", directory: directory)
+            entry.text = "The draft is ready."; entry.status = "sent_unverified"; entry.sendCompleted = true
+            try RecordingStore.save(entry, directory: directory)
+            let saved = try RecordingStore.entries(directory: directory)[0]
+            XCTAssertFalse(saved.needsAttention)
+            XCTAssertTrue(saved.belongsInSentHistory)
+            XCTAssertEqual(saved.status, "sent_unverified")
+            XCTAssertEqual(saved.text, entry.text)
+            XCTAssertEqual(try Data(contentsOf: RecordingStore.audioURL(entry.id, directory: directory)), Data([3,4,5]))
+        }
+    }
+
+    func testLegacyCompletedReceiptAndInterruptedSendRouteDifferently() {
+        var entry = RecordingStore.Entry(kind: "dictation"); entry.text = "Saved text"
+        entry.status = "ready"; entry.error = "Keys were sent; receipt unavailable"
+        XCTAssertTrue(entry.belongsInSentHistory); XCTAssertFalse(entry.needsAttention)
+        entry.status = "sent_unverified"; entry.error = "Client restarted before insertion verification finished."
+        XCTAssertFalse(entry.belongsInSentHistory); XCTAssertTrue(entry.needsAttention)
+        entry.status = "ready"; entry.error = "Destination changed while typing. Some text may have been sent."
+        XCTAssertFalse(entry.belongsInSentHistory); XCTAssertTrue(entry.needsAttention)
+        entry.status = "inserted"; XCTAssertFalse(entry.needsAttention)
+    }
+
+    func testPendingFailedEmptyAndEditedResultsRemainActionable() {
+        var entry = RecordingStore.Entry(kind: "dictation")
+        XCTAssertTrue(entry.needsAttention)
+        entry.status = "processing"; XCTAssertTrue(entry.needsAttention)
+        entry.status = "ready"; entry.text = "Saved text"; entry.error = "Destination changed"
+        XCTAssertTrue(entry.needsAttention); XCTAssertFalse(entry.belongsInSentHistory)
+        entry.status = "sent_unverified"; entry.sendCompleted = true; entry.text = ""
+        XCTAssertTrue(entry.needsAttention)
+        entry.text = "Edited text"; entry.status = "ready"; entry.sendCompleted = false
+        XCTAssertTrue(entry.needsAttention); XCTAssertFalse(entry.belongsInSentHistory)
+    }
+
     func testEmptySuccessfulResponseCannotBePresentedAsReady() {
         var entry = RecordingStore.Entry(kind: "dictation")
         entry.status = "ready"; entry.error = "Result ready. Review it in Inbox to choose placement."

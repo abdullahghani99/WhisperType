@@ -104,6 +104,9 @@ func probeDockAccessibility() {
  print("COMPLETE: background accessibility comparison, no audio or foreground window")
 }
 func runReview() {
+ if ProcessInfo.processInfo.environment["VF_UI_HISTORY_BACKGROUND"] == "1" {
+  testSentHistoryRouting(); print("COMPLETE: background sent-history state and view checks"); exit(0)
+ }
  if ProcessInfo.processInfo.environment["VF_UI_DOCK_BACKGROUND"] == "1" {
   testNativeDockInteraction();print("COMPLETE: background native pill checks; no foreground helper or microphone");exit(0)
  }

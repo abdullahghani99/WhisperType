@@ -49,6 +49,7 @@ final class SettingsState: ObservableObject {
     @Published var screenPermission = "Not checked"
     @Published var historyItems: [ServerClient.HistoryItem] = []
     @Published var recoveryEntries: [RecordingStore.Entry] = []
+    @Published var sentEntries: [RecordingStore.Entry] = []
     @Published var interruptedMeetings: [URL] = []
     @Published var undoSuggestionID: Int?
     @Published var removedVocab: (kind: String, key: String, value: String)?
@@ -75,9 +76,10 @@ final class SettingsState: ObservableObject {
     }
     func reloadRecovery() {
         do {
-            let saved = try RecordingStore.entries().filter { $0.status != "inserted" }
+            let saved = try RecordingStore.entries()
             let unsavedIDs = Set(unsavedRecordings.map(\.id))
-            recoveryEntries = (unsavedRecordings + saved.filter { !unsavedIDs.contains($0.id) }).sorted { $0.created > $1.created }
+            recoveryEntries = (unsavedRecordings + saved.filter { $0.needsAttention && !unsavedIDs.contains($0.id) }).sorted { $0.created > $1.created }
+            sentEntries = saved.filter { $0.belongsInSentHistory && !unsavedIDs.contains($0.id) }
             let root = RecordingStore.recordingsDirectory()
             interruptedMeetings = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil))?
                 .filter { $0.lastPathComponent.hasPrefix("capture-") && $0 != activeJournal } ?? []
@@ -495,13 +497,17 @@ struct HistoryTab: View {
     @State private var deleteID: Int?
     @Environment(\.colorScheme) private var scheme
     private var dark: Bool { scheme == .dark }
-    private var history: [ServerClient.HistoryItem] { state.historyItems.filter { search.isEmpty || $0.text.localizedCaseInsensitiveContains(search) } }
+    private var sent: [RecordingStore.Entry] { state.sentEntries.filter { search.isEmpty || $0.text.localizedCaseInsensitiveContains(search) } }
+    private var history: [ServerClient.HistoryItem] {
+        let sentIDs = Set(state.sentEntries.compactMap(\.historyID))
+        return state.historyItems.filter { !sentIDs.contains($0.id) && (search.isEmpty || $0.text.localizedCaseInsensitiveContains(search)) }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: VF.Space.sm) {
                     Text(onlyRecovery ? "Inbox" : "Dictation history").font(VF.Font.display).tracking(VF.Tracking.display)
-                    Text(onlyRecovery ? "Review a result or pick up where a recording stopped." : "Find something you said. Copy it, or remove it from server history.")
+                    Text(onlyRecovery ? "Review a result or pick up where a recording stopped." : "Find something you said, including sent text kept safely on this Mac.")
                         .font(VF.Font.callout).foregroundStyle(VF.Color.muted(dark: dark))
                 }
                 Spacer()
@@ -539,7 +545,11 @@ struct HistoryTab: View {
                             Divider()
                         }
                     } else {
-                        if history.isEmpty { empty(search.isEmpty ? "Your dictations will be here." : "No matching dictations.", detail: search.isEmpty ? "Completed dictations are stored on your configured server." : "Try a different word or phrase.", symbol: "text.magnifyingglass") }
+                        ForEach(sent) { entry in
+                            sentRow(entry).padding(.vertical, VF.Space.xl)
+                            Divider()
+                        }
+                        if history.isEmpty && sent.isEmpty { empty(search.isEmpty ? "Your dictations will be here." : "No matching dictations.", detail: search.isEmpty ? "Completed dictations are stored on your configured server." : "Try a different word or phrase.", symbol: "text.magnifyingglass") }
                         ForEach(history) { item in
                             VStack(alignment: .leading, spacing: VF.Space.md) {
                                 HStack {
@@ -560,7 +570,7 @@ struct HistoryTab: View {
             if !state.status.isEmpty {
                 Text(state.status).font(VF.Font.callout).textSelection(.enabled).padding(.top, VF.Space.md)
             }
-            Text(onlyRecovery ? "Saved on this Mac until sent or removed. Server history and backups are separate." : "Deleting server history also removes its stored audio. Existing backups are separate.")
+            Text(onlyRecovery ? "Saved on this Mac until resolved or removed. Completed sends are in History." : "Sent text may also retain a local recording. Local removal, server deletion and backups are separate.")
                 .font(VF.Font.caption).foregroundStyle(VF.Color.muted(dark: dark)).padding(.top, VF.Space.lg)
         }
         .foregroundStyle(VF.Color.ink(dark: dark)).padding(VF.Space.xxl)
@@ -574,6 +584,30 @@ struct HistoryTab: View {
             Button("Delete", role: .destructive) { if let id = deleteID { state.deleteHistory(id) }; deleteID = nil }
             Button("Cancel", role: .cancel) { deleteID = nil }
         } message: { Text("This permanently removes the dictation and its audio from server history. Backups are separate.") }
+    }
+    private func sentRow(_ entry: RecordingStore.Entry) -> some View {
+        VStack(alignment: .leading, spacing: VF.Space.md) {
+            HStack {
+                Text(entry.created.formatted(date: .abbreviated, time: .shortened)).font(VF.Font.caption)
+                Spacer()
+                Button("Copy") { copy(entry.text) }.buttonStyle(.plain)
+                Menu {
+                    Text("Sent · unverified")
+                    Button("Review sent text") { state.onReviewRecording?(entry.id) }
+                    Button("Open saved audio") { NSWorkspace.shared.open(RecordingStore.audioURL(entry.id)) }
+                        .disabled(!FileManager.default.fileExists(atPath: RecordingStore.audioURL(entry.id).path))
+                    Button("Confirm placement and release saved audio") { state.onConfirmPlacement?(entry.id) }
+                    Divider()
+                    Button("Remove local recording…", role: .destructive) { discard = entry }
+                    if let id = entry.historyID { Button("Delete from server history…", role: .destructive) { deleteID = id } }
+                } label: { Image(systemName: "ellipsis").frame(width: 24, height: 24) }
+                    .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("Sent recording options")
+            }.foregroundStyle(VF.Color.muted(dark: dark))
+            Text(entry.text).font(VF.Font.body).lineSpacing(5).textSelection(.enabled)
+            Label("Sent · unverified", systemImage: "paperplane")
+                .font(VF.Font.caption).foregroundStyle(VF.Color.muted(dark: dark))
+                .help("Typing finished, but the app did not provide an exact receipt. Audio and text are kept here; no action is required.")
+        }
     }
     private func recoveryRow(_ entry: RecordingStore.Entry) -> some View {
         VStack(alignment: .leading, spacing: VF.Space.md) {

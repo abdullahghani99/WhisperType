@@ -10,7 +10,7 @@ func testNativeDockInteraction() {
     let dock = DockController(defaults: dockReviewDefaults)
     var records = 0
     dock.onToggleRecord = { records += 1 }
-    dock.state.micName = "Synthetic microphone"; dock.show()
+    dock.state.micName = "Requested: Alex’s AirPods Pro"; dock.show()
     defer { dock.hide(); dock.panel?.close() }
     pumpPreviewEvents(until: Date().addingTimeInterval(0.25))
     guard let panel = dock.panel, let host = dock.hosting, let screen = NSScreen.main else { previewFailure("Missing native pill") }
@@ -52,6 +52,7 @@ func testNativeDockInteraction() {
     let gripPoint = panel.convertPoint(toScreen: grip.convert(CGPoint(x:grip.bounds.midX,y:grip.bounds.midY),to:nil))
     drag(from: gripPoint, to: CGPoint(x:frame.minX+6,y:frame.midY))
     previewCheck(dock.state.expanded && dock.state.placementEdge == .left && records == 0, "Expanded grip must move without triggering controls")
+    previewCheck(host.fittingSize.width <= host.bounds.width, "Expanded exact-label controls must fit the native controller window")
     let left = center().x - host.fittingSize.width/2 + 16 + 14
     click(CGPoint(x:left+12+8+36,y:center().y))
     previewCheck(records == 1 && dock.state.expanded, "Actual Record pointer click must remain a single control action")
@@ -63,7 +64,7 @@ func testNativeDockInteraction() {
     let selected = PillPlacement(store: dockReviewDefaults)
     previewCheck(selected.preferredDisplay != nil && selected.choice(for:selected.preferredDisplay!)?.edge == .left)
     let savedCenter = center(); dock.hide()
-    let restored = DockController(defaults:dockReviewDefaults, reduceMotion:{ true }); restored.state.micName="Synthetic microphone";restored.show()
+    let restored = DockController(defaults:dockReviewDefaults, reduceMotion:{ true }); restored.state.micName="Requested: Alex’s AirPods Pro";restored.show()
     pumpPreviewEvents(until:Date().addingTimeInterval(0.3))
     previewCheck(restored.state.placementEdge == .left, "Relaunch must retain edge")
     previewCheck(abs((restored.panel?.frame.midX ?? 0)-savedCenter.x)<1, "Relaunch must retain visible position")

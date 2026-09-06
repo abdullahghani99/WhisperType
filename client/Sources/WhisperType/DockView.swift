@@ -46,7 +46,13 @@ public struct DockView: View {
             if !compact {
                 dragSurface(label: "Move pill") { state.collapsePresentation() }
                     .frame(width: 12, height: 24)
-                    .overlay(Image(systemName: "circle.grid.2x3.fill").font(.system(size: 10)).foregroundStyle(muted).allowsHitTesting(false))
+                    .overlay {
+                        VStack(spacing: 2) {
+                            ForEach(0..<3) { _ in
+                                HStack(spacing: 2) { Circle().frame(width: 2, height: 2); Circle().frame(width: 2, height: 2) }
+                            }
+                        }.foregroundStyle(muted).allowsHitTesting(false).accessibilityHidden(true)
+                    }
             }
             content
         }
@@ -186,15 +192,17 @@ public struct DockView: View {
                 Button(device.name) { onPickMic(device.uid) }
             }
             Divider()
-            Text("Active: \(state.micName)")
+            Text(state.micName)
         } label: {
             Label {
-                Text(state.micName).lineLimit(1).truncationMode(.middle).frame(maxWidth: 115, alignment: .leading)
+                Text(state.micName).lineLimit(1).truncationMode(.tail)
             } icon: { Image(systemName: "mic") }
             .font(VF.Font.caption).frame(height: 28)
         }
-        .menuStyle(.borderlessButton).fixedSize()
-        .accessibilityLabel("Microphone, \(state.micName)").help("Active microphone: \(state.micName)")
+        // Native Menu sizes its title independently of modifiers on label Text.
+        // Constrain the control itself so long device/status names truncate.
+        .menuStyle(.borderlessButton).frame(width: 150)
+        .accessibilityLabel("Microphone, \(state.micName)").help("Microphone: \(state.micName)")
     }
 
     private var modeControls: some View {

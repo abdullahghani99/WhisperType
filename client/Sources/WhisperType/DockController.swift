@@ -215,15 +215,8 @@ final class DockController {
         if key != lastShape { lastShape = key; resizeToFit() }
     }
 
-    /// Size the panel to the dock's current intrinsic content, anchored so the
-    /// bottom-center stays put as it grows/shrinks. No-op when the size is
-    /// unchanged, so rapid level updates during recording don't churn setFrame.
-    /// Keep the panel at a FIXED, generous size and let the dock animate inside
-    /// it. Previously the panel was snapped to `fittingSize` on every state
-    /// change, which is why size animation had to be disabled: SwiftUI was
-    /// animating inside a window that had already jumped to its final bounds, so
-    /// the content clipped. Nothing here resizes any more — only the capsule
-    /// inside changes width, and it can do so smoothly.
+    /// Reserve a stable animation canvas, with enough room for intrinsic content
+    /// and its shadow padding. The visible capsule stays anchored at its center.
     private var capsuleSize: CGSize {
         hosting?.layoutSubtreeIfNeeded()
         let fit = hosting?.fittingSize ?? CGSize(width: 76, height: 56)
@@ -235,8 +228,11 @@ final class DockController {
         if let anchor { moveCenter(anchor) }
     }
     private func moveCenter(_ center: CGPoint) {
-        let target = CGRect(x: center.x - Self.panelSize.width / 2, y: center.y - Self.panelSize.height / 2,
-                            width: Self.panelSize.width, height: Self.panelSize.height)
+        let fit = hosting?.fittingSize ?? Self.panelSize
+        let size = NSSize(width: max(Self.panelSize.width, fit.width),
+                          height: max(Self.panelSize.height, fit.height))
+        let target = CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2,
+                            width: size.width, height: size.height)
         if panel?.frame != target { panel?.setFrame(target, display: true) }
     }
     static let panelSize = NSSize(width: 620, height: 104)

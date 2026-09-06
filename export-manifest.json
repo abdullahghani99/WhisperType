@@ -56,7 +56,7 @@
     "client/install.py": "8b32d039a643c78bf780eaa918f8a66320f8e7bbff76021727af4855f32de21b",
     "client/install.sh": "b0eac912091959ded919901abcdc3efa20552760e69ab8358e62b542ecf735d9",
     "docs/OPERATIONS.md": "65128c46d1a09519ef4bc065642a344b17da75e4dba46f2ced0a9c4b052195aa",
-    "docs/SETUP.md": "d5e4745b177086fa8eb0ea5452e6437b59171b23882687bdf3c1f3999400ece2",
+    "docs/SETUP.md": "5052209d6fa0dbe71481cd8becdc3da036dc1320e845a1a35bcf2db669cce524",
     "remote-agent/Package.swift": "ba75109e10980531850f84dbfc097c2159489eff727561a6ddcd1b68d48d0058",
     "remote-agent/Sources/vfinsert/AgentProtocol.swift": "188d292bea7548735020182a99c9b5354565221cec92a50e9d4f1b91870861ab",
     "remote-agent/Sources/vfinsert/CaptureDestination.swift": "b1e711b6fadd1af392d86336d56127b352fc55f5f1e0b15e6515e88aba3ac07f",

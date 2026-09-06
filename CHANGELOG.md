@@ -10,7 +10,7 @@
 - Use a 44×24-point translucent idle pill with background-click and automatic collapse, retained result/error indicators and reduced idle Dock polling.
 - Only the compact idle pill is translucent; controls, recovery and call offers use opaque surfaces. Meter history updates at 10 Hz with gentle attack/release smoothing.
 - Surface call offers over retained result/error status and diagnose placement failures without logging field content.
-- Include native CoreMedia conversion regression coverage alongside 93 Swift tests and 299 assertions.
+- Include native CoreMedia conversion regression coverage alongside 94 Swift tests and 303 assertions.
 
 ## 0.5.0 — 2026-09-06
 

@@ -55,3 +55,13 @@ Dictionary contains corrections, terms, and snippets. Learning suggestions requi
 ## Verify a checkout
 
 Build the client and remote agent, run the `vf-tests` executable, then run the server reliability/learning tests, transport checks and agent protocol checks. The UI preview uses synthetic data and requires an active console for keyboard interaction. Physical microphones, Screen Recording, VoiceOver and real destination typing require the relevant permissions; a build or screenshot does not prove those paths.
+
+### Persistent pairing and limited accessibility receipts
+
+The client also reads `~/Library/Application Support/WhisperType/RemotePairing.json` with the same `VF_REMOTE_AGENT_URL`, `VF_REMOTE_AGENT_KEY` and `VF_REMOTE_WINDOW_MATCH` keys. Environment values take precedence. Keep the file mode 0600 and do not commit it. With the intended Screen Sharing window focused, the signed client's `--diagnose-destination --save-remote-window-match` command saves that window's identity without typing or recording.
+
+An existing authenticated SSH connection can forward a local loopback port to the paired Mac's loopback-only agent. For a persistent tunnel use a separate login item with `ssh -NT`, `ExitOnForwardFailure=yes`, keepalive options and an explicit loopback forwarding address. Keep the agent pairing key enabled even through the tunnel. Verify health through the client endpoint and check that unauthenticated insertion is rejected before use. The paired Mac must be unlocked and the agent's actual signed app must have Accessibility permission.
+
+The `--diagnose-destination` support command reports permission, process identity and focused roles without field text or window titles. It may request the target application's accessibility tree. Chromium/Electron can expose that tree on demand: see [Chromium accessibility](https://www.chromium.org/developers/design-documents/accessibility/) and [Electron accessibility](https://github.com/electron/electron/blob/main/docs/tutorial/accessibility.md).
+
+Some editors and terminals accept typing but cannot expose an exact plain-text receipt. Those entries are marked sent but unverified and are never automatically repeated. Check the destination, then use **It’s in place** to acknowledge successful placement, or review the retained text carefully before choosing another insertion.

@@ -268,11 +268,11 @@ final class DockController {
         var frame = Self.safeFrame(screen)
         guard probeScreenID == Self.screenID(screen) else { return frame }
         switch cachedProbe {
-        case .top(let top) where choice.edge == .bottom || choice.edge == .free:
+        case .top(let top) where choice.edge == .bottom:
             let bottom = max(frame.minY, top + 10); frame.size.height = max(1, frame.maxY - bottom); frame.origin.y = bottom
-        case .left(let right) where choice.edge == .left || choice.edge == .free:
+        case .left(let right) where choice.edge == .left:
             let left = max(frame.minX, right + 10); frame.size.width = max(1, frame.maxX - left); frame.origin.x = left
-        case .right(let left) where choice.edge == .right || choice.edge == .free:
+        case .right(let left) where choice.edge == .right:
             frame.size.width = max(1, min(frame.maxX, left - 10) - frame.minX)
         case .blind where choice.edge == .bottom:
             let bottom = max(frame.minY, screen.frame.minY + Self.blindInset(for: screen)); frame.size.height = max(1, frame.maxY - bottom); frame.origin.y = bottom
@@ -281,8 +281,7 @@ final class DockController {
         return frame
     }
     private func targetCenter(on screen: NSScreen) -> CGPoint {
-        let base = Self.safeFrame(screen)
-        let point = PillGeometry.center(edge: choice.edge, size: capsuleSize, in: choice.edge == .free ? base : availableFrame(on: screen), x: choice.x, y: choice.y)
+        let point = PillGeometry.center(edge: choice.edge, size: capsuleSize, in: availableFrame(on: screen))
         return PillGeometry.clamp(point, size: capsuleSize, in: availableFrame(on: screen))
     }
     /// The chosen display stays put when the pointer moves to another display.
@@ -294,13 +293,13 @@ final class DockController {
         let id = Self.screenID(screen)
         guard lastScreenID != id else { return }
         lastScreenID = id
-        if let saved = placement.choice(for: id) { choice = saved }
+        if let saved = placement.choice(for: id, in: Self.safeFrame(screen)) { choice = saved }
         else if let old = DockPlacement(store: defaults).position(forScreen: Self.legacyScreenID(screen)), screen.frame.contains(CGPoint(x: old.x, y: old.y)) {
-            let point = PillGeometry.normalized(CGPoint(x: old.x, y: old.y + 18), in: Self.safeFrame(screen))
-            choice = .init(edge: .free, x: point.x, y: point.y); placement.remember(choice, display: id)
+            let point = CGPoint(x: old.x, y: old.y + 18)
+            choice = .init(edge: PillGeometry.nearestEdge(to: point, in: Self.safeFrame(screen))); placement.remember(choice, display: id)
         } else if let raw = defaults.string(forKey: Self.originDefaultsKey), screen.frame.contains(NSPointFromString(raw)), NSPointFromString(raw) != .zero {
-            let old = NSPointFromString(raw); let point = PillGeometry.normalized(CGPoint(x: old.x, y: old.y + 18), in: Self.safeFrame(screen))
-            choice = .init(edge: .free, x: point.x, y: point.y); placement.remember(choice, display: id)
+            let old = NSPointFromString(raw); let point = CGPoint(x: old.x, y: old.y + 18)
+            choice = .init(edge: PillGeometry.nearestEdge(to: point, in: Self.safeFrame(screen))); placement.remember(choice, display: id)
         } else { choice = .init() }
         state.placementEdge = choice.edge; cachedProbe = .away; probeScreenID = nil
         resizeToFit()
@@ -326,25 +325,23 @@ final class DockController {
             dragScreen = screen
             let center = CGPoint(x: dragOrigin.x + point.x - dragStart.x, y: dragOrigin.y + point.y - dragStart.y)
             anchor = center; moveCenter(center)
-            previewEdge = choice.edge == .free ? .free : PillGeometry.nearestEdge(to: point, in: Self.safeFrame(screen), previous: previewEdge)
-            let target = previewEdge == .free ? PillGeometry.clamp(center, size: capsuleSize, in: Self.safeFrame(screen)) : PillGeometry.center(edge: previewEdge ?? .bottom, size: capsuleSize, in: Self.safeFrame(screen))
+            previewEdge = PillGeometry.nearestEdge(to: point, in: Self.safeFrame(screen))
+            let target = PillGeometry.center(edge: previewEdge ?? .bottom, size: capsuleSize, in: Self.safeFrame(screen))
             showPreview(at: target)
         case .ended(let point, let velocity):
             guard isDragging else { return }
             handleDrag(.moved(point)); isDragging = false; previewPanel?.orderOut(nil)
             guard let screen = dragScreen ?? selectedScreen() else { return }
             lastScreenID = Self.screenID(screen)
-            let normalized = PillGeometry.normalized(anchor ?? point, in: Self.safeFrame(screen))
-            choice = .init(edge: previewEdge ?? .bottom, x: normalized.x, y: normalized.y)
+            choice = .init(edge: PillGeometry.nearestEdge(to: point, in: Self.safeFrame(screen)))
             placement.remember(choice, display: Self.screenID(screen)); state.placementEdge = choice.edge
             vlog("pill placed: edge=\(choice.edge.rawValue)")
             settle(to: targetCenter(on: screen), velocity: velocity); scheduleCollapse()
         }
     }
     private func choosePosition(_ edge: PillEdge) {
-        guard let screen = selectedScreen(), let panel else { return }
-        let normalized = PillGeometry.normalized(CGPoint(x: panel.frame.midX, y: panel.frame.midY), in: Self.safeFrame(screen))
-        choice = .init(edge: edge, x: normalized.x, y: normalized.y)
+        guard let screen = selectedScreen() else { return }
+        choice = .init(edge: edge)
         placement.remember(choice, display: Self.screenID(screen)); state.placementEdge = edge
         settle(to: targetCenter(on: screen), velocity: .zero)
     }

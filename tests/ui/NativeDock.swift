@@ -7,6 +7,14 @@ let dockReviewDefaults = UserDefaults(suiteName: dockReviewSuite)!
 func testNativeDockInteraction() {
     guard activePreview || ProcessInfo.processInfo.environment["VF_UI_DOCK_BACKGROUND"] == "1" else { return }
     defer { dockReviewDefaults.removePersistentDomain(forName: dockReviewSuite) }
+    guard let initialScreen = NSScreen.main,
+          let number = initialScreen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+          let uuid = CGDisplayCreateUUIDFromDisplayID(number.uint32Value)?.takeRetainedValue() else { previewFailure("Display identity unavailable") }
+    let displayID = CFUUIDCreateString(nil, uuid) as String
+    do {
+        let legacy: [String: Any] = ["display": displayID, "choices": [displayID: ["edge": "free", "x": 0.99, "y": 0.2]]]
+        dockReviewDefaults.set(try JSONSerialization.data(withJSONObject: legacy), forKey: PillPlacement.key)
+    } catch { previewFailure("Could not seed legacy placement") }
     let dock = DockController(defaults: dockReviewDefaults)
     var records = 0
     dock.onToggleRecord = { records += 1 }
@@ -14,6 +22,7 @@ func testNativeDockInteraction() {
     defer { dock.hide(); dock.panel?.close() }
     pumpPreviewEvents(until: Date().addingTimeInterval(0.25))
     guard let panel = dock.panel, let host = dock.hosting, let screen = NSScreen.main else { previewFailure("Missing native pill") }
+    previewCheck(dock.state.placementEdge == .right, "Native launch must migrate free position on its saved display")
     var timestamp = ProcessInfo.processInfo.systemUptime
     func send(_ type: NSEvent.EventType, _ point: CGPoint) {
         timestamp += 0.02
@@ -35,6 +44,12 @@ func testNativeDockInteraction() {
     previewCheck(host.hitTest(NSPoint(x: 2, y: 2)) == nil, "Transparent margin must pass through")
     previewCheck(host.hitTest(NSPoint(x: host.bounds.midX, y: host.bounds.midY)) != nil)
     let frame = screen.visibleFrame
+    func checkCentred(_ panel: NSPanel, _ host: NSView, _ edge: PillEdge) {
+        let point = CGPoint(x: panel.frame.midX, y: panel.frame.midY)
+        let axis = edge == .top || edge == .bottom ? abs(point.x-frame.midX) : abs(point.y-frame.midY)
+        previewCheck(axis < 0.6, "Pill must be centred along \(edge), drift \(axis)")
+        previewCheck(host.fittingSize.width <= host.bounds.width, "State must fit host")
+    }
     let positions: [(PillEdge, CGPoint)] = [(.left, CGPoint(x: frame.minX + 6, y: frame.midY)), (.right, CGPoint(x: frame.maxX - 6, y: frame.midY)),
                                            (.top, CGPoint(x: frame.midX, y: frame.maxY - 6)), (.bottom, CGPoint(x: frame.midX, y: frame.minY + 6))]
     for (edge, target) in positions {
@@ -44,6 +59,12 @@ func testNativeDockInteraction() {
         let fit = host.fittingSize; let size = CGSize(width: fit.width - 32, height: fit.height - 32)
         let body = CGRect(x: center().x-size.width/2, y: center().y-size.height/2, width: size.width, height: size.height)
         previewCheck(frame.contains(body), "Visible capsule must remain on screen at \(edge)")
+        checkCentred(panel, host, edge)
+        dock.state.expanded = true; pumpPreviewEvents(until: Date().addingTimeInterval(0.3)); checkCentred(panel, host, edge)
+        dock.state.begin(); pumpPreviewEvents(until: Date().addingTimeInterval(0.3)); checkCentred(panel, host, edge)
+        dock.state.returnToIdle(); dock.state.callOffer = true; dock.state.callTitle = "Synthetic call"
+        pumpPreviewEvents(until: Date().addingTimeInterval(0.3)); checkCentred(panel, host, edge)
+        dock.state.callOffer = false; dock.state.expanded = false; pumpPreviewEvents(until: Date().addingTimeInterval(0.3))
     }
     let compact = center(); send(.leftMouseDown, compact); send(.leftMouseDragged, CGPoint(x: compact.x+1,y:compact.y+1)); send(.leftMouseUp,compact)
     pumpPreviewEvents(until:Date().addingTimeInterval(0.35))
@@ -79,14 +100,21 @@ func testNativeDockInteraction() {
     pumpPreviewEvents(until:Date().addingTimeInterval(0.2))
     guard let compactSurface = surfaces(host).first(where: { $0.accessibilityLabel()?.hasPrefix("Open recording") == true }) else { previewFailure("Compact drag target missing") }
     let menuEvent = NSEvent.mouseEvent(with:.rightMouseDown,location:panel.convertPoint(fromScreen:center()),modifierFlags:[],timestamp:timestamp,windowNumber:panel.windowNumber,context:nil,eventNumber:3,clickCount:1,pressure:1)!
-    guard let item = compactSurface.menu(for:menuEvent)?.items.last, let action=item.action else { previewFailure("Free placement menu missing") }
-    previewCheck(app.sendAction(action,to:item.target,from:item),"Position menu action must dispatch")
-    pumpPreviewEvents(until:Date().addingTimeInterval(1.35))
-    let freeTarget=CGPoint(x:frame.minX+frame.width*0.36,y:frame.minY+frame.height*0.63)
-    drag(from:center(),to:freeTarget)
-    previewCheck(dock.state.placementEdge == .free && hypot(center().x-freeTarget.x,center().y-freeTarget.y)<1,"Free placement must track the actual release point")
+    guard let menu = compactSurface.menu(for: menuEvent) else { previewFailure("Position menu missing") }
+    previewCheck(menu.items.map { $0.title } == ["Top", "Bottom", "Left", "Right"], "Exactly four centred positions must be offered")
+    for (item, edge) in zip(menu.items, [PillEdge.top, .bottom, .left, .right]) {
+        guard let action = item.action else { previewFailure("Position menu action missing") }
+        previewCheck(app.sendAction(action, to: item.target, from: item), "Position action must dispatch")
+        pumpPreviewEvents(until: Date().addingTimeInterval(1.35)); checkCentred(panel, host, edge)
+    }
+    let release = CGPoint(x: frame.minX+frame.width*0.36, y: frame.minY+frame.height*0.83)
+    drag(from: center(), to: release)
+    previewCheck(dock.state.placementEdge == .top, "Interior release must snap to nearest edge")
+    checkCentred(panel, host, .top)
     dock.state.expanded=true;pumpPreviewEvents(until:Date().addingTimeInterval(0.3));dock.state.expanded=false;pumpPreviewEvents(until:Date().addingTimeInterval(0.3))
-    previewCheck(hypot(center().x-freeTarget.x,center().y-freeTarget.y)<1,"State changes must not reset manual placement")
+    checkCentred(panel, host, .top)
+    NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    pumpPreviewEvents(until: Date().addingTimeInterval(0.3)); checkCentred(panel, host, .top)
     dock.state.begin(); pumpPreviewEvents(until:Date().addingTimeInterval(0.3))
     guard let liveGrip = surfaces(host).first(where: { $0.accessibilityLabel() == "Move pill" }) else { previewFailure("Active-state grip missing") }
     let livePoint = panel.convertPoint(toScreen:liveGrip.convert(CGPoint(x:liveGrip.bounds.midX,y:liveGrip.bounds.midY),to:nil))
@@ -97,5 +125,5 @@ func testNativeDockInteraction() {
     dock.state.callOffer=false;dock.state.returnToIdle();pumpPreviewEvents(until:Date().addingTimeInterval(0.3))
     previewCheck(panel.collectionBehavior.contains(.canJoinAllSpaces) && panel.collectionBehavior.contains(.fullScreenAuxiliary))
     previewCheck(host.fittingSize.width <= 78 && host.fittingSize.height <= 60)
-    print("NATIVE PILL PASS: actual down/drag/up dispatch on compact pill and expanded grip; four edges, threshold click, Record pointer action, control-drag exclusion, background collapse, free placement, state changes, relaunch, visible-frame bounds; no microphone or external events")
+    print("NATIVE PILL PASS: actual down/drag/up dispatch on compact pill and expanded grip; four edges, threshold click, Record pointer action, control-drag exclusion, background collapse, four-item menu, nearest-edge centred release, state changes, relaunch, visible-frame bounds; no microphone or external events")
 }

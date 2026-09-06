@@ -118,7 +118,7 @@ func run(_ name: String, _ body: () -> Void) {
     suite("PillPlacementTests") {
         let t = PillPlacementTests()
         run("PillPlacementTests.testFourEdgesKeepCompactAndExpandedCapsulesVisible") { t.testFourEdgesKeepCompactAndExpandedCapsulesVisible() }
-        run("PillPlacementTests.testFreePositionSurvivesResolutionAndCoordinateChanges") { t.testFreePositionSurvivesResolutionAndCoordinateChanges() }
+        run("PillPlacementTests.testLegacyFreeMigratesOnItsOwnDisplayAndStaysCentredAfterResolutionChange") { t.testLegacyFreeMigratesOnItsOwnDisplayAndStaysCentredAfterResolutionChange() }
         run("PillPlacementTests.testNearestEdgeHasStableCornerHysteresis") { t.testNearestEdgeHasStableCornerHysteresis() }
         run("PillPlacementTests.testSmallVisibleFrameNeverProducesInvertedClamp") { t.testSmallVisibleFrameNeverProducesInvertedClamp() }
         run("PillPlacementTests.testSavedChoiceAndChosenDisplaySurviveRelaunch") { t.testSavedChoiceAndChosenDisplaySurviveRelaunch() }

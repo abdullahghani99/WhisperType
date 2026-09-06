@@ -50,8 +50,7 @@ final class PillDragView: NSView {
     }
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu(title: "Pill position")
-        for (title, value) in [("Top", PillEdge.top), ("Bottom", .bottom), ("Left", .left), ("Right", .right), ("Free placement", .free)] {
-            if value == .free { menu.addItem(.separator()) }
+        for (title, value) in [("Top", PillEdge.top), ("Bottom", .bottom), ("Left", .left), ("Right", .right)] {
             let item = NSMenuItem(title: title, action: #selector(choosePosition(_:)), keyEquivalent: "")
             item.target = self; item.representedObject = value.rawValue; item.state = value == edge ? .on : .off; menu.addItem(item)
         }

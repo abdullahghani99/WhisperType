@@ -15,7 +15,7 @@ func testPillBounds() {
     ]
     var results: [[String:Any]] = []
     for (index, label) in labels.enumerated() {
-        for edge in (baseline || index > 0 ? [PillEdge.free] : [.free, .left, .right]) {
+        for edge in (baseline || index > 0 ? [PillEdge.bottom] : [.top, .bottom, .left, .right]) {
             let state = DockState();state.expanded=true;state.serverOK=true;state.micName=label;state.placementEdge=edge
             let host = DockHostingView(rootView: DockView(state:state,onToggleRecord:{},onPickMic:{_ in},onToggleMode:{},onMeeting:{},onSettings:{},micDevices:{[]}))
             host.sizingOptions = [.intrinsicContentSize]

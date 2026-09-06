@@ -25,6 +25,11 @@ import WhisperTypeKit
 /// This is what makes the dock usable while the "active" surface on screen
 /// is actually a remote desktop: the panel is never part of that remote
 /// window, it floats over the whole local display independent of Spaces.
+private final class RecordingPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 final class DockController {
     let state = DockState()
     private var panel: NSPanel?
@@ -44,6 +49,7 @@ final class DockController {
     var onToggleMode: () -> Void = {}
     var onMeeting: () -> Void = {}
     var onSettings: () -> Void = {}
+    var onRecovery: () -> Void = {}
     var micDevices: () -> [(uid: String, name: String)] = { [] }
 
     private static let originDefaultsKey = "vf_dock_origin"
@@ -60,7 +66,14 @@ final class DockController {
         startDockWatch()
     }
 
-    func hide() { panel?.orderOut(nil) }
+    func hide() { panel?.orderOut(nil); dockWatchTimer?.invalidate(); dockWatchTimer = nil }
+
+    /// Explicit keyboard entry; ordinary pointer use remains non-activating.
+    func focusControls() {
+        show(); state.expanded = true
+        panel?.makeKeyAndOrderFront(nil)
+        panel?.selectNextKeyView(nil)
+    }
 
     // MARK: - Panel construction
 
@@ -72,17 +85,19 @@ final class DockController {
             onToggleMode: { [weak self] in self?.onToggleMode() },
             onMeeting: { [weak self] in self?.onMeeting() },
             onSettings: { [weak self] in self?.onSettings() },
-            micDevices: { [weak self] in self?.micDevices() ?? [] }
+            micDevices: { [weak self] in self?.micDevices() ?? [] },
+            onRecovery: { [weak self] in self?.onRecovery() }
         )
         let host = DockHostingView(rootView: view)
         if #available(macOS 13.0, *) { host.sizingOptions = [.intrinsicContentSize] }
         hosting = host
 
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 200, height: 80),
+        let p = RecordingPanel(contentRect: NSRect(x: 0, y: 0, width: 200, height: 80),
                         styleMask: [.nonactivatingPanel, .borderless],
                         backing: .buffered, defer: false)
         p.contentView = host
         p.isFloatingPanel = true
+        p.becomesKeyOnlyIfNeeded = true
         p.level = .statusBar
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         p.backgroundColor = .clear
@@ -107,7 +122,8 @@ final class DockController {
     // MARK: - Sizing / positioning
 
     private var elapsedTimer: Timer?
-    private var errorClearTimer: Timer?
+    private var successTimer: Timer?
+    private var lastPhase: DockState.Phase = .idle
 
     /// Runs on every published change. Cheap and idempotent: manage the elapsed
     /// timer by phase, auto-clear a stuck error, and re-fit when size changed.
@@ -130,32 +146,34 @@ final class DockController {
     private var lastSetFrame: NSRect?
 
     private func shapeKey() -> String {
-        "\(state.phase)|\(state.expanded)|\(state.callOffer)|\(state.micName)|\(state.errorText)|\(state.callTitle)|\(Int(state.elapsed))"
+        "\(state.phase)|\(state.expanded)|\(state.callOffer)|\(state.micName)|\(state.errorText)|\(state.callTitle)|\(state.meetingRecording)|\(state.meetingMicTrouble)"
     }
 
     private func stateChanged() {
         // Elapsed timer: tick once per second while listening.
-        if state.phase == .listening {
+        if state.phase == .listening || state.meetingRecording {
             if elapsedTimer == nil {
                 elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-                    self?.state.elapsed += 1
+                    if self?.state.phase == .listening { self?.state.elapsed += 1 }
+                    if self?.state.meetingRecording == true { self?.state.meetingElapsed += 1 }
                 }
             }
         } else {
             elapsedTimer?.invalidate(); elapsedTimer = nil
         }
-        // Auto-clear the error state so the dock never gets STUCK on "No audio".
-        if state.phase == .error {
-            if errorClearTimer == nil {
-                errorClearTimer = Timer.scheduledTimer(withTimeInterval: 6.0, repeats: false) { [weak self] _ in
-                    self?.errorClearTimer = nil
-                    if self?.state.phase == .error { self?.state.returnToIdle() }
+        if state.phase != lastPhase {
+            lastPhase = state.phase
+            successTimer?.invalidate(); successTimer = nil
+            if state.phase == .done {
+                successTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
+                    guard let self = self, self.state.phase == .done else { return }
+                    self.state.returnToIdle()
                 }
             }
-        } else {
-            errorClearTimer?.invalidate(); errorClearTimer = nil
         }
-        resizeToFit()
+        // Errors remain actionable until dismissed or superseded by capture.
+        let key = shapeKey()
+        if key != lastShape { lastShape = key; resizeToFit() }
     }
 
     /// Size the panel to the dock's current intrinsic content, anchored so the
@@ -396,7 +414,7 @@ final class DockController {
         guard let p = panel else { return }
         // Our own setFrame, not a drag. Persisting these was the bug.
         if let mine = lastSetFrame, p.frame == mine { return }
-        let a = NSPoint(x: p.frame.midX, y: p.frame.minY)
+        let a = NSPoint(x: p.frame.midX, y: p.frame.minY + Self.verticalPadding)
         anchor = a
         if let screen = Self.activeScreen() {
             let id = Self.screenID(screen)

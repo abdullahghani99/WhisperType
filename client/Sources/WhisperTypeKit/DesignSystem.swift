@@ -136,7 +136,7 @@ public enum VF {
     }
 
     /// Sentence case: capitalise the first word, lower the rest — but leave
-    /// all-caps tokens (VAT, ISO, AE7) alone, since those are acronyms and
+    /// all-caps tokens (VAT, ERP42, AE7) alone, since those are acronyms and
     /// product codes, not Title Case.
     public static func sentenceCase(_ s: String) -> String {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -153,5 +153,29 @@ public enum VF {
             return word.lowercased()
         }
         return mapped.joined(separator: " ")
+    }
+}
+
+/// Native Button semantics and keyboard focus, with a deliberate hierarchy.
+/// Color responds immediately to a press; no movement on repeated commands.
+public struct VFActionStyle: ButtonStyle {
+    public enum Emphasis { case primary, secondary }
+    public let emphasis: Emphasis
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.colorSchemeContrast) private var contrast
+    public init(_ emphasis: Emphasis = .secondary) { self.emphasis = emphasis }
+    public func makeBody(configuration: Configuration) -> some View {
+        let dark = scheme == .dark
+        configuration.label
+            .font(VF.Font.callout).fontWeight(.semibold)
+            .padding(.horizontal, VF.Space.lg).frame(minHeight: 36)
+            .foregroundStyle(emphasis == .primary ? .white : VF.Color.ink(dark: dark))
+            .background(emphasis == .primary ? VF.Color.accent : VF.Color.surface(dark: dark), in: RoundedRectangle(cornerRadius: VF.Radius.sm))
+            .overlay(RoundedRectangle(cornerRadius: VF.Radius.sm)
+                .stroke(emphasis == .primary ? Color.clear : VF.Color.ink(dark: dark).opacity(contrast == .increased ? 0.55 : 0.18), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: VF.Radius.sm).fill(Color.black.opacity(configuration.isPressed ? 0.12 : 0)))
+            .opacity(enabled ? 1 : 0.4)
+            .contentShape(RoundedRectangle(cornerRadius: VF.Radius.sm))
     }
 }

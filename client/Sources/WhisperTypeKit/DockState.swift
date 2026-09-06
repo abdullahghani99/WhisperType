@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 public final class DockState: ObservableObject {
-    public enum Phase { case idle, listening, transcribing, done, error }
+    public enum Phase { case idle, starting, listening, transcribing, ready, done, error }
     public enum Mode { case dictation, prompt }
 
     @Published public var phase: Phase = .idle
@@ -14,6 +14,7 @@ public final class DockState: ObservableObject {
     /// A meeting is actively being captured (drives the dock's record button and
     /// resting-pill indicator, so you can always tell recording is running).
     @Published public var meetingRecording: Bool = false
+    @Published public var meetingElapsed: TimeInterval = 0
     /// The meeting is running but the microphone is not being picked up. Sticky
     /// on purpose: an overlay that fades after eight seconds is exactly how a
     /// whole meeting gets recorded without the user's voice while they sit there
@@ -37,6 +38,8 @@ public final class DockState: ObservableObject {
 
     public init() {}
 
+    public func starting() { phase = .starting; elapsed = 0; errorText = "" }
+    public func ready() { phase = .ready }
     public func begin() {
         phase = .listening; elapsed = 0; level = 0; errorText = ""
         levels = Array(repeating: 0, count: 24)
@@ -54,7 +57,7 @@ public final class DockState: ObservableObject {
         levels.removeFirst()
         levels.append(clamped)
     }
-    public func finishRecording() { if phase == .listening { phase = .transcribing } }
+    public func finishRecording() { if phase == .listening || phase == .starting { phase = .transcribing } }
     /// Words inserted by the last dictation, so the success state can say what
     /// actually happened instead of falling back to an instruction hint.
     @Published public var lastWordCount: Int = 0

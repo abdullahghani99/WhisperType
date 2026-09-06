@@ -112,6 +112,20 @@ func run(_ name: String, _ body: () -> Void) {
         run("MicLifecycleTests.testCoverageReportsDeliveredAudio") { t.testCoverageReportsDeliveredAudio() }
         run("MicLifecycleTests.testCoverageCannotExceed100") { t.testCoverageCannotExceed100() }
     }
+    suite("RecoveryTests") {
+        let t = RecoveryTests()
+        run("RecoveryTests.testRapidRecordingsHaveIndependentAudioAndResults") { t.testRapidRecordingsHaveIndependentAudioAndResults() }
+        run("RecoveryTests.testInterruptedMetadataDoesNotHideAudio") { t.testInterruptedMetadataDoesNotHideAudio() }
+        run("RecoveryTests.testSaveFailureIsReported") { t.testSaveFailureIsReported() }
+        run("RecoveryTests.testRelaunchRecoversInterruptedWorkWithoutReplayingIt") { t.testRelaunchRecoversInterruptedWorkWithoutReplayingIt() }
+        run("RecoveryTests.testJournalMixClipsAndPadsWithoutLosingTail") { t.testJournalMixClipsAndPadsWithoutLosingTail() }
+        run("RecoveryTests.testInterruptedJournalCanBeRecoveredFromRawFiles") { t.testInterruptedJournalCanBeRecoveredFromRawFiles() }
+        run("RecoveryTests.testJournalBackpressureReportsFailure") { t.testJournalBackpressureReportsFailure() }
+        run("RecoveryTests.testConverterDrainsLargeDiagnostics") { t.testConverterDrainsLargeDiagnostics() }
+        run("RecoveryTests.testConverterRejectsPartialFailureAndTimesOut") { t.testConverterRejectsPartialFailureAndTimesOut() }
+        run("RecoveryTests.testConverterCancellationEndsTheOwnedProcess") { t.testConverterCancellationEndsTheOwnedProcess() }
+        run("RecoveryTests.testStaleMicPublicationCannotReplaceNewEngine") { t.testStaleMicPublicationCannotReplaceNewEngine() }
+    }
     suite("SmokeTests") {
         let t = SmokeTests()
         run("SmokeTests.testExpandedDefaultsFalse") { t.testExpandedDefaultsFalse() }
@@ -137,7 +151,7 @@ if let files = try? fm.contentsOfDirectory(atPath: "Sources/VFTests") {
         }
     }
 }
-let registered = 78
+let registered = 89
 print("")
 if declared > 0 && declared != registered {
     print("  ✘ DRIFT: \(declared) test functions on disk, \(registered) registered.")

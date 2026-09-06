@@ -72,6 +72,17 @@ enum AudioDevices {
     /// engine merely idling: the OUTPUT device reported 16000 Hz, 1 channel. The
     /// two profiles are mutually exclusive in the Bluetooth spec, so no amount of
     /// code buys both -- the only choice is which one to spend.
+    static func isBluetooth(_ id: AudioDeviceID) -> Bool {
+        let t = transportType(id)
+        return t == kAudioDeviceTransportTypeBluetooth || t == kAudioDeviceTransportTypeBluetoothLE
+    }
+
+    /// Does the human want the Bluetooth microphone used at all? Defaults to yes;
+    /// set false to keep the headset a stereo speaker and dictate elsewhere.
+    static var warmBluetooth: Bool {
+        UserDefaults.standard.object(forKey: "vf_bluetoothWarm") as? Bool ?? true
+    }
+
     static func currentInputIsBluetooth() -> Bool {
         guard let dev = preferredInputs().first else { return false }
         switch transportType(dev.id) {
@@ -173,11 +184,13 @@ enum AudioDevices {
     static func preferredInputs() -> [AudioInputDevice] {
         let physical = inputs().filter {
             let lower = $0.name.lowercased()
-            return isPhysicalInput($0.id) && !lower.contains("iphone") && !lower.contains("ipad")
+            return isPhysicalInput($0.id) && !lower.contains("iphone") && !lower.contains("ipad") &&
+                ((UserDefaults.standard.object(forKey: "vf_allowBluetoothInput") as? Bool ?? true) || !Self.isBluetooth($0.id))
         }
         let pinned = UserDefaults.standard.string(forKey: defaultsKey) ?? ""
         guard !physical.isEmpty else { return [] }
         let def = defaultInputID()
+        let warmBluetooth = Self.warmBluetooth
         func rank(_ d: AudioInputDevice) -> Int {
             // A device that just gave us silence goes to the BACK, whatever its
             // transport — a dead wired mic must not beat a working built-in one.
@@ -194,6 +207,11 @@ enum AudioDevices {
             // the default (AirPods) streamed continuously. Preferring transport
             // over the default picked the two broken devices and avoided the
             // working one, which is how a meeting recorded zero microphone audio.
+            // Preserve the preference for a non-Bluetooth input when warming
+            // is off; an explicit pin still wins. Bluetooth remains an allowed
+            // cold fallback unless vf_allowBluetoothInput is false. Idle
+            // retention is decided against the committed engine, never this rank.
+            if !warmBluetooth, Self.isBluetooth(d.id) { return 80 }
             if d.id == def { return 0 }
             switch transportType(d.id) {
             case kAudioDeviceTransportTypeUSB, kAudioDeviceTransportTypeThunderbolt,

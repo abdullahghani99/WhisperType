@@ -10,7 +10,7 @@ import WhisperTypeKit
 /// tail -f /tmp/whispertype-client.log
 func vlog(_ s: String) {
     let line = "\(ISO8601DateFormatter().string(from: Date())) \(s)\n"
-    let path = "/tmp/whispertype-client.log"
+    let path = ProcessInfo.processInfo.environment["VF_LOG_PATH"] ?? "/tmp/whispertype-client.log"
     if let h = FileHandle(forWritingAtPath: path) {
         h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile()
     } else {
@@ -18,7 +18,7 @@ func vlog(_ s: String) {
     }
 }
 
-/// WhisperType menu-bar client.
+/// whispertype menu-bar client.
 ///
 /// Push-to-talk: hold Right-Option (⌥) to record, release to transcribe and
 /// insert via synthesized keystrokes (works over Screen Sharing / VNC).
@@ -30,6 +30,21 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var isRecording = false
+    private var activeRecordingID: UUID?
+    private var captureDestination: CaptureDestination?
+    private var lastExternalDestination: CaptureDestination?
+    private var presentationID: UUID?
+    private var processingTasks: [UUID: Task<Void, Never>] = [:]
+    private var processingTail: Task<Void, Never>?
+    private var unsavedRecordings: [UUID: (audio: Data, entry: RecordingStore.Entry)] = [:]
+    private var reviewedRecordingID: UUID?
+    private var importTask: Task<Void, Never>?
+    private var meetingAttemptID: UUID?
+    private var meetingFinishing = false
+    private var destinations: [UUID: CaptureDestination] = [:]
+    private var meetingStarting = false
+    private var meetingFromCall = false
+    private var mouseLearningTimer: Timer?
 
     // Prompt mode: dictate a rough idea → engineered prompt in a review overlay.
     // Mode (dictation vs. prompt) now lives on the dock (`dockController.state.mode`)
@@ -93,7 +108,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         registerFonts()
-        vlog("=== WhisperType client launched ===")
+        vlog("=== whispertype client launched ===")
         // Single instance only: if another WhisperType is already running (e.g. the
         // login-agent copy plus a manual launch), bow out so there's never two.
         let bid = Bundle.main.bundleIdentifier ?? "app.whispertype.client"
@@ -137,7 +152,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.setActivationPolicy(.accessory)
         setupClient()
         setupMenu()
-        requestMicPermission()
         setupHotkey()
 
         // Follow the system input device. Without this the engine outlives the
@@ -149,11 +163,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // kept being forced forever: switch to the speakerphone and WhisperType
             // carried on recording AirPods that were sitting in their case, which
             // is what "it records nothing when I change devices" actually was.
-            let pinned = UserDefaults.standard.string(forKey: AudioDevices.defaultsKey) ?? ""
-            if !pinned.isEmpty {
-                UserDefaults.standard.set("", forKey: AudioDevices.defaultsKey)
-                vlog("system input changed — clearing the pinned mic so the system choice wins")
-            }
+            // An explicit pin stays explicit. System changes affect follow-system
+            // selection and fallback availability, not the saved user choice.
             vlog("system input changed -> \(AudioDevices.currentInputName()) — rebuilding engine")
             self.recorder.reloadDevice()
             self.refreshDockMic()
@@ -162,11 +173,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dockController.micDevices = { AudioDevices.inputs().map { ($0.uid, $0.name) } }
         dockController.onPickMic = { [weak self] uid in
             guard let self = self else { return }
-            UserDefaults.standard.set(uid, forKey: AudioDevices.defaultsKey)
-            self.recorder.reloadDevice()
+            self.mainWC.settings.selectMic(uid)
             self.refreshDockMic()
         }
-        dockController.onToggleMode = { [weak self] in self?.dockController.state.toggleMode() }
+        dockController.onToggleMode = { [weak self] in
+            guard let self = self else { return }
+            self.dockController.state.toggleMode()
+            self.mainWC.settings.captureMode = self.dockController.state.mode
+        }
         dockController.onToggleRecord = { [weak self] in
             guard let self = self else { return }
             self.isRecording ? self.endRecording() : self.beginRecording(prompt: self.dockController.state.mode == .prompt)
@@ -176,6 +190,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self = self else { return }
             self.mainWC.show(client: self.client)
         }
+        wireClientExperience()
         refreshDockMic()
         dockController.show()
 
@@ -188,7 +203,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Settings ▸ Microphone. Nothing is stored: the pre-roll is 1.5s held in
         // memory and overwritten continuously.
         UserDefaults.standard.register(defaults: ["vf_preroll": true])
-        recorder.configurePreroll()       // start warm engine if pre-roll is enabled
+        if ProcessInfo.processInfo.environment["VF_VALIDATION"] != "1", AVCaptureDevice.authorizationStatus(for: .audio) == .authorized { recorder.configurePreroll() }
 
         // Ambient meetings: offer to record when a call starts, and stop by
         // itself when it ends. Two meetings were lost to "I forgot to press
@@ -217,17 +232,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self = self else { return }
             vlog("call ended")
             self.dockController.state.callOffer = false
-            guard self.meetingRecorder.isRecording else { return }
+            guard self.meetingRecorder.isRecording, self.meetingFromCall else { return }
             vlog("call ended — stopping the meeting recording automatically")
             self.stopMeeting()
         }
-        callWatcher.start()
+        if ProcessInfo.processInfo.environment["VF_VALIDATION"] != "1" { callWatcher.start() }
 
         // Live-apply the pre-roll toggle from Settings without a relaunch:
         // enabling starts the always-warm engine now; disabling tears it down.
         NotificationCenter.default.addObserver(
             forName: .vfPrerollChanged, object: nil, queue: .main) { [weak self] _ in
-            self?.recorder.configurePreroll()
+            if AVCaptureDevice.authorizationStatus(for: .audio) == .authorized { self?.recorder.configurePreroll() }
             vlog("preroll toggled -> \(UserDefaults.standard.bool(forKey: "vf_preroll"))")
         }
 
@@ -244,8 +259,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let trusted = AXIsProcessTrusted()
         vlog("accessibility trusted at launch: \(trusted)")
         if !trusted {
-            ensureAccessibilityPrompt()
-            overlay.show(.message("Enable WhisperType in Privacy & Security ▸ Accessibility, then relaunch"))
+            if ProcessInfo.processInfo.environment["VF_VALIDATION"] != "1" { refreshPermissions() }
+            overlay.show(.message("Enable WhisperType in Privacy & Security ▸ Accessibility, then return to WhisperType"))
             overlay.hide(after: 8)
         }
     }
@@ -267,7 +282,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Menu bar
 
     private func setupMenu() {
-        if let img = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "WhisperType") {
+        if let img = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "whispertype") {
             img.isTemplate = true
             statusItem.button?.image = img
         } else {
@@ -276,7 +291,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let menu = NSMenu()
         menu.delegate = self
-        menu.addItem(NSMenuItem(title: "WhisperType — hold ⌥ (Right Option) to talk",
+        menu.addItem(NSMenuItem(title: "whispertype — hold ⌥ (Right Option) to talk",
                                 action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Dictation vs. Prompt mode on the dock",
                                 action: nil, keyEquivalent: ""))
@@ -317,6 +332,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                              action: #selector(toggleMeeting), keyEquivalent: "")
         menu.addItem(mtg)
         meetingItem = mtg
+        menu.addItem(NSMenuItem(title: "Focus recording controls", action: #selector(focusRecordingControls), keyEquivalent: "r"))
         menu.addItem(NSMenuItem(title: "Open WhisperType…",
                                 action: #selector(openMain), keyEquivalent: "0"))
         menu.addItem(NSMenuItem(title: "Meetings…",
@@ -348,7 +364,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// shifted punctuation. Focus the target field (local or VNC), then pick this
     /// — a short delay lets the menu close and key focus return to that field.
     @objc private func insertTestString() {
-        let s = "Hello world! What's the plan? Testing 1, 2, 3: 100% ready."
+        let s = "Hello Alex! What's the plan? ERP42, B2B: 100% ready."
         vlog("insert test string")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             KeystrokeInserter.type(s)
@@ -370,6 +386,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Meeting mode: pick a recording, submit it for async processing, and open
     /// the Meetings window to watch/collect the result (durable server-side).
     @objc private func summarizeRecording() {
+        guard importTask == nil else { mainWC.show(client: client, section: .capture); return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio, .movie]
         panel.allowsMultipleSelection = false
@@ -378,21 +395,32 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let base = url.deletingPathExtension().lastPathComponent
 
-        overlay.show(.message("Uploading “\(url.lastPathComponent)”…"))
-        Task {
+        mainWC.settings.importing = true
+        mainWC.settings.importStatus = "Reading \(url.lastPathComponent)…"
+        mainWC.show(client: client, section: .capture)
+        importTask = Task { @MainActor in
+            defer { self.importTask = nil; self.mainWC.settings.importing = false }
             do {
-                let wav = try MeetingCapture.convertToWav16k(url)
+                let conversion = Task.detached { try MeetingCapture.convertToWav16k(url) }
+                let wav = try await withTaskCancellationHandler(operation: { try await conversion.value }, onCancel: { conversion.cancel() })
+                try Task.checkCancellation()
                 vlog("meeting: converted \(url.lastPathComponent) -> \(wav.count) wav bytes")
+                self.mainWC.settings.importStatus = "Uploading recording…"
                 let id = try await client.submitMeeting(wav: wav, title: base)
                 vlog("meeting submitted: job \(id)")
+                self.mainWC.settings.importStatus = "Recording accepted. Processing continues in Meetings."
                 await MainActor.run {
                     self.overlay.hide()
                     self.mainWC.show(client: self.client, section: .meetings)   // watch it process
                 }
             } catch {
+                let canceled = error is CancellationError || (error as? URLError)?.code == .cancelled
+                self.mainWC.settings.importStatus = canceled
+                    ? "Import canceled. Your original recording is unchanged. If upload had started, check Meetings before retrying."
+                    : "Import failed: \(error.localizedDescription). Your original recording is unchanged."
                 vlog("meeting submit FAILED: \(error)")
                 await MainActor.run {
-                    self.overlay.show(.message("Couldn’t read that recording: \(error.localizedDescription)"))
+                    self.overlay.show(.message(canceled ? "Import canceled" : "Couldn’t read that recording: \(error.localizedDescription)"))
                     self.overlay.hide(after: 5)
                 }
             }
@@ -401,23 +429,48 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Start/stop live meeting recording (system audio + mic).
     @objc private func toggleMeeting() {
-        if meetingRecorder.isRecording { stopMeeting() } else { startMeeting() }
+        if meetingRecorder.isRecording || meetingRecorder.isStarting || meetingStarting { stopMeeting() } else { startMeeting() }
     }
 
     private func startMeeting() {
+        guard !isRecording, !meetingStarting, !meetingFinishing, !meetingRecorder.isRecording else { return }
+        let attempt = UUID(); meetingAttemptID = attempt
+        meetingStarting = true
+        meetingFromCall = dockController.state.callOffer
+        mainWC.settings.captureStatus = "Starting meeting…"
         Task {
+            let available = await withCheckedContinuation { continuation in
+                recorder.suspendForMeeting { continuation.resume(returning: $0) }
+            }
+            guard self.meetingAttemptID == attempt else { return }
+            guard available else {
+                await MainActor.run {
+                    self.meetingStarting = false; self.recorder.resumeAfterMeeting()
+                    self.mainWC.settings.captureStatus = "Microphone is busy. Retry when capture finishes."
+                }
+                return
+            }
             do {
                 // A refused start must not light the recording indicator. It used
                 // to show red while nothing whatsoever was being captured.
+                guard self.meetingStarting else { self.recorder.resumeAfterMeeting(); return }
                 let began = try await meetingRecorder.start()
+                guard self.meetingAttemptID == attempt else { return }
                 guard began else {
                     await MainActor.run {
+                        self.meetingStarting = false; self.recorder.resumeAfterMeeting()
                         self.overlay.show(.message("A meeting is still finishing — try again in a moment."))
                         self.overlay.hide(after: 3)
                     }
                     return
                 }
                 await MainActor.run {
+                    self.meetingStarting = false
+                    self.mainWC.settings.meetingCapturing = true
+                    self.mainWC.settings.activeJournal = self.meetingRecorder.journalDirectory
+                    self.mainWC.settings.captureStatus = "Recording meeting"
+                    self.refreshDockMic()
+                    self.dockController.state.meetingElapsed = 0
                     self.dockController.state.meetingRecording = true
                     self.dockController.state.callOffer = false
                     // Tell the truth up front. A meeting that records only the
@@ -452,8 +505,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                 }
             } catch {
+                guard self.meetingAttemptID == attempt else { return }
                 vlog("meeting start FAILED: \(error)")
                 await MainActor.run {
+                    self.meetingStarting = false; self.recorder.resumeAfterMeeting()
+                    self.mainWC.settings.meetingCapturing = false
                     self.dockController.state.meetingRecording = false
                     self.dockController.state.meetingMicTrouble = false
                     self.overlay.show(.message("Couldn’t start recording — grant Screen Recording in System Settings ▸ Privacy & Security, then try again"))
@@ -464,11 +520,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func stopMeeting() {
+        guard !meetingFinishing else { return }
+        meetingFinishing = true; meetingAttemptID = nil
+        meetingStarting = false
+        mainWC.settings.meetingCapturing = false
         dockController.state.meetingRecording = false   // clear the red indicator immediately
         dockController.state.meetingMicTrouble = false // ...and never start the next meeting amber
         overlay.show(.message("Finishing recording…"))
         Task {
             let wav = await meetingRecorder.stop()
+            await MainActor.run {
+                self.meetingFinishing = false
+                self.mainWC.settings.activeJournal = nil
+                self.recorder.resumeAfterMeeting(); self.refreshDockMic(); self.recordingsChanged()
+            }
             guard wav.count > 8_000 else {
                 await MainActor.run {
                     self.overlay.show(.message("No meeting audio captured — check Screen Recording permission"))
@@ -480,9 +545,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Save the raw recording to a proper app folder FIRST, so processing
             // can never lose it (re-runnable via "Summarize a recording…"). A
             // 44-min meeting was lost once before this safeguard. Not the Desktop.
-            let wavURL = Self.recordingsDir().appendingPathComponent("WhisperType Meeting \(stamp).wav")
-            do { try wav.write(to: wavURL); vlog("meeting: audio saved -> \(wavURL.path)") }
-            catch { vlog("meeting: could not save audio: \(error)") }
+            let wavURL = meetingRecorder.savedRecordingURL ?? Self.recordingsDir().appendingPathComponent("meeting-\(UUID().uuidString).wav")
+            var saved = meetingRecorder.savedRecordingURL != nil
+            if !saved {
+                do { try RecordingStore.durableWrite(wav, to: wavURL); saved = true }
+                catch { await MainActor.run { self.mainWC.settings.status = "Recording save failed: \(error.localizedDescription)" } }
+            }
             do {
                 // Submit for ASYNC processing — the durable server job survives even
                 // if this app quits; the result appears in the Meetings window.
@@ -492,7 +560,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } catch {
                 vlog("meeting submit FAILED: \(error)")
                 await MainActor.run {
-                    self.overlay.show(.message("Recording saved to your WhisperType recordings folder, but upload failed: \(error.localizedDescription). Retry via “Summarize a recording…”."))
+                    self.overlay.show(.message("\(saved ? "Recording saved. Retry via Summarize a recording." : "Recording could not be saved.") Upload failed: \(error.localizedDescription)"))
                     self.overlay.hide(after: 6)
                 }
             }
@@ -506,16 +574,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The proper home for raw meeting recordings — an app folder under
     /// Application Support, NOT the Desktop. Created on demand.
     static func recordingsDir() -> URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("WhisperType", isDirectory: true)
-            .appendingPathComponent("Recordings", isDirectory: true)
+        let dir = RecordingStore.recordingsDirectory()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
-
-    /// Where a dictation's audio waits until the server confirms the transcript.
     static func pendingDir() -> URL {
-        let dir = recordingsDir().appendingPathComponent("pending", isDirectory: true)
+        let dir = RecordingStore.pendingDirectory()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
@@ -612,8 +676,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func selectMic(_ sender: NSMenuItem) {
         let uid = (sender.representedObject as? String) ?? ""
-        UserDefaults.standard.set(uid, forKey: AudioDevices.defaultsKey)
-        recorder.reloadDevice()   // apply immediately (rebuilds the warm engine)
+        mainWC.settings.selectMic(uid)
+        // reloadDevice is notified centrally   // apply immediately (rebuilds the warm engine)
         vlog("mic switched via menu -> \(uid.isEmpty ? "system default" : uid)")
         overlay.show(.message("Microphone: \(sender.title)"))
         overlay.hide(after: 1.5)
@@ -624,7 +688,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// (e.g. "PowerConf"), not a generic "System default", so you always see which
     /// mic is active. Updated at launch, periodically, and at each recording.
     private func refreshDockMic() {
-        dockController.state.micName = AudioDevices.currentInputName()
+        let active = meetingRecorder.isRecording ? meetingRecorder.micName : recorder.isEngineRunning ? recorder.lastWinningMic : nil
+        let requested = AudioDevices.preferredInput()?.name ?? "No permitted input"
+        dockController.state.micName = active ?? "Requested: \(requested)"
+        mainWC.settings.activeMicName = active ?? "Idle · requested \(requested)"
     }
 
     private var previewWindow: NSWindow?
@@ -778,11 +845,86 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.endRecording() }
     }
 
+    @objc private func focusRecordingControls() { dockController.focusControls() }
+
+    private func wireClientExperience() {
+        let settings = mainWC.settings
+        dockController.onRecovery = { [weak self] in
+            guard let self = self else { return }; self.mainWC.show(client: self.client, section: .inbox)
+        }
+        settings.onCheckPermissions = { [weak self] in self?.refreshPermissions() }
+        settings.onRequestMicrophone = { [weak self] in self?.requestMicPermission() }
+        settings.onRequestAccessibility = { [weak self] in self?.ensureAccessibilityPrompt() }
+        settings.onRequestScreen = { [weak self] in
+            _ = CGRequestScreenCaptureAccess()
+            self?.refreshPermissions()
+        }
+        settings.captureMode = dockController.state.mode
+        settings.onModeChanged = { [weak self] mode in self?.dockController.state.mode = mode }
+        settings.onToggleRecording = { [weak self] in self?.toggleRecording() }
+        settings.onToggleMeeting = { [weak self] in self?.toggleMeeting() }
+        settings.onImportRecording = { [weak self] in self?.summarizeRecording() }
+        settings.onCancelImport = { [weak self] in self?.importTask?.cancel() }
+        settings.onRetryRecording = { [weak self] id in self?.retryRecording(id) }
+        settings.onReviewRecording = { [weak self] id in self?.reviewRecording(id) }
+        settings.onCancelRecording = { [weak self] id in self?.processingTasks[id]?.cancel() }
+        settings.onDiscardRecording = { [weak self] id in
+            guard let self = self else { return }
+            guard self.processingTasks[id] == nil else { settings.status = "Cancel processing before removing this recording."; return }
+            do {
+                try RecordingStore.discard(id)
+                self.unsavedRecordings[id] = nil
+                if self.reviewedRecordingID == id { self.promptReview.discardOpenReview(); self.reviewedRecordingID = nil }
+                self.destinations[id] = nil; self.remotePreparations.removeValue(forKey: id)?.cancel()
+                settings.status = "Recording removed from this Mac"; self.recordingsChanged()
+            } catch { settings.status = "Could not remove recording: \(error.localizedDescription)" }
+        }
+        recorder.onDeviceChanged = { [weak self] _ in self?.refreshDockMic() }
+        meetingRecorder.onCaptureFailure = { [weak self] message in
+            guard let self = self else { return }
+            self.mainWC.settings.status = message
+            self.dockController.state.fail(message)
+            if self.meetingRecorder.isRecording { self.stopMeeting() }
+        }
+        NotificationCenter.default.addObserver(forName: .vfInputPolicyChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.recorder.reloadDevice(); self?.refreshDockMic()
+        }
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.refreshPermissions()
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                if let target = CaptureDestination.capture() { self?.lastExternalDestination = target }
+            }
+        }
+        do { try RecordingStore.recoverInterruptedProcessing() }
+        catch { settings.status = "Could not recover interrupted processing: \(error.localizedDescription)" }
+        refreshPermissions(); settings.reloadRecovery()
+    }
+
+    private func refreshPermissions() {
+        let settings = mainWC.settings
+        settings.microphonePermission = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized ? "Allowed" : "Permission needed"
+        settings.accessibilityPermission = AXIsProcessTrusted() ? "Allowed" : "Permission needed"
+        settings.screenPermission = CGPreflightScreenCaptureAccess() ? "Allowed" : "Needed for meetings"
+        if AXIsProcessTrusted() {
+            if globalMonitor == nil { setupHotkey() }
+            if eventTap == nil { setupMouseTap() }
+        }
+    }
+
     // MARK: - Permissions
 
     private func requestMicPermission() {
-        AVCaptureDevice.requestAccess(for: .audio) { granted in
-            vlog("microphone permission granted: \(granted)")
+        if AVCaptureDevice.authorizationStatus(for: .audio) == .denied || AVCaptureDevice.authorizationStatus(for: .audio) == .restricted {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
+            return
+        }
+        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+            DispatchQueue.main.async {
+                self?.refreshPermissions()
+                self?.mainWC.settings.status = granted ? "Microphone allowed. Start recording when ready." : "Allow Microphone in System Settings to record."
+            }
         }
     }
 
@@ -807,10 +949,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.endRecording()
             }
         }
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged], handler: handler)
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { event in
-            handler(event); return event
-        }
+        let isolated = ProcessInfo.processInfo.environment["VF_VALIDATION"] == "1"
+        let validateHotkeys = ProcessInfo.processInfo.environment["VF_VALIDATE_HOTKEYS"] == "1"
+        if globalMonitor == nil && (!isolated || validateHotkeys) { globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged], handler: handler) }
+        if localMonitor == nil { localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { event in handler(event); return event } }
 
         setupMouseTap()
         vlog("hotkey monitors installed (global=\(globalMonitor != nil)) mouseToggleButton=\(mouseToggleButton)")
@@ -819,7 +961,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// CGEventTap for mouse-button toggle — can CONSUME the click so the button's
     /// native action (middle-click paste, side-button back/forward) doesn't fire.
     private func setupMouseTap() {
-        let mask = (UInt64(1) << CGEventType.otherMouseDown.rawValue)
+        if ProcessInfo.processInfo.environment["VF_VALIDATION"] == "1" && ProcessInfo.processInfo.environment["VF_VALIDATE_HOTKEYS"] != "1" { return }
+        guard eventTap == nil, AXIsProcessTrusted() else { return }
+        let mask = (UInt64(1) << CGEventType.otherMouseDown.rawValue) | (UInt64(1) << CGEventType.keyDown.rawValue)
         let callback: CGEventTapCallBack = { _, type, event, userInfo in
             guard let userInfo = userInfo else { return Unmanaged.passUnretained(event) }
             let ctrl = Unmanaged<AppController>.fromOpaque(userInfo).takeUnretainedValue()
@@ -846,11 +990,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
             return Unmanaged.passUnretained(event)
         }
+        if type == .keyDown, capturingMouseTrigger, event.getIntegerValueField(.keyboardEventKeycode) == 53 { cancelMouseLearning(); return nil }
         guard type == .otherMouseDown else { return Unmanaged.passUnretained(event) }
         let btn = Int(event.getIntegerValueField(.mouseEventButtonNumber))
 
         if capturingMouseTrigger {
-            capturingMouseTrigger = false
+            cancelMouseLearning()
             mouseToggleButton = btn
             overlay.show(.message("Trigger set: mouse button \(btn). Click it to start/stop dictation."))
             overlay.hide(after: 3)
@@ -875,11 +1020,21 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func setMouseTrigger() {
         capturingMouseTrigger = true
+        mouseLearningTimer?.invalidate()
+        mouseLearningTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
+            self?.cancelMouseLearning()
+        }
         overlay.show(.message("Click the mouse button you want to use as your dictation trigger…"))
         overlay.hide(after: 6)
     }
 
+    private func cancelMouseLearning() {
+        capturingMouseTrigger = false; mouseLearningTimer?.invalidate(); mouseLearningTimer = nil
+        overlay.hide()
+    }
+
     @objc private func clearMouseTrigger() {
+        cancelMouseLearning()
         mouseToggleButton = -1
         setupMenu()
         overlay.show(.message("Mouse trigger cleared"))
@@ -888,196 +1043,261 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Record → transcribe → insert
 
+    private var remotePreparations: [UUID: Task<Void, Error>] = [:]
+
     private func beginRecording(prompt: Bool = false) {
-        guard !isRecording else { return }
-        // Enter recording state optimistically and show the overlay immediately —
-        // recorder.start() is now async (engine bring-up is off the main thread so
-        // a slow/Bluetooth mic can't freeze the app). If the mic genuinely fails,
-        // the completion resets state and shows the error.
-        isRecording = true
-        promptMode = prompt
-        // The DOCK is the sole live indicator now — do NOT also show the old
-        // overlay pill (that was the "two waveforms" during dictation).
-        recorder.onLevel = { [weak self] level in
-            DispatchQueue.main.async { self?.dockController.state.setLevel(level) }
+        guard !isRecording, !meetingStarting, !meetingFinishing, !meetingRecorder.isRecording else { return }
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { requestMicPermission(); return }
+        let id = UUID()
+        activeRecordingID = id; presentationID = id
+        captureDestination = CaptureDestination.capture()
+        if let target = captureDestination {
+            destinations[id] = target
+            if target.isRemote {
+                remotePreparations[id] = Task { @MainActor in try await self.prepareRemote(target, id: id) }
+            }
         }
-        dockController.state.begin()
-        SoundFeedback.listening()   // light "ting" so you know it's live
-        vlog("recording: start (prompt=\(prompt))")
+        isRecording = true; promptMode = prompt
+        mainWC.settings.capturing = true
+        dockController.state.starting()
+        mainWC.settings.captureStatus = "Starting microphone…"
+        recorder.onLevel = { [weak self] level in self?.dockController.state.setLevel(level) }
         recorder.start { [weak self] ok in
-            guard let self = self, !ok, self.isRecording else { return }
-            self.isRecording = false
-            vlog("recorder failed to start (mic unavailable)")
-            self.overlay.show(.message("Microphone unavailable — check input device / other apps"))
-            self.overlay.hide(after: 2.5)
-            self.dockController.state.fail("Microphone unavailable")
+            guard let self = self, self.activeRecordingID == id, self.isRecording else { return }
+            if ok {
+                self.dockController.state.begin()
+                self.mainWC.settings.captureStatus = "Listening"
+                self.mainWC.settings.capturing = true
+                self.refreshDockMic(); SoundFeedback.listening()
+            } else {
+                self.isRecording = false
+                self.mainWC.settings.capturing = false
+                self.mainWC.settings.captureStatus = "Microphone unavailable. Check readiness."
+                self.dockController.state.fail("Microphone unavailable · open Microphone settings")
+            }
         }
     }
 
     private func endRecording() {
-        guard isRecording else { return }
-        isRecording = false
-        let wasPrompt = promptMode
+        guard isRecording, let id = activeRecordingID else { return }
+        isRecording = false; activeRecordingID = nil
+        mainWC.settings.capturing = false
         let wav = recorder.stop()
-        vlog("recording: stop, wav bytes=\(wav.count) prompt=\(wasPrompt)")
         dockController.state.finishRecording()
-
         guard wav.count > 8_000 else {
-            // A FAILED DICTATION MUST ANNOUNCE ITSELF. The dock alone is not
-            // enough: it is small, dims at rest, clears itself after a few
-            // seconds, and on a wide display it sits far from where you are
-            // looking. Losing what you just said and being told nothing is the
-            // worst outcome this app has, so failure gets a sound and a message
-            // as well. Success stays quiet and stays in the dock.
-            SoundFeedback.failed()
-            if wav.count <= 64 {  // header only → the mic produced no samples
-                vlog("no audio captured (all input devices were silent)")
-                let msg = "No audio captured — nothing was recorded. Say it again."
-                dockController.state.fail("No audio — nothing recorded")
-                overlay.show(.message(msg))
-                overlay.hide(after: 4)
-            } else {
-                // Between a bare header and a quarter-second. Used to vanish in
-                // silence, which reads exactly like a dictation that worked.
-                vlog("recording too short (\(wav.count) bytes), ignoring")
-                dockController.state.fail("Too short — hold the key while you speak")
-                overlay.show(.message("That was too short to transcribe — hold the key while you speak."))
-                overlay.hide(after: 4)
-            }
-            return
+            let message = wav.count <= 64 ? "No audio captured. Wait for Listening, then speak." : "Recording too short. Hold the trigger while speaking."
+            dockController.state.fail(message); mainWC.settings.captureStatus = message
+            SoundFeedback.failed(); return
         }
-
-        // Show which mic actually won this capture (the one you spoke into).
-        if let won = recorder.lastWinningMic { dockController.state.micName = won }
-
-        // Capture the target app BEFORE the panel steals focus.
-        let targetApp = NSWorkspace.shared.frontmostApplication
-
-        // The dock is the sole indicator (finishRecording above → "Polishing…").
-        // No overlay pills here — that was the second pill.
-        if wasPrompt {
-            Task { await runPromptMode(wav: wav, targetApp: targetApp) }
-            return
-        }
-
-        // SAVE THE AUDIO BEFORE UPLOADING. Meetings have done this for a while;
-        // dictation did not, so a dropped connection destroyed the recording with
-        // no retry and nothing on disk — 71 seconds of speech lost to a transient
-        // network blip. The file is removed as soon as the transcript comes back.
-        let pendingURL = Self.pendingDir()
-            .appendingPathComponent("dictation-\(Int(Date().timeIntervalSince1970)).wav")
-        do { try wav.write(to: pendingURL); vlog("dictation: audio saved -> \(pendingURL.lastPathComponent)") }
-        catch { vlog("dictation: could not save audio: \(error)") }
-
-        Task {
-            do {
-                // One transparent retry: -1005 "network connection was lost" is a
-                // transient Tailscale/socket drop, and re-sending bytes we already
-                // hold is far better than making the human say it all again.
-                let result: ServerClient.Result
-                do {
-                    result = try await client.transcribe(wav: wav)
-                } catch {
-                    vlog("transcribe attempt 1 failed (\(error)) — retrying once")
-                    try await Task.sleep(nanoseconds: 700_000_000)
-                    result = try await client.transcribe(wav: wav)
-                }
-                try? FileManager.default.removeItem(at: pendingURL)   // landed safely
-                vlog("transcribe ok: id=\(result.id.map(String.init) ?? "nil") raw=\"\(result.raw)\" text=\"\(result.text)\"")
-                await MainActor.run {
-                    self.addToHistory(result.text)
-                    self.lastDictationId = result.id
-                    self.lastDictationText = result.text
-                }
-                await insert(result.text)
-                await MainActor.run {
-                    self.dockController.state.complete(words: result.text.split(whereSeparator: { $0 == " " || $0 == "\n" }).count)
-                    SoundFeedback.done()   // soft confirm when your text lands
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                        // Guard: a fast back-to-back dictation may have already
-                        // started a new recording — don't clobber it to idle.
-                        if self.dockController.state.phase == .done {
-                            self.dockController.state.returnToIdle()
-                        }
-                    }
-                }
-            } catch {
-                vlog("transcribe FAILED after retry: \(error) — audio kept at \(pendingURL.path)")
-                await MainActor.run {
-                    self.dockController.state.fail("Server unreachable. Audio saved.")
-                    self.overlay.show(.message("Couldn’t reach the server. Your audio is saved in the recordings folder — menu ▸ “Show recordings folder” ▸ pending."))
-                    self.overlay.hide(after: 8)
-                }
-            }
+        do {
+            _ = try RecordingStore.create(wav: wav, kind: promptMode ? "prompt" : "dictation", id: id)
+            recordingsChanged()
+            enqueueRecording(id)
+        } catch {
+            var entry = RecordingStore.Entry(id: id, kind: promptMode ? "prompt" : "dictation")
+            entry.error = "Audio is held in memory. Free disk space, then Retry. Keep WhisperType open."
+            unsavedRecordings[id] = (wav, entry); recordingsChanged()
+            dockController.state.fail(entry.error)
+            mainWC.settings.captureStatus = "Could not save audio: \(error.localizedDescription)"
         }
     }
 
-    /// Prompt mode: engineer the rough dictation into concise/detailed prompts,
-    /// show the review overlay, and insert the chosen one into `targetApp`.
-    private func runPromptMode(wav: Data, targetApp: NSRunningApplication?) async {
+    private func recordingsChanged() {
+        mainWC.settings.unsavedRecordings = unsavedRecordings.values.map(\.entry)
+        mainWC.settings.reloadRecovery()
+        NotificationCenter.default.post(name: .vfRecordingsChanged, object: nil)
+    }
+
+    private func retryRecording(_ id: UUID) {
+        if let unsaved = unsavedRecordings[id] {
+            do {
+                let directory = RecordingStore.pendingDirectory()
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                try RecordingStore.durableWrite(unsaved.audio, to: RecordingStore.audioURL(id))
+                try RecordingStore.save(unsaved.entry)
+                unsavedRecordings[id] = nil; recordingsChanged()
+            } catch { mainWC.settings.status = "Audio still held in memory: \(error.localizedDescription)"; return }
+        }
+        enqueueRecording(id)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if isRecording || meetingStarting || meetingFinishing || meetingRecorder.isStarting || meetingRecorder.isRecording {
+            let alert = NSAlert()
+            alert.messageText = "Finish recording before quitting"
+            alert.informativeText = "Stop the current recording so WhisperType can save it."
+            alert.addButton(withTitle: "Keep recording")
+            alert.runModal()
+            return .terminateCancel
+        }
+        guard promptReview.prepareToQuit() else { return .terminateCancel }
+        guard !unsavedRecordings.isEmpty else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "Some recordings could not be saved"
+        alert.informativeText = "Keep WhisperType open, free disk space, and retry in Inbox. Quitting now discards the audio held in memory."
+        alert.addButton(withTitle: "Keep open"); alert.addButton(withTitle: "Quit and discard")
+        return alert.runModal() == .alertFirstButtonReturn ? .terminateCancel : .terminateNow
+    }
+
+    private func enqueueRecording(_ id: UUID) {
+        guard processingTasks[id] == nil else { return }
+        let previous = processingTail
+        let task = Task { @MainActor [weak self] in
+            await previous?.value
+            guard let self = self else { return }
+            defer { self.processingTasks.removeValue(forKey: id) }
+            guard !Task.isCancelled else { return }
+            await self.processRecording(id)
+        }
+        processingTasks[id] = task; processingTail = task
+    }
+
+    @MainActor private func processRecording(_ id: UUID) async {
+        guard var entry = try? RecordingStore.entries().first(where: { $0.id == id }) else { return }
         do {
-            let eng = try await client.engineer(wav: wav)
-            vlog("engineer ok: concise=\(eng.concise.count)ch detailed=\(eng.detailed.count)ch")
-            await MainActor.run {
-                self.dockController.state.complete()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    self.dockController.state.returnToIdle()
-                }
-                guard !eng.concise.isEmpty || !eng.detailed.isEmpty || !eng.coding.isEmpty else {
-                    self.dockController.state.fail("No prompt generated"); return
-                }
-                self.promptReview.show(concise: eng.concise, detailed: eng.detailed, coding: eng.coding) { [weak self] chosen in
-                    guard let self = self else { return }
-                    targetApp?.activate(options: [])   // restore focus to where the caret was
-                    guard let text = chosen, !text.isEmpty else { return }   // esc → nothing typed
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        Task { await self.insert(text) }
+            entry.status = "processing"; entry.error = ""; try RecordingStore.save(entry); recordingsChanged()
+            let wav = try Data(contentsOf: RecordingStore.audioURL(id), options: .mappedIfSafe)
+            if entry.kind == "prompt" {
+                let result = try await client.engineer(wav: wav)
+                try Task.checkCancellation()
+                entry.raw = result.raw
+                entry.variants = ["concise": result.concise, "detailed": result.detailed, "coding": result.coding]
+                entry.text = result.concise; entry.status = "ready"
+                try RecordingStore.save(entry); recordingsChanged()
+                if presentationID == id && !isRecording && !promptReview.isVisible { reviewRecording(id) }
+                else if presentationID == id && !isRecording { dockController.state.ready() }
+            } else {
+                let result = try await client.transcribe(wav: wav)
+                try Task.checkCancellation()
+                entry.raw = result.raw; entry.text = result.text; entry.historyID = result.id; entry.status = "ready"
+                try RecordingStore.save(entry); recordingsChanged()
+                addToHistory(result.text); lastDictationId = result.id; lastDictationText = result.text
+                if !isRecording, let target = destinations[id], target.isCurrent() {
+                    try await insert(result.text, into: target, id: id)
+                    entry.status = "inserted"; try RecordingStore.save(entry)
+                    try RecordingStore.removeAudio(id)
+                    if presentationID == id {
+                        dockController.state.complete(words: result.text.split(whereSeparator: { $0.isWhitespace }).count)
+                        mainWC.settings.captureStatus = "Sent to \(target.name)"; SoundFeedback.done()
                     }
+                } else {
+                    entry.error = "Result ready. Review it in Inbox to choose placement."
+                    try RecordingStore.save(entry)
+                    if presentationID == id && !isRecording { dockController.state.ready(); mainWC.settings.captureStatus = "Result ready in Inbox" }
                 }
             }
         } catch {
-            vlog("engineer FAILED: \(error)")
-            await MainActor.run { self.dockController.state.fail("Prompt mode failed") }
+            entry.status = entry.text.isEmpty ? "pending" : "ready"
+            entry.error = error is CancellationError ? "Processing canceled. Audio retained; retry when ready." : error.localizedDescription
+            do { try RecordingStore.save(entry) } catch { mainWC.settings.status = "Could not update recovery metadata: \(error.localizedDescription)" }
+            if presentationID == id && !isRecording { dockController.state.fail("\(entry.error) · open Inbox") }
         }
+        recordingsChanged()
     }
 
-    /// Route insertion: if the frontmost app is Screen Sharing, synthetic
-    /// modifiers can't cross the VNC boundary, so send the text to the remote
-    /// agent on the target Mac (it types locally there). Otherwise type locally.
-    private func insert(_ text: String) async {
-        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
-        let isScreenSharing = front == "com.apple.ScreenSharing" || front.contains("ScreenSharing")
-        if isScreenSharing, let url = remoteAgentURL {
-            do {
-                try await postRemoteInsert(text, to: url)
-                vlog("inserted via remote agent (frontmost=\(front))")
-                return
-            } catch {
-                vlog("remote insert FAILED (\(error)); falling back to local")
-                overlay.show(.message("Remote agent unreachable — typed locally"))
-                overlay.hide(after: 3)
+    private func reviewRecording(_ id: UUID) {
+        guard let entry = try? RecordingStore.entries().first(where: { $0.id == id }) else { return }
+        reviewedRecordingID = id
+        let target = lastExternalDestination ?? destinations[id]
+        let chosen: (String?) -> Void = { [weak self] text in
+            guard let self = self, let text = text, !text.isEmpty else { return }
+            guard var edited = try? RecordingStore.entries().first(where: { $0.id == id }) else { return }
+            edited.text = text
+            do { try RecordingStore.save(edited) }
+            catch { self.mainWC.settings.status = "Could not save edit: \(error.localizedDescription)"; return }
+            guard let target = target else {
+                self.mainWC.settings.status = "Choose a destination app, then return to Inbox. Your edited result is saved."
+                self.recordingsChanged(); return
+            }
+            target.app.activate(options: [])
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                do {
+                    let attemptID = UUID() // Explicit review is a new placement, never an automatic replay.
+                    if target.isRemote { try await self.prepareRemote(target, id: attemptID) }
+                    try await self.insert(text, into: target, id: attemptID)
+                    edited.status = "inserted"; edited.error = ""
+                    try RecordingStore.save(edited); try RecordingStore.removeAudio(id)
+                    self.dockController.state.complete(words: text.split(whereSeparator: { $0.isWhitespace }).count)
+                } catch {
+                    edited.error = error.localizedDescription
+                    try? RecordingStore.save(edited)
+                    self.dockController.state.fail("Result retained in Inbox: \(error.localizedDescription)")
+                }
+                self.recordingsChanged()
             }
         }
-        await MainActor.run { KeystrokeInserter.type(text) }
-    }
-
-    private var remoteAgentURL: URL? {
-        let s = ProcessInfo.processInfo.environment["VF_REMOTE_AGENT_URL"]
-            ?? "http://127.0.0.1:8791" // set VF_REMOTE_AGENT_URL to the Mac you screen-share into
-        return URL(string: s)?.appendingPathComponent("insert")
-    }
-
-    private func postRemoteInsert(_ text: String, to url: URL) async throws {
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: ["text": text])
-        req.timeoutInterval = 15
-        let (_, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw NSError(domain: "whispertype", code: 2,
-                          userInfo: [NSLocalizedDescriptionKey: "agent HTTP error"])
+        let destination = target.map { "\($0.name) · \($0.title)" } ?? "Choose a destination app, then return to Inbox"
+        let saveDraft: ([String: String], String) throws -> Void = { [weak self] variants, text in
+            guard var draft = try RecordingStore.entries().first(where: { $0.id == id }) else { throw CocoaError(.fileNoSuchFile) }
+            draft.text = text; draft.variants = variants
+            try RecordingStore.save(draft); self?.recordingsChanged()
         }
+        if !entry.variants.isEmpty {
+            promptReview.show(concise: entry.variants["concise"] ?? entry.text,
+                              detailed: entry.variants["detailed"] ?? "", coding: entry.variants["coding"] ?? "", destination: destination, onDraft: saveDraft, onChoose: chosen)
+        } else { promptReview.showText(entry.text, destination: destination, onDraft: saveDraft, onChoose: chosen) }
+    }
+
+    @MainActor private func insert(_ text: String, into target: CaptureDestination, id: UUID) async throws {
+        guard target.isCurrent() else { throw insertionError("Destination changed. Result retained; review placement.") }
+        if target.isRemote {
+            defer { remotePreparations[id] = nil }
+            try await remotePreparations[id]?.value
+            guard target.isCurrent(), !isRecording else { throw insertionError("Destination changed. Review placement in Inbox.") }
+            let receipt = try await remoteRequest(path: "insert", target: target, id: id, text: text)
+            guard receipt["verified"] as? Bool == true else {
+                throw insertionError("Keys were sent; the destination could not confirm the text. Inspect it before inserting again. Audio and result remain in Inbox.")
+            }
+        } else {
+            guard AXIsProcessTrusted() else { throw insertionError("Allow Accessibility to type into the destination.") }
+            let expected = target.expectedValue(afterInserting: text)
+            let complete = KeystrokeInserter.type(text, targetPID: target.app.processIdentifier) { target.isCurrent() }
+            guard complete else { throw insertionError("Destination changed while typing. Some text may have been sent; inspect it before inserting again.") }
+            for _ in 0..<10 {
+                try await Task.sleep(nanoseconds: 100_000_000)
+                if target.containsVerifiedValue(expected) { return }
+            }
+            throw insertionError("Keys were sent; the destination could not confirm the text. Inspect it before inserting again. Audio and result remain in Inbox.")
+        }
+    }
+
+    private func insertionError(_ message: String) -> NSError {
+        NSError(domain: "whispertype.insertion", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    @MainActor private func prepareRemote(_ target: CaptureDestination, id: UUID) async throws {
+        guard target.isCurrent() else { throw insertionError("Remote destination changed before capture.") }
+        _ = try await remoteRequest(path: "prepare", target: target, id: id)
+    }
+
+    private func remoteRequest(path: String, target: CaptureDestination, id: UUID, text: String? = nil) async throws -> [String: Any] {
+        let env = ProcessInfo.processInfo.environment
+        let match = env["VF_REMOTE_WINDOW_MATCH"] ?? ""
+        guard !match.isEmpty, target.title.localizedCaseInsensitiveContains(match),
+              let address = env["VF_REMOTE_AGENT_URL"], let base = URL(string: address),
+              ["http", "https"].contains(base.scheme ?? ""), base.host != nil else {
+            throw insertionError("Pair the remote agent and identify its Screen Sharing window before insertion.")
+        }
+        let key = env["VF_REMOTE_AGENT_KEY"] ?? ""
+        guard key.utf8.count >= 32 else { throw insertionError("Remote pairing needs a key of at least 32 bytes.") }
+        var request = URLRequest(url: base.appendingPathComponent(path))
+        request.httpMethod = "POST"; request.timeoutInterval = path == "insert" ? 120 : 10
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        var body: [String: Any] = ["id": id.uuidString]
+        if let text = text { body["text"] = text }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw insertionError(object?["detail"] as? String ?? "Remote insertion could not be confirmed. Inspect the paired Mac before retrying.")
+        }
+        guard let object = object, object["id"] as? String == id.uuidString,
+              object["status"] as? String == (path == "prepare" ? "prepared" : "posted") else {
+            throw insertionError("Remote agent returned an invalid receipt. Inspect the destination before retrying.")
+        }
+        return object
     }
 }
 

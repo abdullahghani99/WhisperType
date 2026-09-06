@@ -1,161 +1,172 @@
 import Cocoa
 
-/// Interactive review panel for prompt mode. Shows the engineered prompt and
-/// lets the user flip Concise/Detailed/Coding, EDIT it inline, then insert (⌘⏎)
-/// or cancel (esc). Non-destructive: nothing is typed until the user inserts.
-///
-/// Because the text is editable, level switching and insert use ⌘ so plain
-/// typing (incl. digits and newlines) edits the text:
-///   ⌘1 Concise · ⌘2 Detailed · ⌘3 Coding · ⌘⏎ Insert · esc Cancel
-///
-/// The panel becomes key to capture these; the caller restores focus to the
-/// target app before typing the chosen text.
-final class PromptReviewController {
+/// One native editor for dictation and prompt variants. Drafts survive every
+/// close path; inserting is explicit and names the captured destination.
+final class PromptReviewController: NSObject, NSWindowDelegate, NSTextViewDelegate {
     private var panel: NSPanel?
     private var textView: NSTextView?
-    private var levelLabel: NSTextField?
+    private var segments: NSSegmentedControl?
+    private var draftLabel: NSTextField?
     private var keyMonitor: Any?
-
-    private let names = ["Concise", "Detailed", "Coding"]
-    private var levels = ["", "", ""]   // editable text per level (edits persist)
+    private var saveTimer: Timer?
+    private var names = ["Concise", "Detailed", "Coding"]
+    private var levels = ["", "", ""]
     private var index = 0
-    private var onChoose: ((String?) -> Void)?   // chosen text to insert, or nil = cancel
+    private var destination = "Choose a destination app, then return to Inbox"
+    private var onChoose: ((String?) -> Void)?
+    private var onDraft: (([String: String], String) throws -> Void)?
+    var isVisible: Bool { panel?.isVisible == true }
+    /// The caller has explicitly removed this Inbox item; do not recreate it.
+    func discardOpenReview() { cleanup(nil) }
+    func prepareToQuit() -> Bool { dismiss(nil) }
 
-    private static let ink = NSColor(calibratedRed: 0x1A/255, green: 0x17/255, blue: 0x14/255, alpha: 0.98)
-    private static let accent = NSColor(calibratedRed: 0xE7/255, green: 0x00/255, blue: 0x0B/255, alpha: 1)
-
-    /// Show the panel. `onChoose` is called exactly once with the chosen
-    /// (possibly edited) text, or nil if the user cancelled.
     func show(concise: String, detailed: String, coding: String,
+              destination: String = "Choose a destination app, then return to Inbox",
+              onDraft: (([String: String], String) throws -> Void)? = nil,
               onChoose: @escaping (String?) -> Void) {
-        self.levels = [concise, detailed, coding]
-        self.index = 0
-        self.onChoose = onChoose
-        buildPanel()
-        render()
+        guard dismiss(nil) else { return }
+        names = ["Concise", "Detailed", "Coding"]; levels = [concise, detailed, coding]; index = 0
+        self.destination = destination; self.onDraft = onDraft; self.onChoose = onChoose
+        present()
+    }
+    func showText(_ text: String, destination: String = "Choose a destination app, then return to Inbox",
+                  onDraft: (([String: String], String) throws -> Void)? = nil,
+                  onChoose: @escaping (String?) -> Void) {
+        guard dismiss(nil) else { return }
+        names = ["Result"]; levels = [text]; index = 0
+        self.destination = destination; self.onDraft = onDraft; self.onChoose = onChoose
+        present()
+    }
+    private func present() {
+        buildPanel(); render()
         NSApp.activate(ignoringOtherApps: true)
-        panel?.center()
-        panel?.makeKeyAndOrderFront(nil)
-        panel?.makeFirstResponder(textView)
+        panel?.center(); panel?.makeKeyAndOrderFront(nil); panel?.makeFirstResponder(textView)
         installMonitor()
     }
-
     private func buildPanel() {
-        if panel != nil { return }
-        let w: CGFloat = 660, h: CGFloat = 460
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: w, height: h),
-                        styleMask: [.titled, .closable, .fullSizeContentView],
-                        backing: .buffered, defer: false)
-        p.title = "Prompt — review & edit"
-        p.titlebarAppearsTransparent = true
-        p.isFloatingPanel = true
-        p.level = .floating
-        p.hidesOnDeactivate = false
-        p.backgroundColor = Self.ink
-
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
-
-        let header = NSTextField(labelWithString: "Engineered prompt — edit if you like")
-        header.font = .systemFont(ofSize: 13, weight: .semibold)
-        header.textColor = .white
-        header.frame = NSRect(x: 20, y: h - 52, width: 360, height: 20)
-        content.addSubview(header)
-
-        let level = NSTextField(labelWithString: "")
-        level.font = .systemFont(ofSize: 12, weight: .medium)
-        level.alignment = .right
-        level.frame = NSRect(x: w - 340, y: h - 52, width: 320, height: 20)
-        content.addSubview(level)
-        levelLabel = level
-
-        let scroll = NSScrollView(frame: NSRect(x: 16, y: 48, width: w - 32, height: h - 108))
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .lineBorder
-        scroll.drawsBackground = false
-        scroll.autoresizingMask = [.width, .height]
-        let tv = NSTextView(frame: scroll.bounds)
-        tv.isEditable = true
-        tv.isRichText = false
-        tv.isAutomaticQuoteSubstitutionEnabled = false
-        tv.isAutomaticDashSubstitutionEnabled = false
-        tv.drawsBackground = false
-        tv.textColor = NSColor(white: 0.95, alpha: 1)
-        tv.insertionPointColor = Self.accent
-        tv.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        tv.textContainerInset = NSSize(width: 8, height: 8)
-        tv.autoresizingMask = [.width]
-        scroll.documentView = tv
-        content.addSubview(scroll)
-        textView = tv
-
-        let footer = NSTextField(labelWithString:
-            "⌘1 Concise      ⌘2 Detailed      ⌘3 Coding      ⌘⏎ Insert      esc Cancel")
-        footer.font = .systemFont(ofSize: 12, weight: .regular)
-        footer.textColor = NSColor(white: 0.65, alpha: 1)
-        footer.alignment = .center
-        footer.frame = NSRect(x: 16, y: 16, width: w - 32, height: 18)
-        footer.autoresizingMask = [.width, .minYMargin]
-        content.addSubview(footer)
-
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 680, height: 520),
+                        styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        p.delegate = self; p.title = names.count > 1 ? "Review prompt" : "Review dictation"
+        p.minSize = NSSize(width: 600, height: 440)
+        p.isFloatingPanel = true; p.level = .floating; p.hidesOnDeactivate = false; p.isReleasedWhenClosed = false
+        let content = NSView()
         p.contentView = content
+        let stack = NSStackView()
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20)
+        ])
+        let heading = NSTextField(labelWithString: names.count > 1 ? "Make it say what you mean." : "Your words, ready to use.")
+        let descriptor = NSFont.systemFont(ofSize: 22, weight: .semibold).fontDescriptor.withDesign(.serif)
+        heading.font = descriptor.flatMap { NSFont(descriptor: $0, size: 22) } ?? .systemFont(ofSize: 22, weight: .semibold)
+        stack.addArrangedSubview(heading)
+        if names.count > 1 {
+            let choice = NSSegmentedControl(labels: names, trackingMode: .selectOne, target: self, action: #selector(changeVariant(_:)))
+            choice.segmentStyle = .rounded; choice.selectedSegment = index
+            choice.setAccessibilityLabel("Prompt version")
+            stack.addArrangedSubview(choice); segments = choice
+        }
+        let target = NSTextField(labelWithString: "Destination: \(destination)")
+        target.font = .systemFont(ofSize: 12); target.textColor = .secondaryLabelColor
+        target.lineBreakMode = .byTruncatingMiddle; target.toolTip = destination
+        stack.addArrangedSubview(target)
+        target.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true; scroll.borderType = .noBorder
+        scroll.drawsBackground = true; scroll.backgroundColor = .textBackgroundColor
+        scroll.wantsLayer = true; scroll.layer?.cornerRadius = 8
+        let editor = NSTextView(frame: NSRect(x: 0, y: 0, width: 632, height: 300))
+        editor.isEditable = true; editor.isRichText = false
+        editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticDashSubstitutionEnabled = false
+        editor.drawsBackground = true; editor.backgroundColor = .textBackgroundColor; editor.textColor = .textColor
+        editor.font = .systemFont(ofSize: 15); editor.textContainerInset = NSSize(width: 16, height: 16)
+        editor.isVerticallyResizable = true; editor.isHorizontallyResizable = false
+        editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true
+        editor.delegate = self; editor.setAccessibilityLabel("Editable result")
+        let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 6
+        editor.defaultParagraphStyle = paragraph
+        scroll.documentView = editor; textView = editor
+        stack.addArrangedSubview(scroll)
+        NSLayoutConstraint.activate([scroll.widthAnchor.constraint(equalTo: stack.widthAnchor), scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200)])
+        scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
+
+        let footer = NSStackView(); footer.orientation = .horizontal; footer.spacing = 12
+        let saved = NSTextField(labelWithString: "Edits stay in Inbox")
+        saved.font = .systemFont(ofSize: 11); saved.textColor = .secondaryLabelColor; draftLabel = saved
+        saved.lineBreakMode = .byTruncatingTail
+        footer.addArrangedSubview(saved)
+        let flexible = NSView(); flexible.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        footer.addArrangedSubview(flexible)
+        let keep = NSButton(title: "Keep in Inbox", target: self, action: #selector(cancelReview))
+        keep.bezelStyle = .rounded; keep.keyEquivalent = "\u{1b}"
+        let insert = NSButton(title: "Insert", target: self, action: #selector(insertReview))
+        insert.bezelStyle = .rounded; insert.keyEquivalent = "\r"; insert.keyEquivalentModifierMask = [.command]
+        insert.toolTip = "Insert into \(destination) (Command-Return)"
+        footer.addArrangedSubview(keep); footer.addArrangedSubview(insert)
+        stack.addArrangedSubview(footer); footer.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         panel = p
     }
-
-    /// Load the current level's text into the view and update the level pills.
     private func render() {
-        textView?.string = levels[index]
-        textView?.scrollToBeginningOfDocument(nil)
-        let attr = NSMutableAttributedString()
-        for (i, name) in names.enumerated() {
-            if i > 0 { attr.append(NSAttributedString(string: "   ", attributes: nil)) }
-            let active = i == index
-            attr.append(NSAttributedString(string: name, attributes: [
-                .foregroundColor: active ? Self.accent : NSColor(white: 0.5, alpha: 1),
-                .font: NSFont.systemFont(ofSize: 12, weight: active ? .semibold : .regular),
-            ]))
-        }
-        levelLabel?.attributedStringValue = attr
+        textView?.string = levels[index]; textView?.scrollToBeginningOfDocument(nil)
+        segments?.selectedSegment = index
     }
-
-    /// Persist any edits made to the currently shown level.
-    private func saveCurrentEdits() {
-        if let s = textView?.string { levels[index] = s }
-    }
-
-    private func switchTo(_ i: Int) {
-        guard i != index, i >= 0, i < levels.count else { return }
+    private func saveCurrentEdits() { if let value = textView?.string { levels[index] = value } }
+    @discardableResult private func persistDraft() -> Bool {
+        saveTimer?.invalidate(); saveTimer = nil
         saveCurrentEdits()
-        index = i
-        render()
+        do {
+            let variants = names.count > 1 ? Dictionary(uniqueKeysWithValues: zip(names.map { $0.lowercased() }, levels)) : [:]
+            try onDraft?(variants, levels[index])
+            draftLabel?.stringValue = "Edits saved in Inbox"; draftLabel?.textColor = .secondaryLabelColor
+            return true
+        } catch {
+            draftLabel?.stringValue = "Could not save edits. Keep this window open."
+            draftLabel?.toolTip = error.localizedDescription; draftLabel?.textColor = .systemRed
+            return false
+        }
     }
-
+    func textDidChange(_ notification: Notification) {
+        saveTimer?.invalidate(); draftLabel?.stringValue = "Saving edits…"
+        saveTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in self?.persistDraft() }
+    }
+    @objc private func changeVariant(_ sender: NSSegmentedControl) { switchTo(sender.selectedSegment) }
+    private func switchTo(_ value: Int) {
+        guard value != index, levels.indices.contains(value) else { return }
+        guard persistDraft() else { segments?.selectedSegment = index; return }
+        index = value; render()
+    }
     private func installMonitor() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.handleKey(event)
+            guard let self = self, self.panel?.isKeyWindow == true else { return event }
+            if event.keyCode == 53 { self.dismiss(nil); return nil }
+            guard event.modifierFlags.contains(.command) else { return event }
+            if event.keyCode == 36 || event.keyCode == 76 { self.insertReview(); return nil }
+            if let character = event.charactersIgnoringModifiers, let number = Int(character), (1...3).contains(number), self.names.count > 1 {
+                self.switchTo(number - 1); return nil
+            }
+            return event
         }
     }
-
-    private func handleKey(_ event: NSEvent) -> NSEvent? {
-        if event.keyCode == 53 {                       // esc → cancel
-            dismiss(nil); return nil
-        }
-        guard event.modifierFlags.contains(.command) else { return event }  // else: normal typing
-        if event.keyCode == 36 || event.keyCode == 76 {  // ⌘⏎ → insert
-            saveCurrentEdits(); dismiss(levels[index]); return nil
-        }
-        switch event.charactersIgnoringModifiers {
-        case "1": switchTo(0); return nil
-        case "2": switchTo(1); return nil
-        case "3": switchTo(2); return nil
-        default: return event
-        }
+    @objc private func cancelReview() { dismiss(nil) }
+    @objc private func insertReview() { saveCurrentEdits(); dismiss(levels[index]) }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { persistDraft() }
+    func windowWillClose(_ notification: Notification) { cleanup(nil) }
+    @discardableResult private func dismiss(_ result: String?) -> Bool {
+        guard panel == nil || persistDraft() else { return false }
+        cleanup(result); return true
     }
-
-    private func dismiss(_ result: String?) {
-        if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
-        panel?.orderOut(nil)
-        let cb = onChoose
-        onChoose = nil
-        cb?(result)
+    private func cleanup(_ result: String?) {
+        saveTimer?.invalidate(); saveTimer = nil
+        if let monitor = keyMonitor { NSEvent.removeMonitor(monitor); keyMonitor = nil }
+        let window = panel; window?.delegate = nil; window?.orderOut(nil)
+        panel = nil; textView = nil; segments = nil; draftLabel = nil
+        let callback = onChoose; onChoose = nil; onDraft = nil
+        window?.close(); callback?(result)
     }
 }

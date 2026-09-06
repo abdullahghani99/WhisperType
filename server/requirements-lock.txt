@@ -1,25 +1,57 @@
-# Exact working versions (Python 3.12).
-# This is the source of truth for a reproducible server venv. Install with:
-#   python3.12 -m venv ~/WhisperType-venv
-#   ~/WhisperType-venv/bin/pip install -r requirements-lock.txt
-#
-# NOTE: mlx-lm 0.31.3 *declares* transformers>=5.0.0, but transformers 5.x
-# broke mlx-lm's AutoTokenizer.register(); 4.51.3 works. Because of that
-# declared conflict, pip's strict resolver rejects the pinned pair — install
-# with --no-deps ordering (see scripts/deploy_server.sh) or accept the
-# resolver warning; the runtime import + inference are verified working.
-fastapi==0.139.0
-huggingface_hub==0.36.2
-mlx==0.31.2
+# Verified isolated runtime, macOS arm64 / Python 3.13, 2026-09-06.
+# Install normally with pip -r; pip check must pass. No resolver bypass.
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+PyYAML==6.0.3
+Pygments==2.21.0
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+certifi==2026.7.22
+charset-normalizer==3.5.1
+click==8.5.0
+fastapi==0.139.2
+filelock==3.32.5
+fsspec==2026.7.0
+h11==0.16.0
+hf-xet==1.6.0
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==1.30.0
+idna==3.19
+llvmlite==0.49.0
+markdown-it-py==4.2.0
+mdurl==0.1.2
 mlx-lm==0.31.3
-mlx-metal==0.31.2
-numpy==2.5.1
-pydantic==2.13.4
-pydantic_core==2.46.4
+mlx-metal==0.32.2
+mlx-whisper==0.4.3
+mlx==0.32.2
+more-itertools==11.1.0
+mpmath==1.3.0
+networkx==3.6.1
+numba==0.67.0
+numpy==2.5.2
+packaging==26.3
+protobuf==7.36.1
+pydantic==2.13.5
+pydantic_core==2.46.5
 python-multipart==0.0.32
+regex==2026.9.3
 requests==2.34.2
+rich==15.0.0
 safetensors==0.8.0
-starlette==1.3.1
-tokenizers==0.21.4
-transformers==4.51.3
-uvicorn==0.50.2
+scipy==1.18.1
+sentencepiece==0.2.2
+shellingham==1.5.4
+starlette==1.6.0
+sympy==1.14.0
+tiktoken==0.14.0
+tokenizers==0.23.2
+torch==2.14.0
+tqdm==4.70.0
+transformers==5.16.1
+typer==0.27.2
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+urllib3==2.7.0
+uvicorn==0.51.0

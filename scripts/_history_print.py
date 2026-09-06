@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pretty-print WhisperType /history JSON from stdin."""
+"""Pretty-print whispertype /history JSON from stdin."""
 import sys, json
 
 d = json.load(sys.stdin)

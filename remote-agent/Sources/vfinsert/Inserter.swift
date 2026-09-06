@@ -2,51 +2,60 @@ import CoreGraphics
 import Carbon
 import Foundation
 
-/// Local keystroke insertion for the machine this agent runs on (the Mac Mini).
+/// LOCAL keystroke insertion for this Mac (the non-VNC path).
 ///
-/// Because this types LOCALLY — not across a Screen Sharing boundary — synthetic
-/// modifier flags work normally (the local app reads the event's own flags). So
-/// this is the simple, fast path: keycode + flags, no HID-modifier-state dance.
+/// When the target is a Screen Sharing window, the client routes the transcript
+/// to the remote agent instead (see main.swift) — because synthetic modifier
+/// state can't cross the VNC boundary. So this path only ever types locally,
+/// where modifier flags work normally: simple keycode + flags, fast pacing.
 enum Inserter {
-    private static var keyMap: [Character: (CGKeyCode, CGEventFlags)] = buildKeyMap()
+    private static let keyMap: [Character: (CGKeyCode, CGEventFlags)] = buildKeyMap()
 
-    static func type(_ text: String) {
-        guard !text.isEmpty else { return }
+    static func prepare() { _ = keyMap }
+
+    @discardableResult
+    static func type(_ text: String, targetPID: pid_t? = nil, shouldContinue: () -> Bool = { true }) -> Bool {
+        guard !text.isEmpty else { return true }
         let src = CGEventSource(stateID: .combinedSessionState)
         for ch in text {
+            guard shouldContinue() else { return false }
             if ch == "\n" || ch == "\r" {
-                // Shift+Return = soft newline (plain Return submits in chat apps).
-                post(CGKeyCode(kVK_Return), flags: .maskShift, source: src)
+                // Shift+Return = soft newline. Plain Return submits the message
+                // in chat apps (Slack, ChatGPT, Claude, Teams) — avoid that.
+                guard post(CGKeyCode(kVK_Return), flags: .maskShift, source: src, targetPID: targetPID) else { return false }
             } else if let (code, flags) = keyMap[ch] {
-                post(code, flags: flags, source: src)
+                guard post(code, flags: flags, source: src, targetPID: targetPID) else { return false }
             } else if let special = specialKeycode(ch) {
-                post(special, flags: [], source: src)
+                guard post(special, flags: [], source: src, targetPID: targetPID) else { return false }
             } else {
-                postUnicode(ch, source: src)
+                guard postUnicode(ch, source: src, targetPID: targetPID) else { return false }
             }
-            usleep(1500)
+            usleep(800)
         }
+        return true
     }
 
-    private static func post(_ code: CGKeyCode, flags: CGEventFlags, source: CGEventSource?) {
+    private static func post(_ code: CGKeyCode, flags: CGEventFlags, source: CGEventSource?, targetPID: pid_t?) -> Bool {
         guard let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else { return }
+              let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else { return false }
         down.flags = flags
         up.flags = flags
-        down.post(tap: .cgSessionEventTap)
-        up.post(tap: .cgSessionEventTap)
+        if let pid = targetPID { down.postToPid(pid); up.postToPid(pid) }
+        else { down.post(tap: .cgSessionEventTap); up.post(tap: .cgSessionEventTap) }
+        return true
     }
 
-    private static func postUnicode(_ ch: Character, source: CGEventSource?) {
+    private static func postUnicode(_ ch: Character, source: CGEventSource?, targetPID: pid_t?) -> Bool {
         let utf16 = Array(String(ch).utf16)
         guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { return }
+              let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { return false }
         utf16.withUnsafeBufferPointer { buf in
             down.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
             up.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
         }
-        down.post(tap: .cgSessionEventTap)
-        up.post(tap: .cgSessionEventTap)
+        if let pid = targetPID { down.postToPid(pid); up.postToPid(pid) }
+        else { down.post(tap: .cgSessionEventTap); up.post(tap: .cgSessionEventTap) }
+        return true
     }
 
     private static func specialKeycode(_ ch: Character) -> CGKeyCode? {

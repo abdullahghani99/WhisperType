@@ -192,7 +192,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         wireClientExperience()
         refreshDockMic()
-        dockController.show()
+        if ProcessInfo.processInfo.environment["VF_VALIDATION_HIDE_DOCK"] != "1" { dockController.show() }
 
         Task { await refreshHistory() }   // seed the dropdown from the server
         startHealthMonitor()
@@ -911,6 +911,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if globalMonitor == nil { setupHotkey() }
             if eventTap == nil { setupMouseTap() }
         }
+        if ProcessInfo.processInfo.environment["VF_VALIDATION"] == "1",
+           let directory = ProcessInfo.processInfo.environment["VF_DATA_DIR"] {
+            let snapshot: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier,
+                "server": client.baseURL.absoluteString, "recordings": RecordingStore.recordingsDirectory().path,
+                "microphone": settings.microphonePermission, "accessibility": settings.accessibilityPermission,
+                "screenRecording": settings.screenPermission, "globalShortcut": globalMonitor != nil,
+                "localShortcut": localMonitor != nil, "mouseTap": eventTap != nil,
+                "inputActive": recorder.isEngineRunning]
+            let path = URL(fileURLWithPath: directory).appendingPathComponent("review-status.json")
+            if let data = try? JSONSerialization.data(withJSONObject: snapshot, options: [.sortedKeys]) {
+                try? data.write(to: path, options: .atomic)
+                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+            }
+        }
     }
 
     // MARK: - Permissions
@@ -951,6 +965,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let isolated = ProcessInfo.processInfo.environment["VF_VALIDATION"] == "1"
         let validateHotkeys = ProcessInfo.processInfo.environment["VF_VALIDATE_HOTKEYS"] == "1"
+        guard !isolated || validateHotkeys else {
+            vlog("validation: local/global recording shortcuts disabled")
+            return
+        }
         if globalMonitor == nil && (!isolated || validateHotkeys) { globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged], handler: handler) }
         if localMonitor == nil { localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { event in handler(event); return event } }
 
@@ -1301,6 +1319,25 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 }
 
+// A Finder relaunch of the disposable Review bundle must not fall back to
+// production defaults. Ordinary signed production bundles never load this file.
+if Bundle.main.bundleIdentifier?.hasSuffix(".review.client") == true {
+    do {
+        guard let path = Bundle.main.object(forInfoDictionaryKey: "VFReviewEnvironmentFile") as? String else {
+            throw CocoaError(.fileReadNoSuchFile)
+        }
+        let values = try JSONDecoder().decode([String:String].self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        let expectedData = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/WhisperType Review Validation").path
+        guard values["VF_VALIDATION"] == "1", values["VF_SERVER_URL"] == "http://127.0.0.1:18790",
+              values["VF_DATA_DIR"] == expectedData else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        for (key, value) in values where key.hasPrefix("VF_") { setenv(key, value, 1) }
+    } catch {
+        fputs("Review configuration unavailable; refusing to start with production defaults.\n", stderr)
+        exit(1)
+    }
+}
 let app = NSApplication.shared
 let controller = AppController()
 app.delegate = controller

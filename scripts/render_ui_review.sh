@@ -6,7 +6,7 @@ OUT="${1:?pass an output directory}"
 SCRATCH="${VF_UI_SCRATCH:-$(mktemp -d /tmp/whispertype-ui.XXXXXX)}"
 mkdir -p "$SCRATCH/Sources/ReviewPreview" "$SCRATCH/Sources/WhisperTypeKit" "$OUT"
 cp "$ROOT/client/Sources/WhisperTypeKit/"*.swift "$SCRATCH/Sources/WhisperTypeKit/"
-for source in MainWindow SettingsWindow MeetingsWindow DockView ServerClient PromptReview CaptureHome; do
+for source in MainWindow SettingsWindow MeetingsWindow DockView DockController ServerClient PromptReview CaptureHome; do
   cp "$ROOT/client/Sources/WhisperType/$source.swift" "$SCRATCH/Sources/ReviewPreview/"
 done
 cp "$ROOT/tests/ui/"*.swift "$SCRATCH/Sources/ReviewPreview/"
@@ -21,6 +21,7 @@ let package = Package(name:"WhisperTypeReviewPreview",platforms:[.macOS(.v13)],t
 for path in (root/'Sources/ReviewPreview').glob('*.swift'):
  s=path.read_text().replace('UserDefaults.standard','ReviewDefaults.shared')
  if path.name=='PromptReview.swift': s=s.replace('private var panel','var panel').replace('private var levels','var levels').replace('private var textView','var textView').replace('private func buildPanel','func buildPanel').replace('private func render','func render')
+ if path.name=='DockController.swift': s=s.replace('private var panel','var panel').replace('private var hosting','var hosting').replace('DockPlacement(store: .standard)','DockPlacement(store: dockReviewDefaults)')
  path.write_text(s)
 PY
 swift build --package-path "$SCRATCH" --product ReviewPreview > "$OUT/build.log" 2>&1
@@ -41,7 +42,7 @@ with (Path(sys.argv[1])/'Contents/Info.plist').open('wb') as file:
 PLIST
   codesign --force --sign - "$APP" > "$OUT/sign.log" 2>&1
   RESTORE_PID="$(swift -e 'import AppKit; print(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0)')"
-  open -W -n --env "VF_DATA_DIR=$DATA_ROOT" --env "VF_UI_ACTIVE=1" --env "VF_UI_RESTORE_PID=$RESTORE_PID" --env "VF_UI_LOG_PATH=$RENDER_OUT/render.log" "$APP" --args "$SCRATCH/fonts" "$RENDER_OUT"
+  open -W -n --env "VF_DATA_DIR=$DATA_ROOT" --env "VF_UI_ACTIVE=1" --env "VF_UI_NATIVE_ONLY=${VF_UI_NATIVE_ONLY:-0}" --env "VF_UI_RESTORE_PID=$RESTORE_PID" --env "VF_UI_LOG_PATH=$RENDER_OUT/render.log" "$APP" --args "$SCRATCH/fonts" "$RENDER_OUT"
 else
   VF_DATA_DIR="$DATA_ROOT" "$BIN/ReviewPreview" "$SCRATCH/fonts" "$RENDER_OUT" > "$RENDER_OUT/render.log" 2>&1
 fi

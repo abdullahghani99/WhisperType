@@ -81,6 +81,11 @@ func render<V:View>(_ view:V,_ name:String,width:CGFloat=1180,height:CGFloat=800
  saveView(controller.view,name,width:width,height:height,controller:controller)
 }
 func runReview() {
+if ProcessInfo.processInfo.environment["VF_UI_NATIVE_ONLY"] == "1" {
+ testNativeReviewInteraction(); testNativeDockInteraction(); testNativeCaptureControls()
+ print("COMPLETE: native interaction checks only")
+ previousApp?.activate(options: []); exit(0)
+}
 assert(MeetingsView.isMine("Ann: send the report", myName: "Ann"))
 assert(!MeetingsView.isMine("Johann: send the report", myName: "Ann"))
 assert(MeetingsView.isMine("**ALEX:** review the numbers", myName: "Alex"))
@@ -159,6 +164,8 @@ if let panel = prompt.panel {
 }
 renderPillShowcase(out)
 testNativeReviewInteraction()
+testNativeDockInteraction()
+testNativeCaptureControls()
 print("COMPLETE: no AppController, AudioRecorder, MeetingRecorder, or CallWatcher compiled into preview; clients nil; preference writes in-memory")
 if activePreview { previousApp?.activate(options: []) }
 exit(0)

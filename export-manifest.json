@@ -37,7 +37,7 @@
     "client/Sources/WhisperType/ServerClient.swift": "ffcb8b8f2a9109e023ad8a541bf3d66693729629a0efdad5e814f9d7a7f4b5c7",
     "client/Sources/WhisperType/SettingsWindow.swift": "61663534a7dd454ba8469b081269bfa3724209898dfa3e173fff707a9dd79a9f",
     "client/Sources/WhisperType/SoundFeedback.swift": "df9cf3cc1a29c962cbcfeff5f983753740f0a6eb9e944a5bb9b13117848b88c2",
-    "client/Sources/WhisperType/main.swift": "99eed6954034fe9d997fe8178bbeff64d79de48fd24ae5dcf0043efea9acf9e1",
+    "client/Sources/WhisperType/main.swift": "a9bdad272be4d4a107cd82a6e80f79b30b1edb164cb6a8ff1a48103b3a4cd3c7",
     "client/Sources/WhisperTypeKit/BoundedProcess.swift": "ea2b422c2d3343dd33efdb47047e65cfb885c1b3ef1dacb57b9475bc21c6ff2b",
     "client/Sources/WhisperTypeKit/CallDetector.swift": "a7f4d800e65c6c03a82b74a36dc0cdb16e2e14056dcc75e66f6f658785696a2a",
     "client/Sources/WhisperTypeKit/CallSource.swift": "d958eff74108789cb95cf1d2a5923d759db83da75fb1d6cea47a0cf25968894d",
@@ -68,7 +68,7 @@
     "scripts/gen_test_runner.py": "3cc5305a264558dad0276731d1f7b601f35bfa9af7ec1aaf6a63cb9c1f17c112",
     "scripts/history.py": "065f134fbcdd860f5891b7a81875083c9cf20e864ca059aed351ced55da8e0d7",
     "scripts/history.sh": "5ee1391d570a60a3fabc6ef8ee0dba7033a057627e4ff01a944dc5dec150257d",
-    "scripts/render_ui_review.sh": "099717bf6cf3fb340f5164c4fe4fa8e75a39464a9ff9f7d40e6b6441a8f46406",
+    "scripts/render_ui_review.sh": "4834aaf21ed7f0805356cf474ddb12d1378baf597006525334a1e7dbf8139a60",
     "scripts/semantic_gate.py": "7b21bc11c1e6c41da5c82ddcac9747e34cb1a5d557a524f7dd11969f9bf6779b",
     "scripts/split_training.py": "d03f4d9dfdc11913de3507b882673425eee2c3d86d882baaeb68132388fc6cec",
     "scripts/test_agent_protocol.sh": "6f6146e1a332a4873d4785577c6c57740995580a0c7ea0e61a07d13dc32a3e5c",
@@ -87,9 +87,11 @@
     "tests/agent/test_agent_http.py": "a1167a745ff010c7335d43a97d400f23ac729dee5dbc43725d610d4180a5b84a",
     "tests/test_release_and_training.py": "75d5eeea888f6ced014db1d54003e723682c01c5de156ddfa9a4e0c9b09d6704",
     "tests/transport/TransportTests.swift": "e23f99706af592283208268a1063e8d32899e20e85c31885b67f8dc53192bb34",
+    "tests/ui/NativeControls.swift": "ded55156824f7950e236fc4597f704cfd4bf76cd75c12e1f1bc368afe1b31d39",
+    "tests/ui/NativeDock.swift": "f8f9fbfb659ef16aaa696622179900d6f2259dfd0d56fa476b80ea4888080b78",
     "tests/ui/NativeInteraction.swift": "ea8392f402ddd5e3483415751db88fbd936155018af31295976d5d3a98d9cb90",
     "tests/ui/PillShowcase.swift": "c13c6fec1f1349860577cde6e369fc901d1f1f5ba9c38eeee5c5694afe3f953c",
-    "tests/ui/Stubs.swift": "f63c2382734255edd386e32f6e5a790b01475293fb13455564ffc9a068429b9a",
-    "tests/ui/main.swift": "688d48dfb7bcb7f178c0a257527a501ad45f3cb886f498dda56901c73f41226e"
+    "tests/ui/Stubs.swift": "cc3a6a729a87398832fc9d5156a2ad1c7452a6fb9e7451de706f5167bcc6c577",
+    "tests/ui/main.swift": "4e98fcc21e67b3e89c9bccfac70f60d9d022afc2750d338f126f0b2f07bf3ef8"
   }
 }

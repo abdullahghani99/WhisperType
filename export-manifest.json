@@ -49,7 +49,7 @@
     "client/Sources/WhisperTypeKit/MicLifecycle.swift": "74064b2b5d806da36bc4d1c7a3799ffaaf522c19684f0660321067d5a8d776ef",
     "client/Sources/WhisperTypeKit/RecordingStore.swift": "909812f0ffe597c5c848e6e1e2007dc71cf62fe7cceccfd5dc5b4488de4b948f",
     "client/Sources/WhisperTypeKit/SpeakerText.swift": "a74b3c55c4f5f24037245b7b79d3660ebe3ced910043dc9f7c7446dc2d4b32b0",
-    "client/build_app.sh": "15ae205e35a82ec44bbef49a6e3acc288922600af7fbfc8b4e09a787954d8330",
+    "client/build_app.sh": "d70daab92d1c625caaf3db412330885d46a2395811020b8904d35aa64a386e01",
     "client/icon/AppIcon.icns": "ff027cd74ad991b5a3400b8acd359637406f859df523b63a28627a30f7aca8b3",
     "client/icon/mkicon.py": "6425d3a0f2e08c67e44d0122a39d95bb15b56918c00baddfbc6fb1552c834707",
     "client/install.py": "8b32d039a643c78bf780eaa918f8a66320f8e7bbff76021727af4855f32de21b",

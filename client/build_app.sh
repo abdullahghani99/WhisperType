@@ -60,16 +60,16 @@ fi
 SIGN="${IDENTITY:--}"   # fall back to ad-hoc "-" if nothing found
 
 echo "==> codesign with identity: ${IDENTITY:-ad-hoc}"
-codesign --force --deep --sign "$SIGN" \
-    --options runtime \
-    --entitlements <(cat <<'EOF'
+ENTITLEMENTS="$(mktemp "$SCRATCH/entitlements.XXXXXX")"
+trap 'rm -f "$ENTITLEMENTS"' EXIT
+cat > "$ENTITLEMENTS" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>com.apple.security.device.audio-input</key><true/>
 </dict></plist>
 EOF
-) "$APP"
+codesign --force --deep --sign "$SIGN" --options runtime --entitlements "$ENTITLEMENTS" "$APP"
 codesign --verify --strict "$APP"
 
 echo "==> done: $(pwd)/$APP  (signed: ${IDENTITY:-ad-hoc})"

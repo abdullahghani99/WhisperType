@@ -24,7 +24,7 @@ def main():
     ssh += [args.host]
     remote = subprocess.check_output(ssh + ['mktemp -d /tmp/whispertype-release.XXXXXX'], text=True).strip()
     if not remote.startswith('/tmp/whispertype-release.'): raise SystemExit('Unexpected staging path')
-    files = ['server.py', 'inference_worker.py', 'diarize.py', 'requirements-lock.txt', 'requirements-diarize-lock.txt', 'deploy_release.py']
+    files = ['server.py', 'inference_worker.py', 'diarize.py', 'polish.py', 'learning.py', 'requirements-lock.txt', 'requirements-diarize-lock.txt', 'deploy_release.py']
     revision = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'], cwd=repo, text=True).strip()
     manifest = {'revision': revision, 'sha256': {name: hashlib.sha256((repo/'server'/name).read_bytes()).hexdigest() for name in files}}
     try:

@@ -3,11 +3,14 @@ import ast
 from pathlib import Path
 import re
 import unittest
+import logging
+import types
+import polish as copyediting
 
 source = ast.parse(Path(__file__).with_name("server.py").read_text())
-names = {"_TOKEN_RE", "_STOPWORDS", "_SECOND_PERSON", "_protected_speech_act", "_speech_act_words", "_polish_failed", "_polish", "POLISH_SYS"}
+names = {"_TOKEN_RE", "_STOPWORDS", "_SECOND_PERSON", "_protected_speech_act", "_speech_act_words", "_polish_failed", "_polish", "_polish_result", "POLISH_SYS"}
 selected = [node for node in source.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names or isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in node.targets)]
-ns = {"re": re}; exec(compile(ast.Module(body=selected, type_ignores=[]), "guard", "exec"), ns)
+ns = {"re": re, "copyediting": copyediting, "learning": types.SimpleNamespace(relevant_examples=lambda *a: []), "DB_PATH": "unused", "log": logging.getLogger("test") }; exec(compile(ast.Module(body=selected, type_ignores=[]), "guard", "exec"), ns)
 failed = ns["_polish_failed"]
 
 class SpeechActTests(unittest.TestCase):

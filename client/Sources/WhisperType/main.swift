@@ -632,7 +632,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try await client.correct(id: id, edited: edited)
                 vlog("correction taught for id=\(id)")
                 await MainActor.run {
-                    self.overlay.show(.message("Learned. Review it in Settings ▸ Learning."))
+                    self.lastDictationText = edited
+                    self.overlay.show(.message("Correction saved for future dictations."))
                     self.overlay.hide(after: 2.5)
                 }
             } catch {

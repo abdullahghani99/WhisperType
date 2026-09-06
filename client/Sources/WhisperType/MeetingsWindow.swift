@@ -111,6 +111,17 @@ final class MeetingsState: ObservableObject {
         }
     }
 
+    @MainActor func teach(_ meeting: ServerClient.Meeting, notes: Bool) {
+        let text = notes ? meeting.notes : meeting.transcript
+        guard let edited = CorrectionPrompt.run(prefill: text), edited != text, let client = client else { return }
+        Task {
+            do {
+                try await client.teachMeeting(id: meeting.id, task: notes ? "meeting_notes" : "meeting_transcript", edited: edited, expected: text)
+                self.loadError = nil; self.open(meeting.id)
+            } catch { self.loadError = error.localizedDescription }
+        }
+    }
+
     func delete(_ id: Int) {
         guard let client = client else { return }
         Task {
@@ -370,6 +381,10 @@ struct MeetingsView: View {
 
             if let s = summary {
                 Button("Rename") { promptRename(s) }.controlSize(.small)
+                Menu("Teach correction") {
+                    Button("Correct notes") { state.teach(m, notes: true) }.disabled(m.notes.isEmpty)
+                    Button("Correct transcript") { state.teach(m, notes: false) }.disabled(m.transcript.isEmpty)
+                }.disabled(m.status == "processing").controlSize(.small)
                 Button("Export notes\u{2026}") { save(m) }.controlSize(.small).disabled(m.notes.isEmpty && m.transcript.isEmpty)
                 Divider().frame(height: 14)
                 Button("Delete") { confirmDelete(s) }

@@ -51,13 +51,36 @@ class ReliabilityTests(unittest.TestCase):
 
     def test_auth_is_default_for_all_sensitive_routes(self):
         self.m.API_KEY = 'test-key'
-        for path in ['/history','/meetings','/meeting/1','/vocab','/voiceprints','/suggestions']:
+        for path in ['/history','/meetings','/meeting/1','/vocab','/voiceprints','/suggestions','/learning/status']:
             self.assertEqual(self.client.get(path).status_code, 401, path)
         self.assertEqual(self.client.post('/retranscribe?id=1').status_code, 401)
         self.assertEqual(self.client.get('/health').status_code, 200)
         self.assertEqual(self.client.get('/history', headers={'Authorization':'Bearer test-key'}).status_code, 200)
         self.m.API_KEY = ''
         self.assertEqual(self.client.get('/history').status_code, 200)
+
+    def test_correction_api_roundtrip_stale_protection_and_deletion(self):
+        original = "Can we check the payroll report."
+        hid = self.m._capture(original, original, original, 1, 1, 1, b"audio")
+        body = {"id": hid, "edited": "Can we check the payroll report?", "expected": original}
+        self.assertEqual(self.client.post('/correct', json=body).status_code, 200)
+        self.assertEqual(self.client.get('/learning/status').json()['corrections'], 1)
+        self.assertEqual(self.client.get('/history').json()['items'][0]['polished'], original)
+        self.assertEqual(self.client.get('/history').json()['items'][0]['edited'], body['edited'])
+        self.assertEqual(self.client.post('/correct', json=body).status_code, 409)
+        self.assertEqual(self.client.delete('/history/'+str(hid)).status_code, 200)
+        with sqlite3.connect(self.m.DB_PATH) as con:
+            self.assertEqual(con.execute('SELECT count(*) FROM learning_feedback').fetchone()[0], 0)
+
+    def test_meeting_corrections_are_separate_and_displayed(self):
+        hid = self.job()
+        with sqlite3.connect(self.m.DB_PATH) as con:
+            con.execute("UPDATE meetings SET status='done',transcript='Alex will send the report.',notes='Send the report.' WHERE id=?", (hid,))
+        body = {"task": "meeting_notes", "id": hid, "edited": "Alex: send the report.", "expected": "Send the report."}
+        self.assertEqual(self.client.post('/learning/feedback',json=body).status_code,200)
+        self.assertEqual(self.client.get('/meeting/'+str(hid)).json()['notes'],body['edited'])
+        self.assertEqual(self.client.get('/learning/status').json()['feedback']['meeting_notes'],1)
+        self.assertEqual(self.client.post('/learning/feedback',json={**body,'task':[]}).status_code,400)
 
     def test_spool_failure_is_not_accepted(self):
         with patch.object(self.m.os, 'makedirs', side_effect=OSError('disk unavailable')):

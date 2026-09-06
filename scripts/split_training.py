@@ -13,7 +13,7 @@ import re
 def input_key(row):
     messages = row['messages']
     source = next(m['content'] for m in messages if m['role'] == 'user')
-    source = source.replace('<<<BEGIN>>>', '').replace('<<<END>>>', '')
+    source = source.replace('<<<BEGIN>>>', '').replace('<<<END>>>', '').replace('<dictation>', '').replace('</dictation>', '')
     return re.sub(r'\s+', ' ', source).strip().casefold()
 
 def split(rows, seed=7):

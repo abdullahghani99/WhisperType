@@ -60,7 +60,7 @@
     "client/icon/mkicon.py": "6425d3a0f2e08c67e44d0122a39d95bb15b56918c00baddfbc6fb1552c834707",
     "client/install.py": "8b32d039a643c78bf780eaa918f8a66320f8e7bbff76021727af4855f32de21b",
     "client/install.sh": "b0eac912091959ded919901abcdc3efa20552760e69ab8358e62b542ecf735d9",
-    "docs/DICTATION-REPAIR.md": "4d6d1616288f1e33992d3d726d02b35a62eb59aa9a8858416a3bec8bb659dc4a",
+    "docs/DICTATION-REPAIR.md": "580bee73e6f086e1051280118f52f4031f0445161e394ac48cdea1e35acf5cb2",
     "docs/OPERATIONS.md": "65128c46d1a09519ef4bc065642a344b17da75e4dba46f2ced0a9c4b052195aa",
     "docs/SETUP.md": "6bbd0153f9ac6fe01e2deb8120d6f6bfdf774719bd058602c9551906ba503e19",
     "remote-agent/Package.swift": "ba75109e10980531850f84dbfc097c2159489eff727561a6ddcd1b68d48d0058",

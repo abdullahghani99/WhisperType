@@ -145,6 +145,13 @@ func run(_ name: String, _ body: () -> Void) {
         run("SpeakerTextTests.testReturnsEmptyWhenThereAreNoLabels") { t.testReturnsEmptyWhenThereAreNoLabels() }
         run("SpeakerTextTests.testIgnoresBoldThatIsNotASpeakerLabel") { t.testIgnoresBoldThatIsNotASpeakerLabel() }
     }
+    suite("SpokenListTests") {
+        let t = SpokenListTests()
+        run("SpokenListTests.testExplicitQuestionsKeepWordingAndDoNotAnswer") { t.testExplicitQuestionsKeepWordingAndDoNotAnswer() }
+        run("SpokenListTests.testCompleteThreeItemSequencePreservesNumbersAndUnicode") { t.testCompleteThreeItemSequencePreservesNumbersAndUnicode() }
+        run("SpokenListTests.testAmbiguousIncompleteOrAlreadyFormattedTextStaysUnchanged") { t.testAmbiguousIncompleteOrAlreadyFormattedTextStaysUnchanged() }
+        run("SpokenListTests.testCodeTerminalAndUnknownDestinationsStayUnchanged") { t.testCodeTerminalAndUnknownDestinationsStayUnchanged() }
+    }
 
 // --- drift check: every `func test…` on disk must be registered above ---
 let fm = FileManager.default
@@ -156,7 +163,7 @@ if let files = try? fm.contentsOfDirectory(atPath: "Sources/VFTests") {
         }
     }
 }
-let registered = 94
+let registered = 98
 print("")
 if declared > 0 && declared != registered {
     print("  ✘ DRIFT: \(declared) test functions on disk, \(registered) registered.")

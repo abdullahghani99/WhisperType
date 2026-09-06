@@ -65,3 +65,10 @@ An existing authenticated SSH connection can forward a local loopback port to th
 The `--diagnose-destination` support command reports permission, process identity and focused roles without field text or window titles. It may request the target application's accessibility tree. Chromium/Electron can expose that tree on demand: see [Chromium accessibility](https://www.chromium.org/developers/design-documents/accessibility/) and [Electron accessibility](https://github.com/electron/electron/blob/main/docs/tutorial/accessibility.md).
 
 Some editors and terminals accept typing but cannot expose an exact plain-text receipt. Those entries are marked sent but unverified and are never automatically repeated. Check the destination, then use **It’s in place** to acknowledge successful placement, or review the retained text carefully before choosing another insertion.
+
+
+### Spoken lists and finishing pending work
+
+Dictation keeps the server cleanup result and applies a narrow local list fallback when one explicit announcement (two to five things, points, items, questions or steps) is followed by a complete consecutive one/two sequence. It preserves every item's wording and never answers dictated questions. Existing multiline text, code-like text, terminal/editor destinations and unknown remote app identities are left unchanged. The paired agent supplies its captured application name; Screen Sharing itself is not treated as the destination editor. The server history retains the server result; Inbox and local placement use the formatted text.
+
+Quitting waits for queued dictation processing and insertion verification to finish before the application exits. New captures are held while quitting; active recording and unsaved-audio protections remain in place. Typing without an exact receipt remains explicitly unverified and is never automatically replayed.

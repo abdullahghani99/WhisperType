@@ -41,6 +41,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var presentationID: UUID?
     private var processingTasks: [UUID: Task<Void, Never>] = [:]
     private var processingTail: Task<Void, Never>?
+    private var terminationPending = false
     private var unsavedRecordings: [UUID: (audio: Data, entry: RecordingStore.Entry)] = [:]
     private var reviewedRecordingID: UUID?
     private var importTask: Task<Void, Never>?
@@ -440,7 +441,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func startMeeting() {
-        guard !isRecording, !meetingStarting, !meetingFinishing, !meetingRecorder.isRecording else { return }
+        guard !terminationPending, !isRecording, !meetingStarting, !meetingFinishing, !meetingRecorder.isRecording else { return }
         let attempt = UUID(); meetingAttemptID = attempt
         meetingStarting = true
         meetingFromCall = dockController.state.callOffer
@@ -1082,9 +1083,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Record → transcribe → insert
 
     private var remotePreparations: [UUID: Task<Void, Error>] = [:]
+    private var remoteDestinationNames: [UUID: String] = [:]
 
     private func beginRecording(prompt: Bool = false, trigger: String = "menu-test") {
-        guard !isRecording, !meetingStarting, !meetingFinishing, !meetingRecorder.isRecording else { return }
+        guard !terminationPending, !isRecording, !meetingStarting, !meetingFinishing, !meetingRecorder.isRecording else { return }
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { requestMicPermission(); return }
         let intentAt = ProcessInfo.processInfo.systemUptime
         let id = UUID()
@@ -1174,6 +1176,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert.runModal()
             return .terminateCancel
         }
+        if !processingTasks.isEmpty {
+            guard !terminationPending else { return .terminateLater }
+            terminationPending = true
+            mainWC.settings.captureStatus = "Finishing saved dictation before quitting…"
+            Task { @MainActor in
+                while !self.processingTasks.isEmpty {
+                    let tasks = Array(self.processingTasks.values)
+                    for task in tasks { await task.value }
+                }
+                self.terminationPending = false
+                sender.reply(toApplicationShouldTerminate: self.applicationShouldTerminate(sender) == .terminateNow)
+            }
+            return .terminateLater
+        }
         guard promptReview.prepareToQuit() else { return .terminateCancel }
         guard !unsavedRecordings.isEmpty else { return .terminateNow }
         let alert = NSAlert()
@@ -1184,7 +1200,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func enqueueRecording(_ id: UUID) {
-        guard processingTasks[id] == nil else { return }
+        guard !terminationPending, processingTasks[id] == nil else { return }
         let previous = processingTail
         let task = Task { @MainActor [weak self] in
             await previous?.value
@@ -1226,18 +1242,24 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 vlog("pipeline timing: id=\(id) asrRequestMs=\(Int((ProcessInfo.processInfo.systemUptime - requestAt) * 1000))")
                 try Task.checkCancellation()
                 entry.raw = result.raw; entry.text = result.text; entry.historyID = result.id
+                // Remote preparation captures the actual destination app. An
+                // unavailable app identity leaves the server result untouched.
+                if let target = destinations[id] {
+                    if target.isRemote { _ = try? await remotePreparations[id]?.value }
+                    entry.text = SpokenListFormatter.format(result.text, destinationName: target.isRemote ? remoteDestinationNames[id] : target.name)
+                }
                 guard entry.hasResult else { throw emptyTranscriptionError() }
                 entry.status = "ready"
                 try RecordingStore.save(entry); recordingsChanged()
-                addToHistory(result.text); lastDictationId = result.id; lastDictationText = result.text
+                addToHistory(entry.text); lastDictationId = result.id; lastDictationText = entry.text
                 if destinations[id] == nil { vlog("insertion deferred: id=\(id) no-captured-destination") }
                 if isRecording { vlog("insertion deferred: id=\(id) another-recording-active") }
                 if !isRecording, let target = destinations[id], target.isCurrent(diagnose: { vlog("insertion destination: id=\(id) \($0)") }) {
-                    try await insert(result.text, into: target, id: id)
+                    try await insert(entry.text, into: target, id: id)
                     entry.status = "inserted"; try RecordingStore.save(entry)
                     try RecordingStore.removeAudio(id)
                     if presentationID == id {
-                        dockController.state.complete(words: result.text.split(whereSeparator: { $0.isWhitespace }).count)
+                        dockController.state.complete(words: entry.text.split(whereSeparator: { $0.isWhitespace }).count)
                         mainWC.settings.captureStatus = "Sent to \(target.name)"; SoundFeedback.done()
                     }
                 } else {
@@ -1317,7 +1339,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @MainActor private func insert(_ text: String, into target: CaptureDestination, id: UUID) async throws {
         guard target.isCurrent() else { throw insertionError("Destination changed. Result retained; review placement.") }
         if target.isRemote {
-            defer { remotePreparations[id] = nil }
+            defer { remotePreparations[id] = nil; remoteDestinationNames[id] = nil }
             try await remotePreparations[id]?.value
             guard target.isCurrent(), !isRecording else { throw insertionError("Destination changed. Review placement in Inbox.") }
             let receipt = try await remoteRequest(path: "insert", target: target, id: id, text: text)
@@ -1350,7 +1372,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @MainActor private func prepareRemote(_ target: CaptureDestination, id: UUID) async throws {
         guard target.isCurrent() else { throw insertionError("Remote destination changed before capture.") }
-        _ = try await remoteRequest(path: "prepare", target: target, id: id)
+        let response = try await remoteRequest(path: "prepare", target: target, id: id)
+        remoteDestinationNames[id] = response["application"] as? String
     }
 
     private func remoteRequest(path: String, target: CaptureDestination, id: UUID, text: String? = nil) async throws -> [String: Any] {

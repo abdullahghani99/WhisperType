@@ -106,8 +106,8 @@ public struct DockView: View {
                 }
             case .done:
                 HStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(VF.Color.healthy(dark: true)).accessibilityHidden(true)
-                    Text(state.lastWordCount > 0 ? "\(state.lastWordCount) words sent" : "Text sent")
+                    Image(systemName: state.placementUnverified ? "paperplane" : "checkmark.circle.fill").foregroundStyle(VF.Color.healthy(dark: true)).accessibilityHidden(true)
+                    Text(state.placementUnverified ? "Sent · check destination" : state.lastWordCount > 0 ? "\(state.lastWordCount) words sent" : "Text sent")
                 }.accessibilityElement(children: .combine)
             case .error:
                 HStack(spacing: 10) {

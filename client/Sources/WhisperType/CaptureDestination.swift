@@ -37,8 +37,19 @@ struct CaptureDestination {
         }
         guard let winValue = attribute(element, kAXFocusedWindowAttribute),
               CFGetTypeID(winValue) == AXUIElementGetTypeID() else { diagnose("\(identity) focused-window-unavailable"); return nil }
-        guard let fieldValue = attribute(element, kAXFocusedUIElementAttribute),
-              CFGetTypeID(fieldValue) == AXUIElementGetTypeID() else { diagnose("\(identity) focused-field-unavailable"); return nil }
+        var fieldValue = attribute(element, kAXFocusedUIElementAttribute)
+        if fieldValue == nil && requestAccessibilityTree(element, diagnose: diagnose) {
+            // Chromium builds its tree on demand. Allow a short bounded initial
+            // response; subsequent captures and per-key checks use the live tree.
+            for _ in 0..<6 {
+                Thread.sleep(forTimeInterval: 0.05)
+                fieldValue = attribute(element, kAXFocusedUIElementAttribute)
+                if fieldValue != nil { break }
+            }
+        }
+        guard let fieldValue = fieldValue, CFGetTypeID(fieldValue) == AXUIElementGetTypeID() else {
+            diagnose("\(identity) focused-field-unavailable"); return nil
+        }
         let window = winValue as! AXUIElement, field = fieldValue as! AXUIElement
         let remote = (app.bundleIdentifier ?? "").contains("ScreenSharing")
         let role = attribute(field, kAXRoleAttribute) as? String ?? ""
@@ -51,6 +62,50 @@ struct CaptureDestination {
         diagnose("captured \(identity) role=\(role) remote=\(remote)")
         return CaptureDestination(app: app, window: window, field: field,
                                   title: attribute(window, kAXTitleAttribute) as? String ?? "")
+    }
+    /// Chromium/Electron expose their full accessibility tree only after an
+    /// assistive client requests it. This enables app accessibility, never focus,
+    /// field values, keyboard events or global system preferences.
+    private static func requestAccessibilityTree(_ application: AXUIElement, diagnose: (String) -> Void) -> Bool {
+        var enabled = false
+        for name in ["AXManualAccessibility", "AXEnhancedUserInterface"] {
+            let status = AXUIElementSetAttributeValue(application, name as CFString, kCFBooleanTrue)
+            diagnose("request-accessibility-tree attribute=\(name) ax=\(status.rawValue)")
+            enabled = enabled || status == .success
+        }
+        return enabled
+    }
+    /// Metadata-only support inspection. Never reads values, titles or labels.
+    static func diagnoseFocusedTree(_ report: (String) -> Void) {
+        guard AXIsProcessTrusted(), let app = NSWorkspace.shared.frontmostApplication else { return }
+        let application = AXUIElementCreateApplication(app.processIdentifier)
+        func get(_ item: AXUIElement, _ key: String) -> CFTypeRef? {
+            var value: CFTypeRef?
+            let status = AXUIElementCopyAttributeValue(item, key as CFString, &value)
+            return status == .success ? value : nil
+        }
+        for (name, item) in [("system", AXUIElementCreateSystemWide()), ("app", application)] {
+            if let field = get(item, kAXFocusedUIElementAttribute), CFGetTypeID(field) == AXUIElementGetTypeID() {
+                report("\(name)-focused role=\(get(field as! AXUIElement, kAXRoleAttribute) as? String ?? "unknown")")
+            } else { report("\(name)-focused absent") }
+        }
+        guard let raw = get(application, kAXFocusedWindowAttribute), CFGetTypeID(raw) == AXUIElementGetTypeID() else { return }
+        var queue: [(AXUIElement, Int)] = [(raw as! AXUIElement, 0)]
+        var index = 0
+        while index < queue.count && index < 400 {
+            let (node, depth) = queue[index]; index += 1
+            let role = get(node, kAXRoleAttribute) as? String ?? "unknown"
+            let focused = get(node, kAXFocusedAttribute) as? Bool ?? false
+            var writable = DarwinBoolean(false)
+            _ = AXUIElementIsAttributeSettable(node, kAXValueAttribute as CFString, &writable)
+            if focused || writable.boolValue || [kAXTextAreaRole, kAXTextFieldRole, "AXWebArea"].contains(role) {
+                report("node=\(index) depth=\(depth) role=\(role) focused=\(focused) valueSettable=\(writable.boolValue)")
+            }
+            if depth < 16, let children = get(node, kAXChildrenAttribute) as? [AXUIElement] {
+                queue.append(contentsOf: children.prefix(max(0, 400 - queue.count)).map { ($0, depth + 1) })
+            }
+        }
+        report("tree nodes=\(index)")
     }
     /// AX's system-wide focused app can have no value even while an app is
     /// frontmost. Use that current app only for this exact case; its focused

@@ -870,6 +870,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.onImportRecording = { [weak self] in self?.summarizeRecording() }
         settings.onCancelImport = { [weak self] in self?.importTask?.cancel() }
         settings.onRetryRecording = { [weak self] id in self?.retryRecording(id) }
+        settings.onConfirmPlacement = { [weak self] id in
+            guard let self = self, var entry = try? RecordingStore.entries().first(where: { $0.id == id }), entry.sentUnverified else { return }
+            do {
+                entry.status = "inserted"; entry.error = ""; try RecordingStore.save(entry)
+                try RecordingStore.removeAudio(id); self.recordingsChanged()
+            } catch { settings.status = "Could not confirm placement: \(error.localizedDescription)" }
+        }
         settings.onReviewRecording = { [weak self] id in self?.reviewRecording(id) }
         settings.onCancelRecording = { [weak self] id in self?.processingTasks[id]?.cancel() }
         settings.onDiscardRecording = { [weak self] id in
@@ -1226,10 +1233,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         } catch {
-            entry.status = entry.hasResult ? "ready" : "pending"
+            entry.status = (error as NSError).domain == "whispertype.insertion" && (error as NSError).code == 2 ? "sent_unverified" : entry.hasResult ? "ready" : "pending"
             entry.error = error is CancellationError ? "Processing canceled. Audio retained; retry when ready." : error.localizedDescription
             do { try RecordingStore.save(entry) } catch { mainWC.settings.status = "Could not update recovery metadata: \(error.localizedDescription)" }
-            if presentationID == id && !isRecording { dockController.state.fail("\(entry.error) · open Inbox") }
+            if presentationID == id && !isRecording {
+                if entry.sentUnverified { dockController.state.sentUnverified(); mainWC.settings.captureStatus = "Sent · check destination" }
+                else { dockController.state.fail("\(entry.error) · open Inbox") }
+            }
         }
         recordingsChanged()
     }
@@ -1240,6 +1250,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func reviewRecording(_ id: UUID) {
         guard let entry = try? RecordingStore.entries().first(where: { $0.id == id }) else { return }
+        if entry.sentUnverified {
+            let alert = NSAlert(); alert.messageText = "Text may already be in place"
+            alert.informativeText = "Check the destination first. Opening this review does not send anything; choosing Insert again may create a duplicate."
+            alert.addButton(withTitle: "Review sent text"); alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
         reviewedRecordingID = id
         let target = lastExternalDestination ?? destinations[id]
         let chosen: (String?) -> Void = { [weak self] text in
@@ -1264,8 +1280,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.dockController.state.complete(words: text.split(whereSeparator: { $0.isWhitespace }).count)
                 } catch {
                     edited.error = error.localizedDescription
+                    if (error as NSError).domain == "whispertype.insertion", (error as NSError).code == 2 { edited.status = "sent_unverified" }
                     try? RecordingStore.save(edited)
-                    self.dockController.state.fail("Result retained in Inbox: \(error.localizedDescription)")
+                    if edited.sentUnverified { self.dockController.state.sentUnverified() }
+                    else { self.dockController.state.fail("Result retained in Inbox: \(error.localizedDescription)") }
                 }
                 self.recordingsChanged()
             }
@@ -1290,7 +1308,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard target.isCurrent(), !isRecording else { throw insertionError("Destination changed. Review placement in Inbox.") }
             let receipt = try await remoteRequest(path: "insert", target: target, id: id, text: text)
             guard receipt["verified"] as? Bool == true else {
-                throw insertionError("Keys were sent; the destination could not confirm the text. Inspect it before inserting again. Audio and result remain in Inbox.")
+                throw insertionError("Keys were sent; the destination could not confirm the text. Inspect it before inserting again. Audio and result remain in Inbox.", code: 2)
             }
         } else {
             guard AXIsProcessTrusted() else { throw insertionError("Allow Accessibility to type into the destination.") }
@@ -1302,12 +1320,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if target.containsVerifiedValue(expected) { vlog("insertion receipt: id=\(id) verified"); return }
             }
             vlog("insertion receipt: id=\(id) unverified " + target.receiptDiagnostic(expected))
-            throw insertionError("Keys were sent; the destination could not confirm the text. Inspect it before inserting again. Audio and result remain in Inbox.")
+            throw insertionError("Keys were sent; the destination could not confirm the text. Inspect it before inserting again. Audio and result remain in Inbox.", code: 2)
         }
     }
 
-    private func insertionError(_ message: String) -> NSError {
-        NSError(domain: "whispertype.insertion", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    private func insertionError(_ message: String, code: Int = 1) -> NSError {
+        NSError(domain: "whispertype.insertion", code: code, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
     @MainActor private func prepareRemote(_ target: CaptureDestination, id: UUID) async throws {
@@ -1317,13 +1335,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func remoteRequest(path: String, target: CaptureDestination, id: UUID, text: String? = nil) async throws -> [String: Any] {
         let env = ProcessInfo.processInfo.environment
-        let match = env["VF_REMOTE_WINDOW_MATCH"] ?? ""
+        let pairingURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("WhisperType/RemotePairing.json")
+        let pairing = (try? JSONDecoder().decode([String:String].self, from: Data(contentsOf: pairingURL))) ?? [:]
+        let match = env["VF_REMOTE_WINDOW_MATCH"] ?? pairing["VF_REMOTE_WINDOW_MATCH"] ?? ""
         guard !match.isEmpty, target.title.localizedCaseInsensitiveContains(match),
-              let address = env["VF_REMOTE_AGENT_URL"], let base = URL(string: address),
+              let address = env["VF_REMOTE_AGENT_URL"] ?? pairing["VF_REMOTE_AGENT_URL"], let base = URL(string: address),
               ["http", "https"].contains(base.scheme ?? ""), base.host != nil else {
             throw insertionError("Pair the remote agent and identify its Screen Sharing window before insertion.")
         }
-        let key = env["VF_REMOTE_AGENT_KEY"] ?? ""
+        let key = env["VF_REMOTE_AGENT_KEY"] ?? pairing["VF_REMOTE_AGENT_KEY"] ?? ""
         guard key.utf8.count >= 32 else { throw insertionError("Remote pairing needs a key of at least 32 bytes.") }
         var request = URLRequest(url: base.appendingPathComponent(path))
         request.httpMethod = "POST"; request.timeoutInterval = path == "insert" ? 120 : 10
@@ -1364,14 +1385,29 @@ if Bundle.main.bundleIdentifier?.hasSuffix(".review.client") == true {
         exit(1)
     }
 }
-// Explicit read-only support command: no controller, microphone, keys, windows,
-// server requests or preference writes. Launch in the background to preserve focus.
+// Explicit destination support command: no controller, microphone, keys, windows,
+// server requests or preference writes. May request the target app accessibility
+// tree, as ordinary capture does. Launch in the background to preserve focus.
 if CommandLine.arguments.contains("--diagnose-destination") {
     NSApplication.shared.setActivationPolicy(.prohibited)
     let identity = "destination-check pid=\(ProcessInfo.processInfo.processIdentifier)"
     vlog("\(identity) trusted=\(AXIsProcessTrusted())")
     let target = CaptureDestination.capture { vlog("\(identity) \($0)") }
     vlog("\(identity) editable-target=\(target != nil)")
+    if CommandLine.arguments.contains("--save-remote-window-match") {
+        guard let target = target, target.isRemote, !target.title.isEmpty else { exit(2) }
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("WhisperType")
+        let file = directory.appendingPathComponent("RemotePairing.json")
+        do {
+            var pairing = (try? JSONDecoder().decode([String:String].self, from: Data(contentsOf:file))) ?? [:]
+            pairing["VF_REMOTE_WINDOW_MATCH"] = target.title
+            try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            try JSONEncoder().encode(pairing).write(to:file,options:.atomic)
+            try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:file.path)
+            vlog("\(identity) remote-window-match-saved")
+        } catch { exit(3) }
+    }
+    if CommandLine.arguments.contains("--inspect-focus-tree") { CaptureDestination.diagnoseFocusedTree { vlog("\(identity) \($0)") } }
     exit(target == nil ? 1 : 0)
 }
 let app = NSApplication.shared

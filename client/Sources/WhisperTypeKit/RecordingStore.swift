@@ -16,7 +16,12 @@ public enum RecordingStore {
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                 variants.values.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         }
+        public var sentUnverified: Bool {
+            status == "sent_unverified" || error.hasPrefix("Keys were sent;")
+        }
         public var inboxMessage: String {
+            if sentUnverified { return "Typing was sent. Check the destination before inserting again." }
+
             if status == "ready" && !hasResult { return "No transcript was returned. Your audio is saved." }
             return error.isEmpty ? (hasResult ? "Ready for review" : "Audio saved") : error
         }

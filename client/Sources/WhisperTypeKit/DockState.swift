@@ -80,9 +80,11 @@ public final class DockState: ObservableObject {
     public func finishRecording() { if phase == .listening || phase == .starting { phase = .transcribing } }
     /// Words inserted by the last dictation, so the success state can say what
     /// actually happened instead of falling back to an instruction hint.
+    @Published public var placementUnverified = false
     @Published public var lastWordCount: Int = 0
 
-    public func complete(words: Int = 0) { lastWordCount = words; phase = .done; expanded = true }
+    public func complete(words: Int = 0) { placementUnverified = false; lastWordCount = words; phase = .done; expanded = true }
+    public func sentUnverified() { placementUnverified = true; phase = .done; expanded = true }
     public func returnToIdle() { phase = .idle; level = 0; expanded = false }
     public func fail(_ msg: String) { phase = .error; errorText = msg; expanded = true }
     public func toggleMode() { mode = (mode == .dictation) ? .prompt : .dictation }

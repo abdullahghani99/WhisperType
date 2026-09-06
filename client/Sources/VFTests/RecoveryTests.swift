@@ -2,6 +2,17 @@ import Foundation
 import WhisperTypeKit
 
 final class RecoveryTests: XCTestCase {
+    func testSentUnverifiedIsDistinctFromMissingPlacement() {
+        var entry = RecordingStore.Entry(kind: "dictation")
+        entry.status = "sent_unverified"; entry.text = "Disposable test"
+        XCTAssertTrue(entry.sentUnverified)
+        XCTAssertTrue(entry.inboxMessage.contains("Typing was sent"))
+        entry.status = "ready"; entry.error = "Keys were sent; receipt unavailable"
+        XCTAssertTrue(entry.sentUnverified)
+        entry.error = "Destination changed"
+        XCTAssertFalse(entry.sentUnverified)
+    }
+
     func testEmptySuccessfulResponseCannotBePresentedAsReady() {
         var entry = RecordingStore.Entry(kind: "dictation")
         entry.status = "ready"; entry.error = "Result ready. Review it in Inbox to choose placement."

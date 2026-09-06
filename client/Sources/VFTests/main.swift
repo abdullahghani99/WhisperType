@@ -117,6 +117,7 @@ func run(_ name: String, _ body: () -> Void) {
     }
     suite("RecoveryTests") {
         let t = RecoveryTests()
+        run("RecoveryTests.testSentUnverifiedIsDistinctFromMissingPlacement") { t.testSentUnverifiedIsDistinctFromMissingPlacement() }
         run("RecoveryTests.testEmptySuccessfulResponseCannotBePresentedAsReady") { t.testEmptySuccessfulResponseCannotBePresentedAsReady() }
         run("RecoveryTests.testRapidRecordingsHaveIndependentAudioAndResults") { t.testRapidRecordingsHaveIndependentAudioAndResults() }
         run("RecoveryTests.testInterruptedMetadataDoesNotHideAudio") { t.testInterruptedMetadataDoesNotHideAudio() }
@@ -155,7 +156,7 @@ if let files = try? fm.contentsOfDirectory(atPath: "Sources/VFTests") {
         }
     }
 }
-let registered = 93
+let registered = 94
 print("")
 if declared > 0 && declared != registered {
     print("  ✘ DRIFT: \(declared) test functions on disk, \(registered) registered.")

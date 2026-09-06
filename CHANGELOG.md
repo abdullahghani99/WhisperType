@@ -16,6 +16,8 @@
 - Format complete explicitly spoken lists locally while preserving words and excluding terminal/editor or code-like content.
 - Skip receipt waiting when no baseline exists; finish pending dictation before quitting.
 
+- Keep manually started meetings independent of ambient call endings; only an accepted call offer owns automatic stop.
+
 ## 0.5.0 — 2026-09-06
 
 Released capture ownership, durable recovery, destination validation and native client interface improvements.

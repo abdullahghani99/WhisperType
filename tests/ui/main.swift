@@ -104,6 +104,7 @@ func probeDockAccessibility() {
  print("COMPLETE: background accessibility comparison, no audio or foreground window")
 }
 func runReview() {
+ if ProcessInfo.processInfo.environment["VF_UI_PASTE_BACKGROUND"] == "1" { testNativePasteInteraction(); print("COMPLETE: native paste checks"); exit(0) }
  if ProcessInfo.processInfo.environment["VF_UI_PILL_BOUNDS"] == "1" { testPillBounds();exit(0) }
  if ProcessInfo.processInfo.environment["VF_UI_HISTORY_BACKGROUND"] == "1" {
   testSentHistoryRouting(); print("COMPLETE: background sent-history state and view checks"); exit(0)

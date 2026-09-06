@@ -375,8 +375,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func insertTestString() {
         let s = "Hello Alex! What's the plan? ERP42, B2B: 100% ready."
         vlog("insert test string")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            KeystrokeInserter.type(s)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self, let target = CaptureDestination.capture() else { return }
+            Task { @MainActor in
+                do {
+                    let id = UUID()
+                    if target.isRemote { try await self.prepareRemote(target, id: id) }
+                    try await self.insert(s, into: target, id: id)
+                } catch { self.mainWC.settings.status = error.localizedDescription }
+            }
         }
     }
 
@@ -1354,21 +1361,25 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         } else {
             guard AXIsProcessTrusted() else { throw insertionError("Allow Accessibility to type into the destination.") }
+            let before = target.readableValue()
             let expected = target.expectedValue(afterInserting: text)
             let typingAt = ProcessInfo.processInfo.systemUptime
-            let complete = KeystrokeInserter.type(text, targetPID: target.app.processIdentifier) { target.isCurrent() }
-            guard complete else { throw insertionError("Destination changed while typing. Some text may have been sent; inspect it before inserting again.") }
+            let complete = await NativePasteInserter.paste(text, targetPID: target.app.processIdentifier, isCurrent: { target.isCurrent() })
+            guard complete else { throw insertionError("Paste was not sent. Check the destination; your result is retained.") }
             vlog("pipeline timing: id=\(id) typingMs=\(Int((ProcessInfo.processInfo.systemUptime - typingAt) * 1000)) utf16=\(text.utf16.count)")
             // Without a readable baseline/selection an exact receipt cannot
             // become valid by waiting. Report sent-unverified immediately.
             if expected != nil {
-                for attempt in 0...10 {
+                for attempt in 0...5 {
                     if target.containsVerifiedValue(expected) { vlog("insertion receipt: id=\(id) verified"); return }
-                    if attempt < 10 { try await Task.sleep(nanoseconds: 100_000_000) }
+                    if attempt < 5 { try await Task.sleep(nanoseconds: 100_000_000) }
                 }
             }
+            if expected != nil, let before, target.isCurrent(), target.readableValue() == before {
+                throw insertionError("The destination did not accept the paste. Your result is retained in Inbox.")
+            }
             vlog("insertion receipt: id=\(id) unverified " + target.receiptDiagnostic(expected))
-            throw insertionError("Keys were sent; the destination could not confirm the text. Inspect it before inserting again. Audio and result remain in Inbox.", code: 2)
+            throw insertionError("Paste was sent; the destination does not expose a text receipt. Audio and result remain in History.", code: 2)
         }
     }
 

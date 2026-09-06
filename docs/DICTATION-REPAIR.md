@@ -4,7 +4,7 @@
 
 An actual Dictation capture retained the spoken question through recognition and vocabulary correction, then model cleanup replaced its opening with an invented answer. Replaying the same private case through the current model reproduced the failure.
 
-The earlier July regression fix selected the loaded stronger 14B model for cleanup. The original server source retained on the server Mac, dated 3 September, still has that selection. The September reliability change added `and not _polish_distilled`, choosing the smaller adapter model instead when an adapter loaded. That was a regression introduced by our change. Earlier reports saying model selection was unchanged compared against an intermediate baseline already containing that change; they do not establish equivalence to the previously working runtime. The adapter artifacts retain August timestamps; there is no evidence that this work rewrote them.
+The earlier July regression fix selected the loaded stronger 14B model for cleanup. The original server source retained on the server Mac, dated 3 September, still has that selection. The September reliability change (private commit `e7740e9`, public `4be81b2`) added `and not _polish_distilled`, choosing the smaller adapter model instead when an adapter loaded. That was a regression introduced by our change. Earlier reports saying model selection was unchanged compared against an intermediate baseline already containing that change; they do not establish equivalence to the previously working runtime. The adapter artifacts retain August timestamps; there is no evidence that this work rewrote them.
 
 ## Repair and evidence
 
@@ -16,8 +16,14 @@ The live release is `df6772f-beb8a34a`. Health confirms `polish_uses_prompt_mode
 
 Private/public regression checks: 21 tests and the complete learning test suite pass. The selection regression specifically verifies that a loaded stronger model wins even when the smaller model has an adapter. Public defaults for the fallback model differ; private model timings are not measurements of that public fallback.
 
-## Separate delivery repair
+## Native paste delivery
 
-A reported GPT chat attempt failed before sending because its focused AX text field was unavailable, despite a known app/window. Missing AX text metadata must not block normal paste into the intended app. The next client change uses one native local paste transaction, with app/window/known secure-field checks, complete clipboard preservation, ownership-safe restoration and optional text receipts. Controlled AppKit/WebKit tests pass; installed real-composer acceptance is still pending. Mini/VNC retains its paired-agent path.
+WhisperType 0.5.1 build **abcc076** is installed with one native local paste transaction. App/window identity is captured at the dictation trigger; missing AX text-field metadata no longer blocks normal paste. Known secure fields, secure input and changed targets remain rejected. The previous per-character local typer was removed, and the explicit diagnostic follows the same delivery path. Mini/VNC retains its paired-agent transport.
 
-The four-centred-pill changes are already installed and merged in both PR #4s. The older broad experimental polishing guard in PR #3 is separate and is not the live repair. Its evidence and history remain retained.
+Clipboard contents are captured in all available types, restored only while the transaction still owns them, and never restored over a newer copy. Paste preserves the user's selection and supports Unicode/multiple lines without Enter. AX value/selection improve verification when available. A readable field confirmed unchanged after paste remains actionable in Inbox; completed dispatch without a readable receipt stays quietly recoverable in History, without claiming verified delivery or automatically replaying it.
+
+Validation: private/public release builds and 107 tests / 393 assertions; 17 focus/capability checks; real native AppKit and WebKit paste with independent text/DOM receipts, Unicode/multiline/selection, clipboard all-type restoration, ownership changes and cancellation before dispatch. The native fixtures operate only on their own controls and do not send text into a user's application. 71 source/fixture inputs matched the canonical commit before packaging. The installed app is signed with the existing identity and retains login configuration, settings and recordings.
+
+A single real GPT composer trial has been requested through the originating task and remains pending. Passing the controlled tests is not presented as acceptance by that inaccessible composer. No test text was inserted into it automatically.
+
+The four-centred-pill changes are installed and both PR #4s are merged; the saved position is bottom-centre. The model repair is merged in both PR #5s. The older broad experimental guard in PR #3 is not the live repair; its branch and evidence remain preserved. Recovery archives retain the previous app builds, and the previous server release/configuration/database snapshot remain available.

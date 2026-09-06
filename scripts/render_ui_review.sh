@@ -6,7 +6,7 @@ OUT="${1:?pass an output directory}"
 SCRATCH="${VF_UI_SCRATCH:-$(mktemp -d /tmp/whispertype-ui.XXXXXX)}"
 mkdir -p "$SCRATCH/Sources/ReviewPreview" "$SCRATCH/Sources/WhisperTypeKit" "$OUT"
 cp "$ROOT/client/Sources/WhisperTypeKit/"*.swift "$SCRATCH/Sources/WhisperTypeKit/"
-for source in MainWindow SettingsWindow MeetingsWindow DockView DockController DockDragSurface ServerClient PromptReview CaptureHome; do
+for source in MainWindow SettingsWindow MeetingsWindow DockView DockController DockDragSurface NativePasteInserter ServerClient PromptReview CaptureHome; do
   cp "$ROOT/client/Sources/WhisperType/$source.swift" "$SCRATCH/Sources/ReviewPreview/"
 done
 cp "$ROOT/tests/ui/"*.swift "$SCRATCH/Sources/ReviewPreview/"

@@ -6,7 +6,7 @@ OUT="${1:?pass an output directory}"
 SCRATCH="${VF_UI_SCRATCH:-$(mktemp -d /tmp/whispertype-ui.XXXXXX)}"
 mkdir -p "$SCRATCH/Sources/ReviewPreview" "$SCRATCH/Sources/WhisperTypeKit" "$OUT"
 cp "$ROOT/client/Sources/WhisperTypeKit/"*.swift "$SCRATCH/Sources/WhisperTypeKit/"
-for source in MainWindow SettingsWindow MeetingsWindow DockView DockController ServerClient PromptReview CaptureHome; do
+for source in MainWindow SettingsWindow MeetingsWindow DockView DockController DockDragSurface ServerClient PromptReview CaptureHome; do
   cp "$ROOT/client/Sources/WhisperType/$source.swift" "$SCRATCH/Sources/ReviewPreview/"
 done
 cp "$ROOT/tests/ui/"*.swift "$SCRATCH/Sources/ReviewPreview/"
@@ -21,10 +21,11 @@ let package = Package(name:"WhisperTypeReviewPreview",platforms:[.macOS(.v13)],t
 for path in (root/'Sources/ReviewPreview').glob('*.swift'):
  s=path.read_text().replace('UserDefaults.standard','ReviewDefaults.shared')
  if path.name=='PromptReview.swift': s=s.replace('private var panel','var panel').replace('private var levels','var levels').replace('private var textView','var textView').replace('private func buildPanel','func buildPanel').replace('private func render','func render')
- if path.name=='DockController.swift': s=s.replace('private var panel','var panel').replace('private var hosting','var hosting').replace('DockPlacement(store: .standard)','DockPlacement(store: dockReviewDefaults)')
+ if path.name=='DockController.swift': s=s.replace('private var panel','var panel').replace('private var hosting','var hosting').replace('private var previewPanel','var previewPanel').replace('DockPlacement(store: .standard)','DockPlacement(store: dockReviewDefaults)').replace('defaults: UserDefaults = .standard','defaults: UserDefaults = dockReviewDefaults')
  if path.name=='DockController.swift':
-  s=s.replace('panel?.orderFrontRegardless()', 'if ProcessInfo.processInfo.environment["VF_UI_DOCK_BACKGROUND"] == "1" { panel?.setFrameOrigin(NSPoint(x: -10000, y: -10000)); panel?.orderBack(nil) } else { panel?.orderFrontRegardless() }')
-  s=s.replace('    private func startDockWatch() {', '    private func startDockWatch() {\n        if ProcessInfo.processInfo.environment["VF_UI_DOCK_BACKGROUND"] == "1" { return }')
+  s=s.replace('previewPanel?.orderFrontRegardless()', 'if ProcessInfo.processInfo.environment["VF_UI_DOCK_BACKGROUND"] != "1" { previewPanel?.orderFrontRegardless() }')
+  s=s.replace('panel?.orderFrontRegardless()', 'if ProcessInfo.processInfo.environment["VF_UI_DOCK_BACKGROUND"] == "1" { panel?.alphaValue = 0; panel?.orderBack(nil) } else { panel?.orderFrontRegardless() }')
+  s=s.replace('    private func dockProbe(on screen: NSScreen) -> DockProbe {', '    private func dockProbe(on screen: NSScreen) -> DockProbe {\n        if ProcessInfo.processInfo.environment["VF_UI_DOCK_BACKGROUND"] == "1" { return .away }')
  path.write_text(s)
 PY
 swift build --package-path "$SCRATCH" --product ReviewPreview > "$OUT/build.log" 2>&1

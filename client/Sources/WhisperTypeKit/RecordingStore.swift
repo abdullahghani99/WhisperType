@@ -12,6 +12,9 @@ public enum RecordingStore {
         public var error: String
         public var historyID: Int?
         public var variants: [String: String]
+        /// True only after the complete send path finishes. Optional for legacy
+        /// recordings; an interrupted or partial send must remain actionable.
+        public var sendCompleted: Bool?
         public var hasResult: Bool {
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                 variants.values.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -19,6 +22,10 @@ public enum RecordingStore {
         public var sentUnverified: Bool {
             status == "sent_unverified" || error.hasPrefix("Keys were sent;")
         }
+        public var belongsInSentHistory: Bool {
+            hasResult && sentUnverified && (sendCompleted == true || (sendCompleted == nil && error.hasPrefix("Keys were sent;")))
+        }
+        public var needsAttention: Bool { status != "inserted" && !belongsInSentHistory }
         public var inboxMessage: String {
             if sentUnverified { return "Typing was sent. Check the destination before inserting again." }
 

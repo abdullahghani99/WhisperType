@@ -1271,10 +1271,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         } catch {
             entry.status = (error as NSError).domain == "whispertype.insertion" && (error as NSError).code == 2 ? "sent_unverified" : entry.hasResult ? "ready" : "pending"
+            entry.sendCompleted = entry.status == "sent_unverified" ? true : entry.sendCompleted
             entry.error = error is CancellationError ? "Processing canceled. Audio retained; retry when ready." : error.localizedDescription
             do { try RecordingStore.save(entry) } catch { mainWC.settings.status = "Could not update recovery metadata: \(error.localizedDescription)" }
             if presentationID == id && !isRecording {
-                if entry.sentUnverified { dockController.state.sentUnverified(); mainWC.settings.captureStatus = "Sent · check destination" }
+                if entry.sentUnverified { dockController.state.sentUnverified(); mainWC.settings.captureStatus = "Sent" }
                 else { dockController.state.fail("\(entry.error) · open Inbox") }
             }
         }
@@ -1298,7 +1299,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let chosen: (String?) -> Void = { [weak self] text in
             guard let self = self, let text = text, !text.isEmpty else { return }
             guard var edited = try? RecordingStore.entries().first(where: { $0.id == id }) else { return }
-            edited.text = text
+            edited.text = text; edited.status = "ready"; edited.sendCompleted = false; edited.error = ""
             do { try RecordingStore.save(edited) }
             catch { self.mainWC.settings.status = "Could not save edit: \(error.localizedDescription)"; return }
             guard let target = target else {
@@ -1317,7 +1318,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.dockController.state.complete(words: text.split(whereSeparator: { $0.isWhitespace }).count)
                 } catch {
                     edited.error = error.localizedDescription
-                    if (error as NSError).domain == "whispertype.insertion", (error as NSError).code == 2 { edited.status = "sent_unverified" }
+                    if (error as NSError).domain == "whispertype.insertion", (error as NSError).code == 2 { edited.status = "sent_unverified"; edited.sendCompleted = true }
                     try? RecordingStore.save(edited)
                     if edited.sentUnverified { self.dockController.state.sentUnverified() }
                     else { self.dockController.state.fail("Result retained in Inbox: \(error.localizedDescription)") }
@@ -1328,6 +1329,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let destination = target.map { "\($0.name) · \($0.title)" } ?? "Choose a destination app, then return to Inbox"
         let saveDraft: ([String: String], String) throws -> Void = { [weak self] variants, text in
             guard var draft = try RecordingStore.entries().first(where: { $0.id == id }) else { throw CocoaError(.fileNoSuchFile) }
+            if draft.text != text || draft.variants != variants {
+                draft.status = "ready"; draft.sendCompleted = false
+                draft.error = "Edited result saved. Review it to choose placement."
+            }
             draft.text = text; draft.variants = variants
             try RecordingStore.save(draft); self?.recordingsChanged()
         }

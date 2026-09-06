@@ -115,9 +115,21 @@ func run(_ name: String, _ body: () -> Void) {
         run("MicLifecycleTests.testCoverageReportsDeliveredAudio") { t.testCoverageReportsDeliveredAudio() }
         run("MicLifecycleTests.testCoverageCannotExceed100") { t.testCoverageCannotExceed100() }
     }
+    suite("PillPlacementTests") {
+        let t = PillPlacementTests()
+        run("PillPlacementTests.testFourEdgesKeepCompactAndExpandedCapsulesVisible") { t.testFourEdgesKeepCompactAndExpandedCapsulesVisible() }
+        run("PillPlacementTests.testLegacyFreeMigratesOnItsOwnDisplayAndStaysCentredAfterResolutionChange") { t.testLegacyFreeMigratesOnItsOwnDisplayAndStaysCentredAfterResolutionChange() }
+        run("PillPlacementTests.testNearestEdgeHasStableCornerHysteresis") { t.testNearestEdgeHasStableCornerHysteresis() }
+        run("PillPlacementTests.testSmallVisibleFrameNeverProducesInvertedClamp") { t.testSmallVisibleFrameNeverProducesInvertedClamp() }
+        run("PillPlacementTests.testSavedChoiceAndChosenDisplaySurviveRelaunch") { t.testSavedChoiceAndChosenDisplaySurviveRelaunch() }
+        run("PillPlacementTests.testCorruptPreferenceAndNonfiniteInputCannotStrandPill") { t.testCorruptPreferenceAndNonfiniteInputCannotStrandPill() }
+    }
     suite("RecoveryTests") {
         let t = RecoveryTests()
         run("RecoveryTests.testSentUnverifiedIsDistinctFromMissingPlacement") { t.testSentUnverifiedIsDistinctFromMissingPlacement() }
+        run("RecoveryTests.testCompletedSendLeavesInboxWithoutDeletingRecovery") { t.testCompletedSendLeavesInboxWithoutDeletingRecovery() }
+        run("RecoveryTests.testLegacyCompletedReceiptAndInterruptedSendRouteDifferently") { t.testLegacyCompletedReceiptAndInterruptedSendRouteDifferently() }
+        run("RecoveryTests.testPendingFailedEmptyAndEditedResultsRemainActionable") { t.testPendingFailedEmptyAndEditedResultsRemainActionable() }
         run("RecoveryTests.testEmptySuccessfulResponseCannotBePresentedAsReady") { t.testEmptySuccessfulResponseCannotBePresentedAsReady() }
         run("RecoveryTests.testRapidRecordingsHaveIndependentAudioAndResults") { t.testRapidRecordingsHaveIndependentAudioAndResults() }
         run("RecoveryTests.testInterruptedMetadataDoesNotHideAudio") { t.testInterruptedMetadataDoesNotHideAudio() }
@@ -163,7 +175,7 @@ if let files = try? fm.contentsOfDirectory(atPath: "Sources/VFTests") {
         }
     }
 }
-let registered = 98
+let registered = 107
 print("")
 if declared > 0 && declared != registered {
     print("  ✘ DRIFT: \(declared) test functions on disk, \(registered) registered.")

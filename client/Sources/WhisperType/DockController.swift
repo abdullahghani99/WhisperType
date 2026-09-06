@@ -35,13 +35,38 @@ final class DockController {
     private var panel: NSPanel?
     private var hosting: NSHostingView<DockView>?
     private var cancellable: AnyCancellable?
-    /// The fixed bottom-center anchor the dock grows/shrinks around, so expanding
-    /// from the tiny idle pill to the full capsule stays centered in place.
+    /// Visible capsule center; edge placement moves expansion inward on screen.
     private var anchor: NSPoint?
     /// Where the dock sits on EACH display. One shared position meant it stayed
     /// on whichever screen was main at launch — which is why it kept turning up
     /// off to one side on a multi-monitor desk.
-    private let placement = DockPlacement(store: .standard)
+    private let placement: PillPlacement
+    private let defaults: UserDefaults
+    private let reduceMotion: () -> Bool
+    private var choice = PillPlacement.Choice()
+    private var isDragging = false
+    private var dragStart = CGPoint.zero
+    private var dragOrigin = CGPoint.zero
+    private var dragScreen: NSScreen?
+    private var previewEdge: PillEdge?
+    private var previewPanel: NSPanel?
+    private var snapTimer: Timer?
+    private var screenObserver: NSObjectProtocol?
+    private var cachedProbe: DockProbe = .away
+    private var probeScreenID: String?
+
+    init(defaults: UserDefaults = .standard, reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }) {
+        self.reduceMotion = reduceMotion
+        self.defaults = defaults; self.placement = PillPlacement(store: defaults)
+        screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.followActiveScreen(); self?.resizeToFit()
+        }
+    }
+    deinit {
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        snapTimer?.invalidate(); dockWatchTimer?.invalidate(); collapseTimer?.invalidate()
+        elapsedTimer?.invalidate(); successTimer?.invalidate()
+    }
     private var lastScreenID: String?
 
     var onToggleRecord: () -> Void = {}
@@ -67,7 +92,7 @@ final class DockController {
         startDockWatch()
     }
 
-    func hide() { panel?.orderOut(nil); dockWatchTimer?.invalidate(); dockWatchTimer = nil }
+    func hide() { panel?.orderOut(nil); previewPanel?.orderOut(nil); snapTimer?.invalidate(); snapTimer = nil; dockWatchTimer?.invalidate(); dockWatchTimer = nil }
 
     /// Explicit keyboard entry; ordinary pointer use remains non-activating.
     func focusControls() {
@@ -89,7 +114,9 @@ final class DockController {
             micDevices: { [weak self] in self?.micDevices() ?? [] },
             onRecovery: { [weak self] in self?.onRecovery() },
             onHoverChanged: { [weak self] over in self?.hoverChanged(over) },
-            onAcceptCall: { [weak self] in self?.onAcceptCall() }
+            onAcceptCall: { [weak self] in self?.onAcceptCall() },
+            onDrag: { [weak self] event in self?.handleDrag(event) },
+            onSelectPosition: { [weak self] edge in self?.choosePosition(edge) }
         )
         let host = DockHostingView(rootView: view)
         if #available(macOS 13.0, *) { host.sizingOptions = [.intrinsicContentSize] }
@@ -106,7 +133,7 @@ final class DockController {
         p.backgroundColor = .clear
         p.isOpaque = false
         p.hasShadow = false
-        p.isMovableByWindowBackground = true
+        p.isMovableByWindowBackground = false
         p.isReleasedWhenClosed = false
 
         // React to state changes: re-fit the panel (only when the SIZE actually
@@ -114,10 +141,6 @@ final class DockController {
         cancellable = state.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] in self?.stateChanged() }
-
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.didMoveNotification, object: p, queue: .main
-        ) { [weak self] _ in self?.userMoved() }
 
         return p
     }
@@ -134,7 +157,7 @@ final class DockController {
     }
     private func scheduleCollapse(after delay: TimeInterval = 4) {
         collapseTimer?.invalidate(); collapseTimer = nil
-        guard state.expanded, state.canCollapsePresentation else { return }
+        guard !isDragging, state.expanded, state.canCollapsePresentation else { return }
         collapseTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             guard let self = self, !self.pointerOverDock, self.panel?.isKeyWindow != true else { return }
             self.state.collapsePresentation()
@@ -155,15 +178,8 @@ final class DockController {
     /// window-list read) and it is the difference between a dock that sits in a
     /// fixed spot and one that feels aware of its surroundings.
     private var dockWatchTimer: Timer?
-    private var lastDockTop: CGFloat = -1
     /// Cached: 0.089ms/read, against 0.756ms for a window-list scan.
     private var dockList: AXUIElement?
-    /// The frame WE last set. didMoveNotification fires for programmatic moves
-    /// too, so without this every resizeToFit looked like the user dragging the
-    /// pill -- which is how a fresh ultra-wide display inherited the MacBook's
-    /// centre (x=1028) as a "chosen" position and kept restoring it far left.
-    private var lastSetFrame: NSRect?
-
     private func shapeKey() -> String {
         "\(state.phase)|\(state.expanded)|\(state.callOffer)|\(state.micName)|\(state.errorText)|\(state.callTitle)|\(state.meetingRecording)|\(state.meetingMicTrouble)"
     }
@@ -199,74 +215,165 @@ final class DockController {
         if key != lastShape { lastShape = key; resizeToFit() }
     }
 
-    /// Size the panel to the dock's current intrinsic content, anchored so the
-    /// bottom-center stays put as it grows/shrinks. No-op when the size is
-    /// unchanged, so rapid level updates during recording don't churn setFrame.
-    /// Keep the panel at a FIXED, generous size and let the dock animate inside
-    /// it. Previously the panel was snapped to `fittingSize` on every state
-    /// change, which is why size animation had to be disabled: SwiftUI was
-    /// animating inside a window that had already jumped to its final bounds, so
-    /// the content clipped. Nothing here resizes any more — only the capsule
-    /// inside changes width, and it can do so smoothly.
-    private func resizeToFit() {
-        guard let p = panel, let anchor = anchor else { return }
-        let size = Self.panelSize
-        var origin = NSPoint(x: anchor.x - size.width / 2, y: anchor.y - Self.verticalPadding)
-
-        // CLAMP TO THE SCREEN. Widening the panel from ~66pt to 620pt moves its
-        // origin ~277pt left of the anchor, which pushed it clean off the display
-        // near a screen edge — the dock simply vanished. The anchor stays where
-        // the human put it; only the window is nudged back into view.
-        let screen = Self.activeScreen()
-            ?? NSScreen.screens.first { NSPointInRect(anchor, $0.frame) }
-            ?? NSScreen.main
-        if let visible = screen?.visibleFrame {
-            origin.x = min(max(origin.x, visible.minX + 4), visible.maxX - size.width - 4)
-            origin.y = min(max(origin.y, visible.minY + 4), visible.maxY - size.height - 4)
-        }
-        let target = NSRect(origin: origin, size: size)
-        if p.frame != target {
-            lastSetFrame = target
-            p.setFrame(target, display: true)
-        }
+    /// Reserve a stable animation canvas, with enough room for intrinsic content
+    /// and its shadow padding. The visible capsule stays anchored at its center.
+    private var capsuleSize: CGSize {
+        hosting?.layoutSubtreeIfNeeded()
+        let fit = hosting?.fittingSize ?? CGSize(width: 76, height: 56)
+        return CGSize(width: max(44, fit.width - 32), height: max(24, fit.height - 32))
     }
-
-    /// Wide enough for the longest state (the expanded control row) and tall
-    /// enough for the shell plus its shadow.
+    private func resizeToFit() {
+        guard panel != nil, !isDragging, snapTimer == nil, let screen = selectedScreen() else { return }
+        anchor = targetCenter(on: screen)
+        if let anchor { moveCenter(anchor) }
+    }
+    private func moveCenter(_ center: CGPoint) {
+        let fit = hosting?.fittingSize ?? Self.panelSize
+        let size = NSSize(width: max(Self.panelSize.width, fit.width),
+                          height: max(Self.panelSize.height, fit.height))
+        let target = CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2,
+                            width: size.width, height: size.height)
+        if panel?.frame != target { panel?.setFrame(target, display: true) }
+    }
     static let panelSize = NSSize(width: 620, height: 104)
-    /// The dock sits centred in the panel, so the anchor accounts for the
-    /// transparent margin below it.
     static let verticalPadding: CGFloat = 34
 
-
-    /// A stable identity for a display, so a remembered position survives sleep,
-    /// re-plugging and reordering.
     private static func screenID(_ screen: NSScreen) -> String {
-        let n = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
-        let f = screen.frame
-        return "\(n?.intValue ?? 0)-\(Int(f.width))x\(Int(f.height))"
-    }
-
-    /// The screen the human is actually working on: the one with the cursor.
-    private static func activeScreen() -> NSScreen? {
-        let mouse = NSEvent.mouseLocation
-        return NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
-            ?? NSScreen.main ?? NSScreen.screens.first
-    }
-
-    /// Move the dock to the active display, restoring where it was parked there.
-    func followActiveScreen() {
-        guard let screen = Self.activeScreen() else { return }
-        let id = Self.screenID(screen)
-        guard id != lastScreenID else { return }
-        lastScreenID = id
-        if let p = placement.position(forScreen: id),
-           NSPointInRect(NSPoint(x: p.x, y: p.y), screen.frame) {
-            anchor = NSPoint(x: p.x, y: p.y)
-        } else {
-            anchor = Self.defaultAnchor(for: screen)
+        let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        guard let number else { return "display-unknown" }
+        if let uuid = CGDisplayCreateUUIDFromDisplayID(number.uint32Value)?.takeRetainedValue() {
+            return CFUUIDCreateString(nil, uuid) as String
         }
+        return "display-\(number.uint32Value)"
+    }
+    private static func legacyScreenID(_ screen: NSScreen) -> String {
+        let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        return "\(number?.intValue ?? 0)-\(Int(screen.frame.width))x\(Int(screen.frame.height))"
+    }
+    private static func activeScreen() -> NSScreen? { screen(at: NSEvent.mouseLocation) }
+    private static func screen(at point: CGPoint) -> NSScreen? {
+        NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.screens.min {
+            hypot($0.frame.midX - point.x, $0.frame.midY - point.y) < hypot($1.frame.midX - point.x, $1.frame.midY - point.y)
+        }
+    }
+    private func selectedScreen() -> NSScreen? {
+        NSScreen.screens.first { Self.screenID($0) == lastScreenID } ?? NSScreen.main ?? NSScreen.screens.first
+    }
+    private static func safeFrame(_ screen: NSScreen) -> CGRect {
+        var frame = screen.visibleFrame
+        frame.size.height = max(1, min(frame.maxY, screen.frame.maxY - screen.safeAreaInsets.top) - frame.minY)
+        return frame
+    }
+    private func availableFrame(on screen: NSScreen) -> CGRect {
+        var frame = Self.safeFrame(screen)
+        guard probeScreenID == Self.screenID(screen) else { return frame }
+        switch cachedProbe {
+        case .top(let top) where choice.edge == .bottom:
+            let bottom = max(frame.minY, top + 10); frame.size.height = max(1, frame.maxY - bottom); frame.origin.y = bottom
+        case .left(let right) where choice.edge == .left:
+            let left = max(frame.minX, right + 10); frame.size.width = max(1, frame.maxX - left); frame.origin.x = left
+        case .right(let left) where choice.edge == .right:
+            frame.size.width = max(1, min(frame.maxX, left - 10) - frame.minX)
+        case .blind where choice.edge == .bottom:
+            let bottom = max(frame.minY, screen.frame.minY + Self.blindInset(for: screen)); frame.size.height = max(1, frame.maxY - bottom); frame.origin.y = bottom
+        default: break
+        }
+        return frame
+    }
+    private func targetCenter(on screen: NSScreen) -> CGPoint {
+        let point = PillGeometry.center(edge: choice.edge, size: capsuleSize, in: availableFrame(on: screen))
+        return PillGeometry.clamp(point, size: capsuleSize, in: availableFrame(on: screen))
+    }
+    /// The chosen display stays put when the pointer moves to another display.
+    /// A disconnected display falls back safely; its saved choice remains available.
+    func followActiveScreen() {
+        guard !isDragging else { return }
+        let preferred = placement.preferredDisplay.flatMap { id in NSScreen.screens.first { Self.screenID($0) == id } }
+        guard let screen = preferred ?? NSScreen.screens.first(where: { Self.screenID($0) == lastScreenID }) ?? Self.activeScreen() else { return }
+        let id = Self.screenID(screen)
+        guard lastScreenID != id else { return }
+        lastScreenID = id
+        if let saved = placement.choice(for: id, in: Self.safeFrame(screen)) { choice = saved }
+        else if let old = DockPlacement(store: defaults).position(forScreen: Self.legacyScreenID(screen)), screen.frame.contains(CGPoint(x: old.x, y: old.y)) {
+            let point = CGPoint(x: old.x, y: old.y + 18)
+            choice = .init(edge: PillGeometry.nearestEdge(to: point, in: Self.safeFrame(screen))); placement.remember(choice, display: id)
+        } else if let raw = defaults.string(forKey: Self.originDefaultsKey), screen.frame.contains(NSPointFromString(raw)), NSPointFromString(raw) != .zero {
+            let old = NSPointFromString(raw); let point = CGPoint(x: old.x, y: old.y + 18)
+            choice = .init(edge: PillGeometry.nearestEdge(to: point, in: Self.safeFrame(screen))); placement.remember(choice, display: id)
+        } else { choice = .init() }
+        state.placementEdge = choice.edge; cachedProbe = .away; probeScreenID = nil
         resizeToFit()
+    }
+    private func initialAnchor() -> NSPoint {
+        followActiveScreen()
+        return selectedScreen().map { targetCenter(on: $0) } ?? .zero
+    }
+    static func defaultAnchor(for screen: NSScreen?) -> NSPoint {
+        guard let screen = screen ?? NSScreen.main else { return .zero }
+        return PillGeometry.center(edge: .bottom, size: CGSize(width: 44, height: 24), in: Self.safeFrame(screen))
+    }
+
+    private func handleDrag(_ event: PillDragEvent) {
+        guard let panel else { return }
+        switch event {
+        case .began(let point):
+            snapTimer?.invalidate(); snapTimer = nil; collapseTimer?.invalidate()
+            vlog("pill drag began")
+            isDragging = true; dragStart = point; dragOrigin = CGPoint(x: panel.frame.midX, y: panel.frame.midY); previewEdge = nil
+        case .moved(let point):
+            guard isDragging, let screen = Self.screen(at: point) else { return }
+            dragScreen = screen
+            let center = CGPoint(x: dragOrigin.x + point.x - dragStart.x, y: dragOrigin.y + point.y - dragStart.y)
+            anchor = center; moveCenter(center)
+            previewEdge = PillGeometry.nearestEdge(to: point, in: Self.safeFrame(screen))
+            let target = PillGeometry.center(edge: previewEdge ?? .bottom, size: capsuleSize, in: Self.safeFrame(screen))
+            showPreview(at: target)
+        case .ended(let point, let velocity):
+            guard isDragging else { return }
+            handleDrag(.moved(point)); isDragging = false; previewPanel?.orderOut(nil)
+            guard let screen = dragScreen ?? selectedScreen() else { return }
+            lastScreenID = Self.screenID(screen)
+            choice = .init(edge: PillGeometry.nearestEdge(to: point, in: Self.safeFrame(screen)))
+            placement.remember(choice, display: Self.screenID(screen)); state.placementEdge = choice.edge
+            vlog("pill placed: edge=\(choice.edge.rawValue)")
+            settle(to: targetCenter(on: screen), velocity: velocity); scheduleCollapse()
+        }
+    }
+    private func choosePosition(_ edge: PillEdge) {
+        guard let screen = selectedScreen() else { return }
+        choice = .init(edge: edge)
+        placement.remember(choice, display: Self.screenID(screen)); state.placementEdge = edge
+        settle(to: targetCenter(on: screen), velocity: .zero)
+    }
+    private func showPreview(at center: CGPoint) {
+        if previewPanel == nil {
+            let p = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            p.level = .statusBar; p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            p.backgroundColor = .clear; p.isOpaque = false; p.hasShadow = false; p.ignoresMouseEvents = true
+            p.isReleasedWhenClosed = false; p.contentView = PillDockPreview(); previewPanel = p
+        }
+        let size = capsuleSize
+        previewPanel?.setFrame(CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height), display: true)
+        previewPanel?.orderFrontRegardless()
+    }
+    private func settle(to target: CGPoint, velocity: CGPoint) {
+        snapTimer?.invalidate(); snapTimer = nil; anchor = target
+        guard !reduceMotion() else { moveCenter(target); return }
+        var speed = velocity
+        var last = ProcessInfo.processInfo.systemUptime
+        let started = last
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
+            guard let self, let panel = self.panel else { timer.invalidate(); return }
+            let now = ProcessInfo.processInfo.systemUptime; let dt = min(1.0 / 30, now - last); last = now
+            var center = CGPoint(x: panel.frame.midX, y: panel.frame.midY)
+            speed.x += (324 * (target.x - center.x) - 36 * speed.x) * dt
+            speed.y += (324 * (target.y - center.y) - 36 * speed.y) * dt
+            center.x += speed.x * dt; center.y += speed.y * dt
+            if (hypot(target.x - center.x, target.y - center.y) < 0.4 && hypot(speed.x, speed.y) < 3) || now - started > 1.2 {
+                timer.invalidate(); self.snapTimer = nil; self.moveCenter(target); self.resizeToFit()
+            } else { self.moveCenter(center) }
+        }
+        timer.tolerance = 0.003; RunLoop.main.add(timer, forMode: .common); snapTimer = timer
     }
 
     /// Global CG coordinates are measured from the top-left of the PRIMARY
@@ -313,8 +420,10 @@ final class DockController {
     /// Three genuinely different answers, because they need different responses:
     /// we can see the Dock and it is up; we can see it and it is not in our way;
     /// or we cannot see it at all and have to guess.
-    private enum DockProbe {
+    private enum DockProbe: Equatable {
         case top(CGFloat)
+        case left(CGFloat)
+        case right(CGFloat)
         case away
         case blind
     }
@@ -342,7 +451,12 @@ final class DockController {
         // sending the pill to 1216pt, near the top of the screen. Measured.
         let ns = NSRect(x: f.minX, y: Self.primaryHeight() - f.maxY,
                         width: f.width, height: f.height)
-        guard ns.width > ns.height else { return .away }        // side Dock: not our problem
+        if ns.width <= ns.height {
+            guard ns.midY >= screen.frame.minY, ns.midY <= screen.frame.maxY else { return .away }
+            if ns.minX <= screen.frame.minX + 4 && ns.maxX > screen.frame.minX + 2 { return .left(ns.maxX) }
+            if ns.maxX >= screen.frame.maxX - 4 && ns.minX < screen.frame.maxX - 2 { return .right(ns.minX) }
+            return .away
+        }
         guard ns.midX >= screen.frame.minX, ns.midX <= screen.frame.maxX else { return .away }
         // Bottom quarter, not "flush to the edge": with Dock magnification the
         // icon list rides ~10pt above the bottom, and a 4pt tolerance rejected a
@@ -369,7 +483,7 @@ final class DockController {
     /// Follow the Dock: rest low when it is hidden, glide up when it appears.
     private func startDockWatch() {
         dockWatchTimer?.invalidate()
-        let screen = Self.activeScreen()
+        let screen = selectedScreen()
         let nearDock = screen.map { NSEvent.mouseLocation.y < $0.visibleFrame.minY + 180 } ?? false
         let delay = nearDock ? 0.1 : 0.75
         let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
@@ -382,84 +496,11 @@ final class DockController {
         dockWatchTimer = timer
     }
 
-    /// Behind `vf_dock_debug`, so a placement complaint can be diagnosed from a
-    /// log instead of guessed at.
-    private func dockLog(_ s: @autoclosure () -> String) {
-        guard UserDefaults.standard.bool(forKey: "vf_dock_debug") else { return }
-        vlog("[dock] \(s())")
-    }
-
     private func followDockVisibility() {
-        guard let screen = Self.activeScreen() ?? NSScreen.main else { return }
-        // Re-centre when the display changes. This was written but never called,
-        // so plugging in a monitor left the pill wherever the old one had put it.
-        // Cheap: it returns immediately unless the screen id actually changed.
+        guard !isDragging, snapTimer == nil else { return }
         followActiveScreen()
-        let probe = dockProbe(on: screen)
-        let target: CGFloat
-        switch probe {
-        case .top(let t): target = t + 10
-        case .away:      target = screen.visibleFrame.minY + 14
-        case .blind:     target = screen.frame.minY + Self.blindInset(for: screen)
-        }
-        dockLog("probe=\(probe) target=\(Int(target)) mouseY=\(Int(NSEvent.mouseLocation.y))")
-        guard abs(target - lastDockTop) > 1 else { return }
-        lastDockTop = target
-        anchor = NSPoint(x: anchor?.x ?? screen.visibleFrame.midX, y: target)
-        // No animation here on purpose: resizeToFit uses setFrame, which
-        // NSAnimationContext does not touch, so wrapping it only looked like
-        // easing. The motion you see is real -- we sample the Dock's OWN
-        // animation often enough to follow it up and down.
+        guard let screen = selectedScreen() else { return }
+        cachedProbe = dockProbe(on: screen); probeScreenID = Self.screenID(screen)
         resizeToFit()
-    }
-
-    private func initialAnchor() -> NSPoint {
-        // A saved position is only trustworthy if it still lands on a screen that
-        // exists. This one was {3838, 56} from a second display that is no longer
-        // connected, so the dock was clamped hard against the right edge of the
-        // remaining monitor. Validate rather than migrate: unplugging a monitor
-        // should not strand the dock, ever.
-        if let saved = Self.loadSavedOrigin(), Self.isOnAScreen(saved) { return saved }
-        return Self.defaultAnchor(for: Self.activeScreen())
-    }
-
-    /// Is this point actually on a connected display?
-    private static func isOnAScreen(_ p: NSPoint) -> Bool {
-        NSScreen.screens.contains { NSPointInRect(p, $0.frame) }
-    }
-
-    /// Centred, and high enough that the macOS Dock cannot sit on top of it.
-    static func defaultAnchor(for screen: NSScreen?) -> NSPoint {
-        guard let screen = screen ?? NSScreen.main else { return .zero }
-        let v = screen.visibleFrame
-        // Start low; the Dock watcher lifts us the moment the Dock appears.
-        // Start low; the Dock watcher lifts us on its first tick.
-        return NSPoint(x: v.midX, y: v.minY + 14)
-    }
-
-
-    /// User dragged the panel — recompute the anchor from its new bottom-center.
-    private func userMoved() {
-        guard let p = panel else { return }
-        // Our own setFrame, not a drag. Persisting these was the bug.
-        if let mine = lastSetFrame, p.frame == mine { return }
-        let a = NSPoint(x: p.frame.midX, y: p.frame.minY + Self.verticalPadding)
-        anchor = a
-        if let screen = Self.activeScreen() {
-            let id = Self.screenID(screen)
-            lastScreenID = id
-            placement.remember(x: Double(a.x), y: Double(a.y), forScreen: id)
-        }
-    }
-
-    private static func loadSavedOrigin() -> NSPoint? {
-        guard let raw = UserDefaults.standard.string(forKey: originDefaultsKey), !raw.isEmpty else {
-            return nil
-        }
-        let p = NSPointFromString(raw)
-        // NSPointFromString returns .zero for an unparsable string; treat
-        // that as "no saved origin" rather than pinning the dock at (0, 0).
-        guard p != .zero else { return nil }
-        return p
     }
 }

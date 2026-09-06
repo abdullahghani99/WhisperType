@@ -546,6 +546,26 @@ _SECOND_PERSON = frozenset(
     "you your you're youre you've youve you'll youll you'd youd yourself".split())
 
 
+def _protected_speech_act(text: str) -> bool:
+    """Questions and requests are transcription data, never instructions to answer."""
+    if any(mark in text for mark in ("?", "¿", "؟", "？")):
+        return True
+    # ASR may omit punctuation. Fail conservatively for English question cues
+    # and direct requests; punctuation covers questions in other languages.
+    if re.search(r"\b(?:what|where|when|who|why|how|which)\b", text, re.I):
+        return True
+    if re.search(r"\b(?:can|could|would|will|should|do|does|did|is|are|have|has)\s+(?:you|we|i|he|she|they|it)\b", text, re.I):
+        return True
+    return bool(re.search(r"(?:^|[.!?]\s+|\band\s+)(?:please\s+)?(?:tell|give|show|write|explain|describe|answer|summarize|translate|ignore|create|generate|help|send|make|list|check|find)\b", text, re.I))
+
+
+def _speech_act_words(text: str) -> list[str]:
+    # Unicode keeps non-English words visible to the added-content check.
+    # Numbered list markers are formatting, not dictated facts.
+    text = re.sub(r"^\s*\d+[.)]\s+", "", text, flags=re.MULTILINE)
+    return re.findall(r"[^\W_]+(?:'[^\W_]+)*", text.casefold().replace("’", "'"), re.UNICODE)
+
+
 def _polish_failed(src: str, out: str) -> bool:
     """True if polish clearly failed — regurgitated an example, fabricated,
     summarized, or started replying to the speaker. A safety net so a failed
@@ -558,6 +578,19 @@ def _polish_failed(src: str, out: str) -> bool:
     3) ADDRESSED THE SPEAKER: second-person words the input didn't have mean the
        model replied ('you're looking to...') instead of editing.
     """
+    if _protected_speech_act(src):
+        source_words = set(_speech_act_words(src))
+        added_content = set(_speech_act_words(out)) - source_words - _STOPWORDS
+        if added_content:
+            return True
+        # Preserve an opening question/request as that speech act. Global word
+        # overlap alone misses an answer replacing the first clause of a long take.
+        first_source = re.split(r"[.!?؟？]", re.sub(r"^\s*\d+[.)]\s+", "", src, flags=re.MULTILINE), maxsplit=1)[0]
+        first_output = re.split(r"[.!?؟？]", re.sub(r"^\s*\d+[.)]\s+", "", out, flags=re.MULTILINE), maxsplit=1)[0]
+        if _protected_speech_act(first_source) and not _protected_speech_act(first_output):
+            return True
+        if sum(src.count(mark) for mark in ("?", "؟", "？")) > sum(out.count(mark) for mark in ("?", "؟", "？")):
+            return True
     src_words = _TOKEN_RE.findall(src.lower())
     out_words = _TOKEN_RE.findall(out.lower())
     # Fail closed on changed numbers and polarity, including short utterances.
@@ -598,7 +631,7 @@ def _polish(text: str) -> str:
     # messier real speech unformatted (its low eval loss reflected matching a
     # conservative teacher, not formatting behavior). Falls back to the local
     # polish model (8B+adapter, then base) if the 14B isn't loaded.
-    if _prompt_model is not None and not _polish_distilled:
+    if _prompt_model is not None:
         model, tok = _prompt_model, _prompt_tok
     else:
         model, tok = _model, _tok
@@ -1263,6 +1296,7 @@ async def health():
         "release": os.environ.get("VF_RELEASE_ID"),
         "polish": "on" if (POLISH_ENABLED and _model is not None) else "off (near-verbatim)",
         "polish_distilled": _polish_distilled,
+        "polish_uses_prompt_model": _prompt_model is not None and _prompt_model is not _model,
         "prompt_mode": prompt_state,
         "polish_model": POLISH_MODEL if _model is not None else None,
         "prompt_model": PROMPT_MODEL if (_prompt_model is not None and _prompt_model is not _model) else None,

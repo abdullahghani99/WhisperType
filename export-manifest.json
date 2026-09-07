@@ -88,6 +88,7 @@
     "scripts/test_client_transport.sh": "c34637566debf096a6754bcbd05425c63fbd6da0623ef94e0babe5c700435ff0",
     "scripts/test_destination_focus.sh": "6822440ca2dd636617920794af037a07af0bb4d9bc65ab1f7488131fdebd2da5",
     "scripts/test_native_microphone_pcm.sh": "d67d836ec44cfe6de0ae39b3f4073d9cc696eeaffb05525553d1dd8652336fb5",
+    "scripts/test_polish_report.py": "229802922e42bf6217c58a5bb69da29d9189e40b43db3d10e81588a323aef0fe",
     "server/deploy_release.py": "4f625901fdddf2ce3825596edf81d1f29f830167acff0c1e111cce7ee42fe714",
     "server/diarize.py": "bce760fc9c70d289d7dac3e272e41ec17953f58dd381d2fec65e81d4e102a09b",
     "server/inference_worker.py": "5b3f43b88c2abedc25cfd6d3575aea819b0650aa92a28ce8ce24373a43cc4525",

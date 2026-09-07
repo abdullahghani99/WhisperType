@@ -39,7 +39,11 @@ def run(args):
     # Stable sampling is independent of output/quality; never select winners.
     if args.limit:rows=sorted(rows,key=lambda r:hashlib.sha256(str(r.get('id',r.get('transcriptEntityId'))).encode()).hexdigest())[:args.limit]
     args.out.parent.mkdir(parents=True,exist_ok=True)
-    corpus=hashlib.sha256(json.dumps([r.get('id') for r in rows],sort_keys=True).encode()).hexdigest() if args.sqlite else hashlib.sha256(args.input.read_bytes()).hexdigest()
+    # Hash the ids AND the input text. Ids alone identify the wrong thing: the
+    # same dictation can be retranscribed later, so two arms could carry matching
+    # corpus hashes while having scored different words.
+    corpus=hashlib.sha256(json.dumps([[r.get('id'),r.get('corrected') or r.get('raw') or ''] for r in rows],
+                                     sort_keys=True,ensure_ascii=False).encode()).hexdigest() if args.sqlite else hashlib.sha256(args.input.read_bytes()).hexdigest()
     meta={'model':args.model,'adapter':str(args.adapter) if args.adapter else None,'adapter_sha256':hashlib.sha256((args.adapter/'adapters.safetensors').read_bytes()).hexdigest() if args.adapter else None,'policy_sha256':hashlib.sha256(args.module.read_bytes()).hexdigest(),'corpus_sha256':corpus,'partition':args.partition,'cases':len(rows),'started':time.time()}
     args.out.with_suffix('.manifest.json').write_text(json.dumps(meta,indent=2))
     with args.out.open('w') as target:

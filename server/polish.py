@@ -46,8 +46,6 @@ EXAMPLES = [
      "I kind of agree, but the numbers are sort of soft."),
     ("send it to John sorry to Jane",
      "Send it to Jane."),
-    ("but i don't see them right now when i'm generating trying to generate a report",
-     "But I don't see them right now when I'm trying to generate a report."),
     ("there are three things we need to do first fix the bug then write the tests and then deploy to production",
      "There are three things we need to do:\n\n1. First, fix the bug.\n2. Then write the tests.\n3. Then deploy to production."),
     ("don't you use the documentation skills i thought we agreed on that",
@@ -82,23 +80,30 @@ def clean_stutters(text):
     text = re.sub(r"\b(?:um|uh|er|hmm)\b[, ]*", "", text, flags=re.I)
     text = re.sub(r",\s*you know\s*,", ",", text, flags=re.I)
     text = re.sub(r"\b(?:make|write|create) (?:a|the) (\w+) (?=(?:draft|write|create) (?:a|the) \1\b)", "", text, flags=re.I)
-    # An unmarked restart: the speaker starts a verb, abandons it, and immediately
-    # says what they meant -- "when I'm generating, trying to generate a report".
-    # Keep the form they landed on.
+    # DO NOT add a rule here that deletes an abandoned restart such as
+    # "generating, trying to generate". One was tried and reverted in v0.5.3.
     #
-    # This belongs here rather than in the guard. Resolving the restart transposes
-    # the two roots, which scores 0.917 against the order check's 0.95 floor, and
-    # `content_or_order` was the largest rejection reason on real dictations. But
-    # waiving that in the guard also waives "overtime and approved overtime" ->
-    # "approved overtime": both are one duplicated root with a single adjacent
-    # swap, so no displacement rule can separate a restart from a deliberate
-    # general-plus-qualified pair. Fixing it in the source keeps the guard intact,
-    # and the cleaned text is what the user sees even when the model is overruled.
-    # Immediacy is what keeps this narrow: "generating a report and trying to
-    # generate another" has words in between and is left alone.
-    text = re.sub(r"\b(\w{4,}ing),?\s+(?=(?:trying|going|about)\s+to\s+(\w+))",
-                  lambda m: "" if root(m.group(1)) == root(m.group(2)) else m.group(0),
-                  text, flags=re.I)
+    # It read as narrow -- an -ing form immediately followed by "trying to" with
+    # the same root -- but it silently deleted a deliberately distinct item:
+    #
+    #   "We distinguish generating, trying to generate, and reviewing as three
+    #    different activities."
+    #   -> "We distinguish trying to generate, and reviewing as three different
+    #       activities."          accepted, status=edited, rejection=None
+    #
+    # and it moved negation: "I'm not generating, trying to generate a report."
+    # Immediacy does not distinguish a restart from a listed alternative.
+    #
+    # The reason it is dangerous HERE specifically is that `copyedit` validates
+    # the model against `clean_stutters(text)`, so anything removed at this stage
+    # is gone before `rejection_reason` ever sees it. Preprocessing bypasses every
+    # protection the guard provides. A deletion that changes meaning must be
+    # checked against what the speaker actually said, never against a source this
+    # function has already rewritten.
+    #
+    # The consequence is accepted deliberately: an unmarked restart survives into
+    # the output, because the guard cannot tell it apart from a general-plus-
+    # qualified pair either ("overtime and approved overtime").
     text = re.sub(r"^\s*(?:is|are) (?:the|a)\s*\.\.\.\s*(?:or )?", "", text, flags=re.I)
     return text.strip()
 

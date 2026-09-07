@@ -65,23 +65,22 @@ class CopyeditingTests(unittest.TestCase):
         self.assertIn('https://example.com/CaseSensitive',result)
         self.assertIn('1.25',result)
         self.assertEqual(words(src,False),words(result,False))
-    def test_unmarked_restart_is_resolved_before_the_guard(self):
-        # Real dictation 3784, returned verbatim in production: the guard rejected
-        # the wanted edit as content_or_order because resolving the restart
-        # transposes [generat, try]. Resolving it in the source instead means the
-        # restart is gone whether or not the model is overruled.
-        source=("but I don't see them right now when I'm generating, trying to generate a report")
-        cleaned=clean_stutters(source)
-        self.assertNotIn('generating',cleaned)
-        self.assertIn('trying to generate a report',cleaned)
-        wanted="But I don't see them right now when I'm trying to generate a report."
-        self.assertIsNone(rejection_reason(cleaned,wanted))
-    def test_restart_cleanup_requires_immediacy(self):
-        # Words in between mean it is not a restart; both verbs are real.
-        kept='I am generating a report and trying to generate another'
-        self.assertEqual(clean_stutters(kept),kept)
-        # A different verb is not a restart either.
-        self.assertIn('reviewing',clean_stutters('I am reviewing, trying to generate a report'))
+    def test_preprocessing_never_deletes_a_distinct_listed_item(self):
+        # A restart-removal rule was added in v0.5.2 and reverted in v0.5.3: it
+        # deleted a deliberately distinct activity, and because copyedit validates
+        # against clean_stutters' output, the guard never saw the loss. Any future
+        # preprocessing must leave these intact.
+        listed='We distinguish generating, trying to generate, and reviewing as three different activities.'
+        self.assertIn('generating',clean_stutters(listed))
+        negated="I'm not generating, trying to generate a report."
+        self.assertIn('not generating',clean_stutters(negated))
+    def test_preprocessing_cannot_hide_a_deletion_from_the_guard(self):
+        # The structural rule: whatever clean_stutters removes is invisible to
+        # rejection_reason. An identity generator must therefore be a no-op.
+        source='We distinguish generating, trying to generate, and reviewing as three different activities.'
+        result,diagnostic=copyedit(source,lambda system,text:text)
+        self.assertIn('generating',result)
+        self.assertEqual(diagnostic['status'],'unchanged')
     def test_general_and_qualified_pair_is_still_protected(self):
         # Structurally identical to a restart: one duplicated root, one adjacent
         # swap. It must stay rejected, which is why the guard was left alone.

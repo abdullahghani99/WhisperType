@@ -20,13 +20,27 @@ def run(args):
         result=generate(model,tok,prompt=prompt,max_tokens=max(400,int(len(text.split())*1.8)+200),verbose=False).replace('<dictation>','').replace('</dictation>','').strip()
         generated.append(result)
         return result
-    rows=json.loads(args.input.read_text())
-    if isinstance(rows,dict):rows=rows['rows']
+    if args.sqlite:
+        # Real dictations, read-only. Sourcing from `history` also keeps the
+        # model's own warm-up and keep-alive calls out of the sample: those run
+        # through polishing and emit log lines, but never create a history row,
+        # and counting them once diluted a 24% rejection rate down to 7%.
+        import sqlite3
+        with sqlite3.connect('file:'+str(args.sqlite.resolve())+'?mode=ro',uri=True) as connection:
+            connection.row_factory=sqlite3.Row
+            rows=[dict(r) for r in connection.execute(
+                'SELECT id,raw,corrected,polished,edited FROM history '
+                'WHERE length(trim(coalesce(corrected,raw,"")))>0 ORDER BY id DESC LIMIT ?',(args.pool,))]
+        rows=[r for r in rows if len((r['corrected'] or r['raw'] or '').split())>=args.min_words]
+    else:
+        rows=json.loads(args.input.read_text())
+        if isinstance(rows,dict):rows=rows['rows']
     if args.partition: rows=[r for r in rows if r.get('partition')==args.partition]
     # Stable sampling is independent of output/quality; never select winners.
     if args.limit:rows=sorted(rows,key=lambda r:hashlib.sha256(str(r.get('id',r.get('transcriptEntityId'))).encode()).hexdigest())[:args.limit]
     args.out.parent.mkdir(parents=True,exist_ok=True)
-    meta={'model':args.model,'adapter':str(args.adapter) if args.adapter else None,'adapter_sha256':hashlib.sha256((args.adapter/'adapters.safetensors').read_bytes()).hexdigest() if args.adapter else None,'policy_sha256':hashlib.sha256(args.module.read_bytes()).hexdigest(),'corpus_sha256':hashlib.sha256(args.input.read_bytes()).hexdigest(),'partition':args.partition,'cases':len(rows),'started':time.time()}
+    corpus=hashlib.sha256(json.dumps([r.get('id') for r in rows],sort_keys=True).encode()).hexdigest() if args.sqlite else hashlib.sha256(args.input.read_bytes()).hexdigest()
+    meta={'model':args.model,'adapter':str(args.adapter) if args.adapter else None,'adapter_sha256':hashlib.sha256((args.adapter/'adapters.safetensors').read_bytes()).hexdigest() if args.adapter else None,'policy_sha256':hashlib.sha256(args.module.read_bytes()).hexdigest(),'corpus_sha256':corpus,'partition':args.partition,'cases':len(rows),'started':time.time()}
     args.out.with_suffix('.manifest.json').write_text(json.dumps(meta,indent=2))
     with args.out.open('w') as target:
         os.chmod(args.out,0o600)
@@ -40,5 +54,9 @@ def run(args):
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--module',type=Path,required=True);p.add_argument('--model',default='mlx-community/Qwen2.5-14B-Instruct-4bit');p.add_argument('--adapter',type=Path)
-    p.add_argument('--input',type=Path,required=True);p.add_argument('--out',type=Path,required=True);p.add_argument('--partition');p.add_argument('--limit',type=int)
+    p.add_argument('--input',type=Path);p.add_argument('--sqlite',type=Path,help='Read the corpus from a history database instead of --input')
+    p.add_argument('--pool',type=int,default=200,help='Most recent dictations to draw the sample from (--sqlite)')
+    p.add_argument('--min-words',type=int,default=20,dest='min_words',help='Skip dictations shorter than this (--sqlite)')
+    p.add_argument('--out',type=Path,required=True);p.add_argument('--partition');p.add_argument('--limit',type=int)
+    if not (p.parse_known_args()[0].input or p.parse_known_args()[0].sqlite): p.error('pass --input or --sqlite')
     run(p.parse_args())

@@ -75,8 +75,15 @@ def relevant_examples(path,text,limit=2):
         if len(row['source'])>1200 or len(row['target'])>1200:continue
         terms=tokens(row['source']);intersection=query&terms
         if len(intersection)<3:continue
-        score=len(intersection)/max(1,len(query|terms))
-        if score>=0.25:scored.append((score,{'before':row['source'],'after':row['target']}))
+        # Containment in the EXAMPLE, not overlap with the union. Scoring against
+        # the union made the denominator grow with the dictation, so the longer
+        # you spoke the lower every score: a 250-word dictation could not reach
+        # the old 0.25 floor against any short correction, and every polish call
+        # in production logged examples=0. Long dictations are exactly where a
+        # saved correction helps most. The minimum intersection above still keeps
+        # a short unrelated example from qualifying on a few common words.
+        score=len(intersection)/max(1,len(terms))
+        if score>=0.5:scored.append((score,{'before':row['source'],'after':row['target']}))
     scored.sort(key=lambda item:item[0],reverse=True)
     return [item[1] for item in scored[:limit]]
 

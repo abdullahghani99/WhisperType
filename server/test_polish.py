@@ -1,5 +1,7 @@
+import re
 import unittest
-from polish import copyedit,rejection_reason,clean_stutters,punctuation_is_faithful,project_punctuation,words,starts_question
+from polish import (copyedit,rejection_reason,clean_stutters,punctuation_is_faithful,
+                    project_punctuation,words,starts_question,SYSTEM,EXAMPLES)
 
 class CopyeditingTests(unittest.TestCase):
     def test_preserves_intent(self):
@@ -63,6 +65,45 @@ class CopyeditingTests(unittest.TestCase):
         self.assertIn('https://example.com/CaseSensitive',result)
         self.assertIn('1.25',result)
         self.assertEqual(words(src,False),words(result,False))
+    def test_unmarked_restart_is_resolved_before_the_guard(self):
+        # Real dictation 3784, returned verbatim in production: the guard rejected
+        # the wanted edit as content_or_order because resolving the restart
+        # transposes [generat, try]. Resolving it in the source instead means the
+        # restart is gone whether or not the model is overruled.
+        source=("but I don't see them right now when I'm generating, trying to generate a report")
+        cleaned=clean_stutters(source)
+        self.assertNotIn('generating',cleaned)
+        self.assertIn('trying to generate a report',cleaned)
+        wanted="But I don't see them right now when I'm trying to generate a report."
+        self.assertIsNone(rejection_reason(cleaned,wanted))
+    def test_restart_cleanup_requires_immediacy(self):
+        # Words in between mean it is not a restart; both verbs are real.
+        kept='I am generating a report and trying to generate another'
+        self.assertEqual(clean_stutters(kept),kept)
+        # A different verb is not a restart either.
+        self.assertIn('reviewing',clean_stutters('I am reviewing, trying to generate a report'))
+    def test_general_and_qualified_pair_is_still_protected(self):
+        # Structurally identical to a restart: one duplicated root, one adjacent
+        # swap. It must stay rejected, which is why the guard was left alone.
+        self.assertIsNotNone(rejection_reason('overtime and approved overtime','approved overtime'))
+    def test_attribution_swap_is_still_rejected(self):
+        self.assertIsNotNone(rejection_reason('Alex owes Sam fifty dollars.','Sam owes Alex fifty dollars.'))
+        self.assertIsNotNone(rejection_reason('the invoice blocks the shipment','the shipment blocks the invoice'))
+    def test_prompt_examples_all_pass_the_guard(self):
+        # A demonstrated edit the guard would reject teaches the model to be
+        # overruled into punctuation-only output. That is the regression.
+        for source,target in EXAMPLES:
+            with self.subTest(source=source):
+                self.assertIsNone(rejection_reason(source,target))
+    def test_prompt_still_names_filler_and_formatting(self):
+        # De-enumerating the filler list and weakening the list rule is exactly
+        # what turned polishing into punctuation restoration.
+        for token in ('you know','I mean','basically','actually'):
+            self.assertIn(token,SYSTEM)
+        self.assertTrue(re.search(r'numbered',SYSTEM))
+        self.assertTrue(re.search(r'paragraph',SYSTEM))
+        # Hedges must never be swept up with filler.
+        self.assertIn('kind of agree',SYSTEM)
     def test_multilingual_punctuation(self):
         self.assertTrue(punctuation_is_faithful('متى ينتهي العمل','متى ينتهي العمل؟'))
         self.assertFalse(punctuation_is_faithful('¿Cuándo estará listo?','Estará listo mañana.'))

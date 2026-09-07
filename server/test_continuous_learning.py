@@ -42,5 +42,19 @@ class LearningTests(unittest.TestCase):
         with sqlite3.connect(self.db) as c:c.execute('DELETE FROM history')
         self.assertEqual(learning.dataset(self.db),[])
         self.assertEqual(learning.relevant_examples(self.db,'check the payroll report tomorrow'),[])
+    def test_long_dictation_still_finds_a_relevant_correction(self):
+        # Scoring against the union made the denominator grow with the dictation,
+        # so long speech matched nothing and production logged examples=0
+        # everywhere. Relevance must survive length.
+        learning.save_feedback(self.db,'dictation',1,'','Check the payroll report tomorrow?')
+        padding=' '.join('unrelated filler sentence about scheduling and logistics'.split()*20)
+        long_text='please check the payroll report tomorrow. '+padding
+        self.assertEqual(len(learning.relevant_examples(self.db,long_text)),1)
+    def test_long_dictation_still_rejects_an_unrelated_correction(self):
+        # The other direction: broader matching must not admit examples whose
+        # content the speaker never mentioned.
+        learning.save_feedback(self.db,'dictation',1,'','Check the payroll report tomorrow?')
+        unrelated=' '.join('we should renegotiate the shipping contract before the container leaves the port'.split()*20)
+        self.assertEqual(learning.relevant_examples(self.db,unrelated),[])
     def test_observations_not_labels(self):self.assertEqual(learning.dataset(self.db),[])
 if __name__=='__main__':unittest.main()

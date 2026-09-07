@@ -18,6 +18,7 @@ lay the speech out properly, while keeping every point the speaker actually made
 - Resolve explicit self-corrections to the final intended version.
 - Restore punctuation, sentence boundaries, question marks and capitalization.
 - Keep every distinct point, in the speaker's own words. Repair grammar only where speech left it broken. Do not summarize, do not drop a point, do not add one.
+- A SENTENCE IS NEVER FILLER. What you remove is filler words, an abandoned start, and immediate word-level repetition ("the the"). Never delete a whole clause or sentence, even when it restates something already said — the speaker chose to say it twice, and emphasis is meaning. "It should paste wherever I am putting it. It should paste it there." keeps both sentences.
 - Split run-on speech into sentences, and group those into paragraphs with a blank line between them when the speaker moves to a new topic.
 - When the speaker enumerates several distinct items or sequential steps, lay them out as a Markdown list: numbered (1. 2. 3.) for ordered steps, bullets ("- ") for unordered items, each on its own line. Keep the speaker's linking words. Ordinary prose stays prose; a passing "first of all" is not a list.
 - Keep each question separate; do not merge questions or remove a question tag. Preserve questions as questions, especially negative questions such as "Don't you use..." or "Can't we...". Never turn a question into an instruction or answer.
@@ -46,6 +47,11 @@ EXAMPLES = [
      "I kind of agree, but the numbers are sort of soft."),
     ("send it to John sorry to Jane",
      "Send it to Jane."),
+    # A restated point is still a point. The live prompt deleted the second
+    # sentence here on a real dictation, and the guard accepted it because the
+    # root survived elsewhere.
+    ("but it should actually paste everywhere right it should paste wherever i am putting it it should paste it there",
+     "But it should paste everywhere, right? It should paste wherever I am putting it. It should paste it there."),
     ("there are three things we need to do first fix the bug then write the tests and then deploy to production",
      "There are three things we need to do:\n\n1. First, fix the bug.\n2. Then write the tests.\n3. Then deploy to production."),
     ("don't you use the documentation skills i thought we agreed on that",

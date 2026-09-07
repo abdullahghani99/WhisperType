@@ -13,12 +13,26 @@ each case is classified by what its INPUT actually needed:
   already_clean  it carries neither
                  -> unchanged is the correct answer and counts as a pass
 
-Two properties are treated as regressions no matter what the cleanup numbers
-say, and are checked PER CASE rather than as totals, so a candidate cannot earn
-a new failure by happening to fix an unrelated one:
+Results are split by what a failure actually costs, and checked PER CASE so a
+candidate cannot earn a new failure by happening to fix an unrelated one.
+
+FAILURES (non-zero exit) are meaning regressions in output that was ACCEPTED and
+shown to the user:
 
   facts      numbers and negation, via polish.facts
   hedges     "kind of", "sort of", "maybe", "probably", "I think"
+  questions  a question mark present in the input must survive
+  content    a non-filler word present in the input must survive
+
+WARNINGS (reported, exit 0) are quality costs: the guard dec‍lined an edit and
+fell back to punctuation or verbatim. The user sees less polishing, never wrong
+words. An earlier version treated a rise in guard rejections as a safety
+failure, which reads the signal backwards -- a rejection is the guard working.
+
+The meaning checks re-derive everything from the ORIGINAL input instead of
+trusting `rejection`. The v0.5.2 restart bug was accepted with `rejection=None`
+because preprocessing had rewritten the source the guard validated against, so a
+gate that trusts the guard cannot see that class of bug at all.
 
 The hedge check exists because an earlier version of this script scored
 "I kind of agree." -> "I agree." as a successful cleanup. It counted `kind`,
@@ -89,6 +103,49 @@ def has_repetition(text):
     return bool(re.search(r'\b(\w+)\s+\1\b', text, re.I))
 
 
+def question_marks(text):
+    return sum(text.count(mark) for mark in '?؟？')
+
+
+def dropped_content(source, output):
+    """Content words present in the ORIGINAL input but missing from the output.
+
+    Note which list is used for what. `polish.FILLER_WORDS` is consulted here as
+    a REMOVAL PERMISSION -- the words polishing is allowed to drop -- which is
+    what it was designed for. It is not used to decide what needs removing;
+    that misuse is what made this script reward deleting "kind of".
+
+    Compared against `source` rather than `clean_stutters(source)` on purpose: a
+    preprocessing step that rewrites the source hides its deletions from the
+    guard, and this check exists to catch exactly that.
+
+    Counts, not a set. A set cannot see the bug this exists to catch: "generating"
+    and "generate" share the root `generat`, so deleting the abandoned form leaves
+    the root present and a set comparison reports nothing missing. That collapse is
+    also why the guard's order check was the only signal available.
+
+    A count that falls because the speaker immediately repeated themselves
+    ("the report is ready now now") is allowed -- collapsing an adjacent duplicate
+    is the edit we want. Any other drop is reported. This is deliberately strict:
+    a legitimate clause dedup ("this includes leaves, this includes overtime" ->
+    "this includes leaves, overtime") will be flagged and needs a human to wave it
+    through. A false positive here costs one review; a false negative ships a
+    dictation with a point missing.
+    """
+    removable = polish.FUNCTION_WORDS | polish.FILLER_WORDS
+    def counts(text):
+        tally = Counter()
+        for word in polish.words(text):
+            if word not in removable: tally[polish.root(word)] += 1
+        return tally
+    source_words = polish.words(source)
+    repeated = {polish.root(a) for a, b in zip(source_words, source_words[1:])
+                if polish.root(a) == polish.root(b)}
+    present, kept = counts(source), counts(output)
+    return sorted(r for r, n in present.items()
+                  if kept[r] < n and r not in repeated)
+
+
 def classify(item):
     source, output = item['input'], item['output']
     changed, percent = word_change(source, output)
@@ -103,9 +160,12 @@ def classify(item):
         'paragraphs': output.count('\n\n'),
         'lists': len(re.findall(r'^\s*(?:[-*]|\d+[.)])\s', output, re.M)),
         'facts_preserved': polish.facts(polish.clean_stutters(source)) == polish.facts(output),
+        'dropped_content': dropped_content(source, output),
         'seconds': item.get('seconds'),
     }
     row['hedges_preserved'] = row['hedges_after'] >= row['hedges_before']
+    row['questions_preserved'] = question_marks(output) >= question_marks(source)
+    row['content_preserved'] = not row['dropped_content']
     row['needed_cleanup'] = row['filler_before'] > 0 or repetition_before
     if row['needed_cleanup']:
         # Every defect the input carried must be resolved.
@@ -139,6 +199,8 @@ def summarise(rows, label):
         'with_lists': sum(1 for r in rows if r['lists'] > 0),
         'facts_lost': sum(1 for r in rows if not r['facts_preserved']),
         'hedges_lost': sum(1 for r in rows if not r['hedges_preserved']),
+        'questions_lost': sum(1 for r in rows if not r['questions_preserved']),
+        'content_dropped': sum(1 for r in rows if not r['content_preserved']),
         'fallbacks': sum(1 for r in rows if r['rejection']),
         'safety_rejections': sum(n for reason, n in rejections.items() if reason in SAFETY),
         'median_seconds': f"{statistics.median([r['seconds'] for r in rows if r['seconds']]):.1f}" if any(r['seconds'] for r in rows) else '-',
@@ -169,22 +231,51 @@ def paired(base_items, candidate_items, path_a, path_b):
 
 
 def gate(pairs):
-    """Per-case requirements. Totals can hide a new failure behind a fixed one."""
-    failures = []
+    """Per-case results, split by what a failure actually costs.
+
+    FAILURES are meaning regressions in text that was ACCEPTED and shown to the
+    user. WARNINGS are quality costs, where the guard declined an edit and fell
+    back to punctuation or verbatim: the user sees less polishing, never wrong
+    words.
+
+    An earlier version counted a rise in guard REJECTIONS as a safety failure.
+    That reads the signal backwards -- a rejection is the guard working, and its
+    fallback is safe by construction. Blocking on it would reject a candidate for
+    being ambitious while ignoring the case that actually hurts: an edit that was
+    accepted and lost meaning.
+
+    The meaning checks deliberately re-derive everything from the ORIGINAL input
+    rather than trusting `rejection`. The v0.5.2 restart bug was accepted with
+    `rejection=None` precisely because preprocessing had already rewritten the
+    source the guard validated against, so a gate that trusts the guard's verdict
+    cannot see that class of bug at all.
+    """
+    failures, warnings = [], []
     for base_item, candidate_item in pairs:
         before, after = classify(base_item), classify(candidate_item)
         case = after['id']
+
+        # --- meaning: fatal ---
         if before['facts_preserved'] and not after['facts_preserved']:
             failures.append(f'case {case}: numbers/negation newly lost')
         if before['hedges_preserved'] and not after['hedges_preserved']:
             failures.append(f'case {case}: a hedge was newly deleted')
+        if before['questions_preserved'] and not after['questions_preserved']:
+            failures.append(f'case {case}: a question mark was newly lost')
+        newly_dropped = set(after['dropped_content']) - set(before['dropped_content'])
+        if newly_dropped:
+            failures.append(f'case {case}: content newly dropped from accepted output '
+                            f'({sorted(newly_dropped)[:4]})')
+
+        # --- quality: reported, not fatal ---
         if before['rejection'] not in SAFETY and after['rejection'] in SAFETY:
-            failures.append(f'case {case}: new safety rejection ({after["rejection"]})')
+            warnings.append(f'case {case}: new guard rejection ({after["rejection"]}) '
+                            f'-> safe fallback, less polishing')
         if before['outcome'] == 'cleaned' and after['outcome'] == 'not_cleaned':
-            failures.append(f'case {case}: cleanup regressed')
+            warnings.append(f'case {case}: cleanup regressed')
         if before['outcome'] == 'correctly_unchanged' and after['outcome'] == 'edited_clean_input':
-            failures.append(f'case {case}: an already-clean dictation was edited')
-    return failures
+            warnings.append(f'case {case}: an already-clean dictation was edited')
+    return failures, warnings
 
 
 def main():
@@ -198,12 +289,12 @@ def main():
     loaded = [load(path) for path in args.replay]
     reports = [summarise([classify(i) for i in items], path.stem)
                for items, path in zip(loaded, args.replay)]
-    failures = []
+    failures, warnings = [], []
     if len(loaded) == 2:
-        failures = gate(paired(loaded[0], loaded[1], args.replay[0], args.replay[1]))
+        failures, warnings = gate(paired(loaded[0], loaded[1], args.replay[0], args.replay[1]))
 
     if args.json:
-        print(json.dumps({'reports': reports, 'failures': failures,
+        print(json.dumps({'reports': reports, 'failures': failures, 'warnings': warnings,
                           'passed': not failures and len(loaded) == 2}, indent=2))
     else:
         keys = [k for k in reports[0] if k not in ('label', 'rejections')]
@@ -216,10 +307,18 @@ def main():
             print(f'\n{r["label"]} rejections: {r["rejections"] or "none"}')
         if len(loaded) == 2:
             print('\nGate (per case, candidate vs baseline):')
+            print('  meaning regressions in accepted output -- these fail the gate:')
             if failures:
-                for f in failures: print('  FAIL  ' + f)
+                for f in failures: print('    FAIL  ' + f)
             else:
-                print(f'  PASS  {len(loaded[0])} cases, no new meaning, hedge, safety or cleanup regression')
+                print(f'    PASS  {len(loaded[0])} cases: no facts, hedges, questions or'
+                      ' content newly lost')
+            print('  quality costs -- reported, not fatal (guard declined, output stayed safe):')
+            if warnings:
+                for w in warnings[:12]: print('    warn  ' + w)
+                if len(warnings) > 12: print(f'    ... and {len(warnings)-12} more')
+            else:
+                print('    none')
 
     if args.show:
         for items, path in zip(loaded, args.replay):

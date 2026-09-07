@@ -79,11 +79,34 @@ class GateTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn('hedge', ' '.join(json.loads(out)['failures']))
 
-    def test_editing_an_already_clean_dictation_exits_nonzero(self):
+    def test_rewording_a_clean_dictation_fails_because_it_loses_content(self):
+        # "ready" disappears. It fails as a meaning regression, not merely
+        # because a clean input was touched.
         base = [case(1, 'The report is ready.', 'The report is ready.')]
         candidate = [case(1, 'The report is ready.', 'The report has been completed.')]
-        code, _ = run(base, candidate)
+        code, out = run(base, candidate)
         self.assertEqual(code, 1)
+        self.assertIn('content newly dropped', ' '.join(json.loads(out)['failures']))
+
+    def test_punctuation_only_edit_to_a_clean_dictation_is_silent(self):
+        # Restoring capitalisation and a full stop is the job, not a deviation.
+        base = [case(1, 'the report is ready', 'the report is ready')]
+        candidate = [case(1, 'the report is ready', 'The report is ready.')]
+        code, out = run(base, candidate)
+        payload = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(payload['failures'], [])
+        self.assertEqual(payload['warnings'], [])
+
+    def test_harmless_rewording_of_a_clean_dictation_only_warns(self):
+        # A word is added but nothing is lost: worth surfacing, not fatal.
+        base = [case(1, 'the report is ready', 'The report is ready.')]
+        candidate = [case(1, 'the report is ready', 'The report is now ready.')]
+        code, out = run(base, candidate)
+        payload = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(payload['failures'], [])
+        self.assertTrue(any('already-clean' in w for w in payload['warnings']))
 
     def test_mismatched_corpora_are_refused(self):
         base = [case(1, 'The report is ready.', 'The report is ready.')]
@@ -100,6 +123,44 @@ class GateTests(unittest.TestCase):
     def test_empty_replay_is_refused(self):
         code, _ = run([], [case(1, 'a b c', 'a b c')])
         self.assertEqual(code, 1)
+
+
+class MeaningVersusQualityTests(unittest.TestCase):
+    """The gate must fail on accepted meaning loss and only warn on a rejection."""
+
+    def test_deletion_accepted_by_the_guard_still_fails(self):
+        # The v0.5.2 restart bug: rejection=None, yet a distinct activity is gone.
+        source = 'We distinguish generating, trying to generate, and reviewing as three different activities.'
+        base = [case(1, source, source, rejection=None)]
+        candidate = [case(1, source, 'We distinguish trying to generate, and reviewing as three different activities.',
+                          rejection=None)]
+        code, out = run(base, candidate)
+        self.assertEqual(code, 1)
+        self.assertIn('content newly dropped', ' '.join(json.loads(out)['failures']))
+
+    def test_new_guard_rejection_warns_but_does_not_fail(self):
+        source = 'um the quarterly report is ready'
+        base = [case(1, source, 'The quarterly report is ready.', rejection=None)]
+        candidate = [case(1, source, source, rejection='new_content', status='punctuation_recovery')]
+        code, out = run(base, candidate)
+        payload = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(payload['failures'], [])
+        self.assertTrue(any('new guard rejection' in w for w in payload['warnings']))
+
+    def test_newly_lost_question_mark_fails(self):
+        source = 'everything is there right?'
+        base = [case(1, source, 'Everything is there, right?')]
+        candidate = [case(1, source, 'Everything is there.')]
+        code, out = run(base, candidate)
+        self.assertEqual(code, 1)
+        self.assertIn('question mark', ' '.join(json.loads(out)['failures']))
+
+    def test_removing_real_filler_is_not_a_content_drop(self):
+        source = 'um so basically the report is you know ready'
+        row = report.classify(case(1, source, 'The report is ready.'))
+        self.assertEqual(row['dropped_content'], [])
+        self.assertTrue(row['content_preserved'])
 
 
 if __name__ == '__main__':

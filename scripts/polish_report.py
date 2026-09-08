@@ -86,7 +86,10 @@ HEDGES = (r'\bkind of\b', r'\bsort of\b', r'\bmaybe\b', r'\bprobably\b', r'\bi t
 # Words polishing is ALLOWED to drop. polish.FILLER_WORDS is used here for
 # exactly what it was designed for -- removal permission -- never to decide
 # what needs removing.
-REMOVABLE = polish.FUNCTION_WORDS | polish.FILLER_WORDS
+# Mirrors the runtime policy. Spoken number words legitimately become digits, so
+# counting "ten" as lost when the output says "10" reports a normalisation as
+# damage. The numbers themselves are checked separately, as they are at runtime.
+REMOVABLE = polish.FUNCTION_WORDS | polish.FILLER_WORDS | polish.NUMBER_WORDS
 
 
 def normalised(text):
@@ -161,6 +164,11 @@ def dropped_content(source, output):
     return sorted(r for r, n in present.items() if kept[r] < n - allowance[r])
 
 
+def _rehearing_of(word, source_words):
+    """Same allowance the runtime makes for a misheard word put right."""
+    return polish.rehearing(word, source_words)
+
+
 def added_content(source, output):
     """Content words in the output that the speaker never said.
 
@@ -168,8 +176,15 @@ def added_content(source, output):
     the whole point of these checks is to hold whatever was DELIVERED against
     what was SPOKEN, independently of whether the guard was consulted or bypassed.
     """
-    present = {polish.root(w) for w in polish.words(source) if w not in REMOVABLE}
-    return sorted({polish.root(w) for w in polish.words(output) if w not in REMOVABLE} - present)
+    spoken = [w for w in polish.words(source) if w not in REMOVABLE]
+    present = {polish.root(w) for w in spoken}
+    added = {polish.root(w) for w in polish.words(output) if w not in REMOVABLE} - present
+    # An added word that is a re-hearing of something spoken is a correction, not
+    # an invention; the runtime permits a bounded number of them.
+    by_root = {}
+    for word in polish.words(output):
+        by_root.setdefault(polish.root(word), word)
+    return sorted(r for r in added if not _rehearing_of(by_root.get(r, r), spoken))
 
 
 def order_preserved(source, output, floor=0.95):
@@ -214,7 +229,9 @@ def classify(item):
         'seconds': item.get('seconds'),
     }
     row['hedges_preserved'] = row['hedges_after'] >= row['hedges_before']
-    row['questions_preserved'] = question_marks(output) >= question_marks(source)
+    # Tag questions ("..., right?") are a verbal tic the reference removes, and
+    # removing one takes its question mark. Count what the runtime counts.
+    row['questions_preserved'] = question_marks(output) >= polish.questions_owed(source)
     row['content_preserved'] = not row['dropped_content']
     row['nothing_invented'] = not row['added_content']
     row['needed_cleanup'] = row['filler_before'] > 0 or repetition_before
@@ -337,15 +354,119 @@ def gate(pairs):
     return failures, warnings
 
 
+# ---------------------------------------------------------------- reference mode
+
+# Broader than FILLER_TOKENS on purpose. That set decides what a policy MUST
+# remove, so it only holds words that are filler in every context. This set only
+# MEASURES behaviour against a reference that already made its own contextual
+# judgements, so it can include the words whose removal is the actual complaint.
+BENCH_FILLER = (r'\bum\b', r'\buh\b', r'\ber\b', r'\bhmm\b', r'\bbasically\b',
+                r'\bactually\b', r'\bobviously\b', r'\bliterally\b',
+                r'\byou know\b', r'\bi mean\b')
+
+
+def bench_filler(text):
+    return sum(len(re.findall(p, text or '', re.I)) for p in BENCH_FILLER)
+
+
+def adjacent_duplicates(text):
+    return len(re.findall(r'\b(\w+)\s+\1\b', text or '', re.I))
+
+
+def restated_ngrams(text, size=3, window=6):
+    """Near-repeated n-grams: a clause restarted or restated within a few words.
+
+    This is the behaviour the complaint is about, and it is distinct from an
+    adjacent duplicate ("the the"). A speaker who says "should we take, should we
+    increase the dataset" leaves no adjacent duplicate at all.
+    """
+    tokens = normalised(text or '')
+    seen, count = {}, 0
+    for index in range(len(tokens) - size + 1):
+        gram = ' '.join(tokens[index:index + size])
+        if gram in seen and index - seen[gram] <= window: count += 1
+        seen[gram] = index
+    return count
+
+
+def agreement(output, reference):
+    """How close our wording lands to the reference's, 0..1."""
+    return difflib.SequenceMatcher(None, normalised(output or ''), normalised(reference or '')).ratio()
+
+
+def behaviour(items, field):
+    """Removal rates of one arm relative to the shared input."""
+    totals = Counter()
+    ratios, agreements = [], []
+    for item in items:
+        source, produced = item['input'], item.get(field) or ''
+        totals['filler_in'] += bench_filler(source);      totals['filler_out'] += bench_filler(produced)
+        totals['dupes_in'] += adjacent_duplicates(source); totals['dupes_out'] += adjacent_duplicates(produced)
+        totals['restated_in'] += restated_ngrams(source);  totals['restated_out'] += restated_ngrams(produced)
+        words = len(normalised(source))
+        if words: ratios.append(len(normalised(produced)) / words)
+        if field == 'output' and item.get('reference'):
+            agreements.append(agreement(produced, item['reference']))
+    def removed(kind):
+        before, after = totals[kind + '_in'], totals[kind + '_out']
+        return f'{before - after}/{before}' + (f' ({(before-after)/before*100:.0f}%)' if before else '')
+    row = {
+        'filler_removed': removed('filler'),
+        'adjacent_dupes_removed': removed('dupes'),
+        'restated_clauses_removed': removed('restated'),
+        'median_length_ratio': f'{statistics.median(ratios):.3f}' if ratios else '-',
+    }
+    if agreements:
+        row['median_agreement_with_reference'] = f'{statistics.median(agreements):.3f}'
+    return row
+
+
+def reference_mode(items, label):
+    """Score a replay against the reference output the speaker accepted.
+
+    The point of this mode is that the target stops being a threshold somebody
+    chose. Every number here is "what the tool the speaker was happy with did to
+    the same input".
+    """
+    ours = behaviour(items, 'output')
+    theirs = behaviour([i for i in items if i.get('reference')], 'reference')
+    keys = [k for k in ours if k in theirs] + [k for k in ours if k not in theirs]
+    width = max(len(k) for k in keys) + 2
+    print()
+    print(f'{"":<{width}}{"reference (accepted)":>26}{"ours: " + label[:18]:>26}')
+    for key in keys:
+        print(f'{key:<{width}}{str(theirs.get(key, "-")):>26}{str(ours[key]):>26}')
+    gaps = []
+    for key in ('filler_removed', 'adjacent_dupes_removed', 'restated_clauses_removed'):
+        pull = lambda value: float(re.search(r'\((\d+)%\)', value).group(1)) if '%' in value else None
+        theirs_pct, ours_pct = pull(theirs.get(key, '')), pull(ours[key])
+        if theirs_pct is not None and ours_pct is not None and ours_pct + 3 < theirs_pct:
+            gaps.append(f'{key}: {ours_pct:.0f}% against the reference\'s {theirs_pct:.0f}%')
+    print()
+    if gaps:
+        print('Behind the reference on:')
+        for gap in gaps: print('  - ' + gap)
+    else:
+        print('At or above the reference on filler, duplicates and restated clauses.')
+    return {'reference': theirs, 'ours': ours, 'gaps': gaps}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('replay', type=Path, nargs='+', help='One or two evaluate_polish JSONL outputs')
     parser.add_argument('--show', type=int, default=0, help='Print this many needs-cleanup cases in full for reading')
     parser.add_argument('--json', action='store_true', help='Emit machine-readable results')
+    parser.add_argument('--reference', action='store_true',
+                        help='Score one replay against the accepted reference output in each case')
     args = parser.parse_args()
     if len(args.replay) > 2: parser.error('Pass at most two replays')
 
     loaded = [load(path) for path in args.replay]
+    if args.reference:
+        if len(loaded) != 1: parser.error('--reference scores exactly one replay')
+        result = reference_mode(loaded[0], args.replay[0].stem)
+        if args.json: print(json.dumps(result, indent=2))
+        raise SystemExit(1 if result['gaps'] else 0)
     reports = [summarise([classify(i) for i in items], path.stem)
                for items, path in zip(loaded, args.replay)]
     failures, warnings = [], []

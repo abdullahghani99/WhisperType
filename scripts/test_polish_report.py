@@ -198,10 +198,19 @@ class MeaningVersusQualityTests(unittest.TestCase):
         self.assertFalse(payload['passed'])
         self.assertTrue(any('new guard rejection' in w for w in payload['warnings']))
 
-    def test_newly_lost_question_mark_fails(self):
+    def test_removing_a_tag_question_is_allowed(self):
+        # "..., right?" is a verbal tic the reference removes; its question mark
+        # goes with it and that is not a lost question.
         source = 'everything is there right?'
         base = [case(1, source, 'Everything is there, right?')]
         candidate = [case(1, source, 'Everything is there.')]
+        code, out = run(base, candidate)
+        self.assertEqual(json.loads(out)['failures'], [])
+
+    def test_newly_lost_question_mark_fails(self):
+        source = 'can you check the report?'
+        base = [case(1, source, 'Can you check the report?')]
+        candidate = [case(1, source, 'You can check the report.')]
         code, out = run(base, candidate)
         self.assertEqual(code, 1)
         self.assertIn('question mark', ' '.join(json.loads(out)['failures']))

@@ -24,10 +24,20 @@ shown to the user:
   questions  a question mark present in the input must survive
   content    a non-filler word present in the input must survive
 
-WARNINGS (reported, exit 0) are quality costs: the guard dec‍lined an edit and
-fell back to punctuation or verbatim. The user sees less polishing, never wrong
-words. An earlier version treated a rise in guard rejections as a safety
-failure, which reads the signal backwards -- a rejection is the guard working.
+QUALITY REGRESSIONS (exit 2) are losses of useful polishing: the guard dec‍lined
+an edit and fell back, so the user sees less polishing but never wrong words. An
+earlier version treated a rise in guard rejections as a safety failure, which
+reads the signal backwards -- a rejection is the guard working.
+
+The three exit codes exist so the two questions stay separate without either one
+disappearing:
+
+  0  nothing lost, nothing given up      -- safe to promote
+  2  meaning intact, polishing regressed -- a tradeoff a human may accept
+  1  meaning lost                        -- never promote
+
+Exit 2 is deliberately not 0: a quality regression must not ride out on the same
+green result a deployment consumes.
 
 The meaning checks re-derive everything from the ORIGINAL input instead of
 trusting `rejection`. The v0.5.2 restart bug was accepted with `rejection=None`
@@ -73,6 +83,10 @@ SAFETY = ('new_content', 'numbers_or_negation', 'lost_question', 'question_inten
 FILLER_TOKENS = frozenset(('um', 'uh', 'er', 'hmm'))
 MARKER_PHRASES = (r'\byou know\b', r'\bi mean\b')
 HEDGES = (r'\bkind of\b', r'\bsort of\b', r'\bmaybe\b', r'\bprobably\b', r'\bi think\b')
+# Words polishing is ALLOWED to drop. polish.FILLER_WORDS is used here for
+# exactly what it was designed for -- removal permission -- never to decide
+# what needs removing.
+REMOVABLE = polish.FUNCTION_WORDS | polish.FILLER_WORDS
 
 
 def normalised(text):
@@ -131,19 +145,53 @@ def dropped_content(source, output):
     "this includes leaves, overtime") will be flagged and needs a human to wave it
     through. A false positive here costs one review; a false negative ships a
     dictation with a point missing.
+
+    An adjacent duplicate earns an allowance of exactly the duplicates it
+    contributes, not a blanket exemption for the word. Exempting the root
+    outright let every occurrence vanish: "Review review the report and then
+    review the budget." -> "The report and the budget." passed with no failure
+    and no warning, losing the action entirely.
     """
-    removable = polish.FUNCTION_WORDS | polish.FILLER_WORDS
-    def counts(text):
-        tally = Counter()
-        for word in polish.words(text):
-            if word not in removable: tally[polish.root(word)] += 1
-        return tally
+    present, kept = content_counts(source), content_counts(output)
     source_words = polish.words(source)
-    repeated = {polish.root(a) for a, b in zip(source_words, source_words[1:])
-                if polish.root(a) == polish.root(b)}
-    present, kept = counts(source), counts(output)
-    return sorted(r for r, n in present.items()
-                  if kept[r] < n and r not in repeated)
+    allowance = Counter()
+    for first, second in zip(source_words, source_words[1:]):
+        if polish.root(first) == polish.root(second) and first not in REMOVABLE:
+            allowance[polish.root(first)] += 1
+    return sorted(r for r, n in present.items() if kept[r] < n - allowance[r])
+
+
+def added_content(source, output):
+    """Content words in the output that the speaker never said.
+
+    The guard has its own `new_content` rule, but the gate must not depend on it:
+    the whole point of these checks is to hold whatever was DELIVERED against
+    what was SPOKEN, independently of whether the guard was consulted or bypassed.
+    """
+    present = {polish.root(w) for w in polish.words(source) if w not in REMOVABLE}
+    return sorted({polish.root(w) for w in polish.words(output) if w not in REMOVABLE} - present)
+
+
+def order_preserved(source, output, floor=0.95):
+    """Content must arrive in the order it was spoken.
+
+    Without this, "Alex owes Sam money." -> "Sam owes Alex money." passes every
+    other check: nothing is added, nothing is dropped, the facts match. Only the
+    ordering carries who did what.
+    """
+    def ordered(text):
+        return list(dict.fromkeys(polish.root(w) for w in polish.words(text) if w not in REMOVABLE))
+    a, b = ordered(source), ordered(output)
+    if not a: return True
+    matched = sum(m.size for m in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_matching_blocks())
+    return matched / len(a) >= floor
+
+
+def content_counts(text):
+    tally = Counter()
+    for word in polish.words(text):
+        if word not in REMOVABLE: tally[polish.root(word)] += 1
+    return tally
 
 
 def classify(item):
@@ -161,11 +209,14 @@ def classify(item):
         'lists': len(re.findall(r'^\s*(?:[-*]|\d+[.)])\s', output, re.M)),
         'facts_preserved': polish.facts(polish.clean_stutters(source)) == polish.facts(output),
         'dropped_content': dropped_content(source, output),
+        'added_content': added_content(source, output),
+        'order_preserved': order_preserved(source, output),
         'seconds': item.get('seconds'),
     }
     row['hedges_preserved'] = row['hedges_after'] >= row['hedges_before']
     row['questions_preserved'] = question_marks(output) >= question_marks(source)
     row['content_preserved'] = not row['dropped_content']
+    row['nothing_invented'] = not row['added_content']
     row['needed_cleanup'] = row['filler_before'] > 0 or repetition_before
     if row['needed_cleanup']:
         # Every defect the input carried must be resolved.
@@ -201,6 +252,8 @@ def summarise(rows, label):
         'hedges_lost': sum(1 for r in rows if not r['hedges_preserved']),
         'questions_lost': sum(1 for r in rows if not r['questions_preserved']),
         'content_dropped': sum(1 for r in rows if not r['content_preserved']),
+        'content_invented': sum(1 for r in rows if not r['nothing_invented']),
+        'order_broken': sum(1 for r in rows if not r['order_preserved']),
         'fallbacks': sum(1 for r in rows if r['rejection']),
         'safety_rejections': sum(n for reason, n in rejections.items() if reason in SAFETY),
         'median_seconds': f"{statistics.median([r['seconds'] for r in rows if r['seconds']]):.1f}" if any(r['seconds'] for r in rows) else '-',
@@ -266,6 +319,12 @@ def gate(pairs):
         if newly_dropped:
             failures.append(f'case {case}: content newly dropped from accepted output '
                             f'({sorted(newly_dropped)[:4]})')
+        newly_added = set(after['added_content']) - set(before['added_content'])
+        if newly_added:
+            failures.append(f'case {case}: content newly invented in accepted output '
+                            f'({sorted(newly_added)[:4]})')
+        if before['order_preserved'] and not after['order_preserved']:
+            failures.append(f'case {case}: content order newly broken (attribution risk)')
 
         # --- quality: reported, not fatal ---
         if before['rejection'] not in SAFETY and after['rejection'] in SAFETY:
@@ -295,7 +354,8 @@ def main():
 
     if args.json:
         print(json.dumps({'reports': reports, 'failures': failures, 'warnings': warnings,
-                          'passed': not failures and len(loaded) == 2}, indent=2))
+                          'passed': not failures and not warnings and len(loaded) == 2,
+                          'meaning_intact': not failures}, indent=2))
     else:
         keys = [k for k in reports[0] if k not in ('label', 'rejections')]
         width = max(len(k) for k in keys) + 2
@@ -334,6 +394,7 @@ def main():
                 if shown >= args.show: break
 
     if failures: raise SystemExit(1)
+    if warnings: raise SystemExit(2)
 
 
 if __name__ == '__main__':

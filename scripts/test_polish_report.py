@@ -98,13 +98,22 @@ class GateTests(unittest.TestCase):
         self.assertEqual(payload['failures'], [])
         self.assertEqual(payload['warnings'], [])
 
-    def test_harmless_rewording_of_a_clean_dictation_only_warns(self):
-        # A word is added but nothing is lost: worth surfacing, not fatal.
+    def test_adding_a_word_to_a_clean_dictation_fails(self):
+        # "now" is a content word the speaker never said, so this is a meaning
+        # change, not a stylistic one.
         base = [case(1, 'the report is ready', 'The report is ready.')]
         candidate = [case(1, 'the report is ready', 'The report is now ready.')]
         code, out = run(base, candidate)
+        self.assertEqual(code, 1)
+        self.assertIn('newly invented', ' '.join(json.loads(out)['failures']))
+
+    def test_harmless_rewording_of_a_clean_dictation_only_warns(self):
+        # Contractions expanded: no content added, dropped or reordered.
+        base = [case(1, "it's ready and it's approved", "It's ready and it's approved.")]
+        candidate = [case(1, "it's ready and it's approved", 'It is ready and it is approved.')]
+        code, out = run(base, candidate)
         payload = json.loads(out)
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2)
         self.assertEqual(payload['failures'], [])
         self.assertTrue(any('already-clean' in w for w in payload['warnings']))
 
@@ -123,6 +132,45 @@ class GateTests(unittest.TestCase):
     def test_empty_replay_is_refused(self):
         code, _ = run([], [case(1, 'a b c', 'a b c')])
         self.assertEqual(code, 1)
+
+
+class AuditCounterexampleTests(unittest.TestCase):
+    """Cases that passed the gate in Codex's 2026-09-08 review. Each must fail."""
+
+    def test_invented_content_fails(self):
+        base = [case(1, 'The report is ready.', 'The report is ready.')]
+        candidate = [case(1, 'The report is ready.', 'The report is ready and approved.')]
+        code, out = run(base, candidate)
+        self.assertEqual(code, 1)
+        self.assertIn('newly invented', ' '.join(json.loads(out)['failures']))
+
+    def test_reversed_attribution_fails(self):
+        base = [case(1, 'Alex owes Sam money.', 'Alex owes Sam money.')]
+        candidate = [case(1, 'Alex owes Sam money.', 'Sam owes Alex money.')]
+        code, out = run(base, candidate)
+        self.assertEqual(code, 1)
+        self.assertIn('order newly broken', ' '.join(json.loads(out)['failures']))
+
+    def test_repetition_allowance_covers_only_the_duplicates(self):
+        # Exempting the root outright let every occurrence of the action vanish.
+        source = 'Review review the report and then review the budget.'
+        base = [case(1, source, source)]
+        candidate = [case(1, source, 'The report and the budget.')]
+        code, out = run(base, candidate)
+        self.assertEqual(code, 1)
+        self.assertIn('newly dropped', ' '.join(json.loads(out)['failures']))
+        # ...while collapsing a genuine adjacent duplicate stays allowed.
+        self.assertEqual(report.dropped_content('the report is ready now now',
+                                                'The report is ready now.'), [])
+
+    def test_quality_regression_is_visible_and_not_a_promotion_pass(self):
+        base = [case(1, 'um the report is ready', 'The report is ready.')]
+        candidate = [case(1, 'um the report is ready', 'um the report is ready')]
+        code, out = run(base, candidate)
+        payload = json.loads(out)
+        self.assertEqual(code, 2)
+        self.assertTrue(payload['meaning_intact'])
+        self.assertFalse(payload['passed'])
 
 
 class MeaningVersusQualityTests(unittest.TestCase):
@@ -144,8 +192,10 @@ class MeaningVersusQualityTests(unittest.TestCase):
         candidate = [case(1, source, source, rejection='new_content', status='punctuation_recovery')]
         code, out = run(base, candidate)
         payload = json.loads(out)
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2)            # quality regression, meaning intact
         self.assertEqual(payload['failures'], [])
+        self.assertTrue(payload['meaning_intact'])
+        self.assertFalse(payload['passed'])
         self.assertTrue(any('new guard rejection' in w for w in payload['warnings']))
 
     def test_newly_lost_question_mark_fails(self):

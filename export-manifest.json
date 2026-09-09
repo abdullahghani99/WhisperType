@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "29ef1be9a3a40608ee71e155eb871ca34630e23beee9af29441aba9d0ea76d54",
+    "VERSION": "14848c5f87427ae54b00bf9eb86bfd3fb6288e611d3af1d7739ee09050cd46df",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/CallDetectorTests.swift": "95a8f91d2bc8d63037d64e9c411b11368420a411118be3cbc0ca38c03e42687f",
@@ -93,13 +93,13 @@
     "server/diarize.py": "bce760fc9c70d289d7dac3e272e41ec17953f58dd381d2fec65e81d4e102a09b",
     "server/inference_worker.py": "5b3f43b88c2abedc25cfd6d3575aea819b0650aa92a28ce8ce24373a43cc4525",
     "server/learning.py": "d9f1b5e1060d1581145ec1895a26fd45a396fff5e7b4896ebe47aa4eed8c8b56",
-    "server/polish.py": "2fd5a006676a5b458a0df868b56bf1e659c59c5925373810e277b0a6ea5948ca",
+    "server/polish.py": "2ce875a39b9f0ed193d9916eee633fbff3da91b4cd7dce0afedb087ce2fba7d4",
     "server/requirements-diarize-lock.txt": "0634e2a6fd432ff6ae82b3cf7d045dcb963f07b5fea0599f9a85e3f18c805f15",
     "server/requirements-lock.txt": "52f6c853921d29a55dfebcaea9e77b5ab99f92ccea7baf0a92b31b0132af99ff",
     "server/requirements.txt": "bb12900b14f541ac611c731cd4fa89f5f1cbfc91514b1f17009929746378c394",
     "server/test_continuous_learning.py": "a3d6dc4db55fe0d862895a28fae1a1cc1e5c0900a087dfa5832b3c2b05e57826",
     "server/test_learning.py": "e999006ff099bcdebdcf01fb05987d86cfad887fe08b4e3a710d0767fa3fc23d",
-    "server/test_polish.py": "f10fe321736f2e84681b20c74e09e26f476bb2f7d32f733b04c710baa368ac6b",
+    "server/test_polish.py": "700009e9dd6c5988d63c96f07743e2159bb5a1469e59d6d9624e38a7e96ceba1",
     "server/test_reliability.py": "66d21a337fa61d59b1baf5a39e64887444001b1ea437eafac161484a5e151ac6",
     "server/test_speakers.py": "08debdb8e31183c2d4d8a3d5c18c2a9ceb897e3c2ba772d16cbf6d4a5815d7e7",
     "server/test_speech_act.py": "794579d6546107d124dc87bd0adc8062bc3031ee15f1d145a5e982476ac2bb4e",

@@ -1,6 +1,6 @@
 import re
 import unittest
-from polish import (copyedit,rejection_reason,clean_stutters,punctuation_is_faithful,
+from polish import (copyedit,rejection_reason,clean_stutters,spoken_symbols,punctuation_is_faithful,
                     project_punctuation,words,starts_question,SYSTEM,EXAMPLES)
 
 class CopyeditingTests(unittest.TestCase):
@@ -106,6 +106,21 @@ class CopyeditingTests(unittest.TestCase):
         self.assertTrue(re.search(r'PARAGRAPHS', SYSTEM))
         # Self-corrections resolve to the speaker's final intent.
         self.assertIn('final intended version', SYSTEM)
+    def test_spoken_symbols_become_symbols(self):
+        # Whisper transcribes the word; nothing used to convert it, so dictating
+        # a filename typed "report hyphen final".
+        self.assertEqual(spoken_symbols('call it report hyphen final hyphen v2'),
+                         'call it report-final-v2')
+        self.assertEqual(spoken_symbols('the file is q3 underscore final'), 'the file is q3_final')
+        self.assertEqual(spoken_symbols('name it AE2 hyphen DIGI'), 'name it AE2-DIGI')
+
+    def test_spoken_symbols_leave_the_words_alone(self):
+        # A function word on either side means the symbol name is a noun.
+        for text in ('the hyphen key is broken', 'please add a dash to the file name',
+                     'it is a hyphen between them', 'use the slash command'):
+            with self.subTest(text=text):
+                self.assertEqual(spoken_symbols(text), text)
+
     def test_multilingual_punctuation(self):
         self.assertTrue(punctuation_is_faithful('متى ينتهي العمل','متى ينتهي العمل؟'))
         self.assertFalse(punctuation_is_faithful('¿Cuándo estará listo?','Estará listo mañana.'))

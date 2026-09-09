@@ -88,7 +88,39 @@ def words(text, expand=True):
     return re.findall(r"[^\W_]+(?:'[^\W_]+)*", text, re.UNICODE)
 
 
+# Words that must not be joined by a spoken symbol. "the hyphen key is broken"
+# is about a key, not a compound; "report hyphen final" is a filename. Requiring
+# content words on both sides is what separates them.
+SYMBOL_NAMES = {'hyphen': '-', 'dash': '-', 'underscore': '_', 'slash': '/'}
+
+
+def spoken_symbols(text):
+    """Turn a spoken symbol between two content words into the symbol.
+
+    Whisper transcribes "report hyphen final" literally, so the app typed the
+    word "hyphen" where the speaker meant "-". Nothing in the pipeline converted
+    it, which is a missing feature rather than a regression.
+
+    Deliberately narrow. The symbol must sit between two words that are not
+    function words, so "the hyphen key is broken" and "add a dash to the name"
+    keep their nouns, while "report hyphen final hyphen v2" becomes
+    "report-final-v2". Applied repeatedly so a chain resolves left to right.
+    """
+    pattern = re.compile(r'\b([A-Za-z0-9]{2,})\s+(' + '|'.join(SYMBOL_NAMES) + r')\s+([A-Za-z0-9]+)\b', re.I)
+    def join(match):
+        left, name, right = match.group(1), match.group(2).lower(), match.group(3)
+        if left.casefold() in FUNCTION_WORDS or right.casefold() in FUNCTION_WORDS:
+            return match.group(0)
+        return left + SYMBOL_NAMES[name] + right
+    for _ in range(4):
+        replaced = pattern.sub(join, text)
+        if replaced == text: break
+        text = replaced
+    return text
+
+
 def clean_stutters(text):
+    text = spoken_symbols(text)
     # Closed list: don't flatten deliberate "very very" or "no, no" emphasis.
     text = re.sub(r"\b(the|a|and|to|now|not)(?:\s+\1\b)+", r"\1", text, flags=re.I)
     text = re.sub(r"\b(?:um|uh|er|hmm)\b[, ]*", "", text, flags=re.I)

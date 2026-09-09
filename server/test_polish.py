@@ -106,6 +106,32 @@ class CopyeditingTests(unittest.TestCase):
         self.assertTrue(re.search(r'PARAGRAPHS', SYSTEM))
         # Self-corrections resolve to the speaker's final intent.
         self.assertIn('final intended version', SYSTEM)
+    def test_numbers_must_be_equivalent_not_merely_similar(self):
+        # A substring test accepted these: "15" occurs inside "150", and extra
+        # output numbers were permitted outright.
+        self.assertIsNotNone(rejection_reason('Send 15 copies.','Send 150 copies.'))
+        self.assertIsNotNone(rejection_reason('Send the report.','Send the report at 9.'))
+        long_source=('Please review the complete quarterly report carefully and send 15 copies '
+                     'to the regional managers before Friday.')
+        self.assertIsNotNone(rejection_reason(long_source,long_source.replace('15','150')))
+
+    def test_spoken_numbers_written_as_digits_are_equivalent(self):
+        for src,out in [('is that a ten on ten approach','Is that a 10/10 approach?'),
+                        ('we need two hundred thousand units','We need 200,000 units.'),
+                        ('the rate is five percent','The rate is 5%.'),
+                        ('the rate is 3.75 percent until 2026-10-12','The rate is 3.75% until 2026-10-12.')]:
+            with self.subTest(src=src): self.assertIsNone(rejection_reason(src,out))
+
+    def test_spoken_symbols_need_evidence_of_naming(self):
+        # Preprocessing runs before the guard, so an unevidenced conversion is
+        # invisible to it: these were mangled and accepted with rejection=None.
+        for text in ('The keyboard hyphen key is broken.','Please explain slash commands.',
+                     'we should explain hyphen usage clearly'):
+            with self.subTest(text=text):
+                self.assertEqual(spoken_symbols(text), text)
+                result,diagnostic=copyedit(text, lambda system,value: value)
+                self.assertEqual(diagnostic['status'],'unchanged')
+
     def test_spoken_symbols_become_symbols(self):
         # Whisper transcribes the word; nothing used to convert it, so dictating
         # a filename typed "report hyphen final".
@@ -113,6 +139,8 @@ class CopyeditingTests(unittest.TestCase):
                          'call it report-final-v2')
         self.assertEqual(spoken_symbols('the file is q3 underscore final'), 'the file is q3_final')
         self.assertEqual(spoken_symbols('name it AE2 hyphen DIGI'), 'name it AE2-DIGI')
+        # An identifier is its own evidence, without a naming cue.
+        self.assertEqual(spoken_symbols('use AE2 hyphen DIGI today'), 'use AE2-DIGI today')
 
     def test_spoken_symbols_leave_the_words_alone(self):
         # A function word on either side means the symbol name is a noun.

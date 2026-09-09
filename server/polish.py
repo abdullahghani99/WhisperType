@@ -88,28 +88,49 @@ def words(text, expand=True):
     return re.findall(r"[^\W_]+(?:'[^\W_]+)*", text, re.UNICODE)
 
 
-# Words that must not be joined by a spoken symbol. "the hyphen key is broken"
-# is about a key, not a compound; "report hyphen final" is a filename. Requiring
-# content words on both sides is what separates them.
+# Spoken symbol names. Converting one is only safe with evidence that the
+# speaker meant the symbol rather than the word, because this runs BEFORE the
+# model and before `rejection_reason` -- the same structural exposure that made
+# the v0.5.2 restart rule dangerous. Without evidence it mangled ordinary
+# sentences: "The keyboard hyphen key is broken." became "The keyboard-key is
+# broken." and "Please explain slash commands." became "Please explain/commands.",
+# both accepted with rejection=None because the damage predated validation.
 SYMBOL_NAMES = {'hyphen': '-', 'dash': '-', 'underscore': '_', 'slash': '/'}
+# Naming a thing is the evidence. Anything outside these phrasings is left alone.
+NAMING_CUE = re.compile(
+    r"\b(?:call(?:ed)?\s+it|call\s+this|name(?:d)?\s+it|named|the\s+name\s+is|"
+    r"file\s*name|filename|the\s+file\s+is|save\s+it\s+as|label\s+it|title\s+it|"
+    r"branch|folder|directory|the\s+id\s+is|refer\s+to\s+it\s+as)\b", re.I)
+
+
+def _looks_like_identifier(left, right):
+    """A digit or internal capital marks a code or filename, not prose."""
+    for token in (left, right):
+        if any(character.isdigit() for character in token): return True
+        if token[1:] != token[1:].lower(): return True     # AE2, DIGI, camelCase
+    return False
 
 
 def spoken_symbols(text):
-    """Turn a spoken symbol between two content words into the symbol.
+    """Turn a spoken symbol into the symbol, only where the speaker named a thing.
 
-    Whisper transcribes "report hyphen final" literally, so the app typed the
-    word "hyphen" where the speaker meant "-". Nothing in the pipeline converted
-    it, which is a missing feature rather than a regression.
+    Whisper transcribes "report hyphen final" literally, so dictating a filename
+    typed the word "hyphen". Converting it needs evidence, and there are two kinds
+    that hold up: a naming cue ("call it ...", "the file name is ..."), or tokens
+    that are plainly an identifier rather than prose (a digit or an internal
+    capital). Two ordinary content words either side is NOT evidence.
 
-    Deliberately narrow. The symbol must sit between two words that are not
-    function words, so "the hyphen key is broken" and "add a dash to the name"
-    keep their nouns, while "report hyphen final hyphen v2" becomes
-    "report-final-v2". Applied repeatedly so a chain resolves left to right.
+    A function word on either side still blocks conversion, so "please add a dash
+    to the file name" keeps its noun even though a cue is present.
     """
-    pattern = re.compile(r'\b([A-Za-z0-9]{2,})\s+(' + '|'.join(SYMBOL_NAMES) + r')\s+([A-Za-z0-9]+)\b', re.I)
+    pattern = re.compile(r'\b([A-Za-z0-9]{2,})\s+(' + '|'.join(SYMBOL_NAMES) + r')\s+([A-Za-z0-9]+)\b')
     def join(match):
         left, name, right = match.group(1), match.group(2).lower(), match.group(3)
         if left.casefold() in FUNCTION_WORDS or right.casefold() in FUNCTION_WORDS:
+            return match.group(0)
+        preceding = text[:match.start()]
+        cued = bool(NAMING_CUE.search(preceding[-90:]))
+        if not cued and not _looks_like_identifier(left, right):
             return match.group(0)
         return left + SYMBOL_NAMES[name] + right
     for _ in range(4):
@@ -238,25 +259,79 @@ def questions_owed(source):
     return sum(stripped.count(mark) for mark in '?؟？')
 
 
-def numbers_survive(source_numbers, output_numbers):
-    """Every number the speaker said in digits must still be there.
+# Spoken number words, so "two hundred thousand" can be compared with "200,000".
+_UNITS = {'zero':0,'one':1,'two':2,'three':3,'four':4,'five':5,'six':6,'seven':7,'eight':8,
+          'nine':9,'ten':10,'eleven':11,'twelve':12,'thirteen':13,'fourteen':14,'fifteen':15,
+          'sixteen':16,'seventeen':17,'eighteen':18,'nineteen':19,'twenty':20,'thirty':30,
+          'forty':40,'fifty':50,'sixty':60,'seventy':70,'eighty':80,'ninety':90}
+_SCALES = {'hundred':100,'thousand':1000,'million':1000000,'billion':1000000000}
 
-    Extra numbers in the output are allowed, because converting a spoken number
-    to digits is correct copyediting -- "ten out of ten" becomes "10/10" and
-    "200 thousand" becomes "200,000". Comparing digit strings alone made every
-    such normalisation look like an invented number.
 
-    Matching ignores separators so 200 survives inside 200,000, but "15" cannot
-    satisfy "50": the digits must actually contain it.
+def _written_numbers(text):
+    """Numeric values the speaker said in words, so digits can be compared to them."""
+    values, current, seen = [], 0, False
+    for word in words(text):
+        if word in _UNITS:
+            current += _UNITS[word]; seen = True
+        elif word in _SCALES and seen:
+            current = max(current, 1) * _SCALES[word]
+        elif seen:
+            values.append(current); current, seen = 0, False
+    if seen: values.append(current)
+    return values
+
+
+def _digit_values(text):
+    """Numeric values written as digits, split on dividers and read past separators.
+
+    A comma before exactly three digits is a thousands separator, so "200,000" is
+    one value. A slash, colon or dash divides, so "10/10" is two tens and
+    "2026-10-12" is three values. Reading these properly is what lets the check
+    demand equivalence instead of the substring test it replaces -- substring
+    containment accepted "15" -> "150", because "15" is inside "150".
     """
-    bare=lambda value: re.sub(r'\D','',value)
-    remaining=[bare(n) for n in output_numbers]
-    for number in source_numbers:
-        needle=bare(number)
-        if not needle: continue
-        match=next((candidate for candidate in remaining if needle in candidate or candidate in needle),None)
-        if match is None: return False
-        remaining.remove(match)
+    # A list marker is formatting, not a quantity. `facts` strips these for the
+    # same reason; without it, laying speech out as "1. ... 2. ..." read as two
+    # invented numbers and the enumeration was refused.
+    text = re.sub(r'^\s*\d+[.)]\s+', '', text, flags=re.M)
+    values = []
+    for token in re.findall(r'\d+(?:[.,:/-]\d+)*', text):
+        token = re.sub(r',(?=\d{3}\b)', '', token)
+        for part in re.split(r'[:/-]', token):
+            if not part: continue
+            try: values.append(float(part) if '.' in part else int(part))
+            except ValueError: pass
+    return values
+
+
+def numbers_survive(source_text, output_text):
+    """No quantity invented, none lost, none changed.
+
+    Compares numeric VALUES, counting a spoken number as the digits it means, so
+    "ten out of ten" -> "10/10" and "two hundred thousand" -> "200,000" are
+    equivalence rather than invention. Every number written as digits by the
+    speaker must still be there, and every number in the output must be one the
+    speaker actually said in some form.
+
+    This replaces a substring test that accepted "send 15 copies" ->
+    "send 150 copies", because "15" occurs inside "150", and accepted an
+    invented "at 9" because extra output numbers were permitted outright.
+    """
+    spoken = _digit_values(source_text)
+    allowed = list(spoken) + _written_numbers(source_text)
+    produced = _digit_values(output_text)
+
+    remaining = list(allowed)
+    for value in produced:                      # nothing invented
+        if value in remaining: remaining.remove(value); continue
+        # A spoken number may be written with its scale applied ("two hundred
+        # thousand" heard as 200 then 1000) or as a compact form; accept only an
+        # exact value match against what was said.
+        return False
+    kept = list(produced)
+    for value in spoken:                        # nothing the speaker wrote in digits is lost
+        if value in kept: kept.remove(value)
+        else: return False
     return True
 
 
@@ -275,10 +350,10 @@ def rejection_reason(source, output):
             return 'unfinished_sentence'
     source = clean_stutters(source)
     src, out = words(source), words(output)
-    source_numbers,source_negatives=facts(source)
-    output_numbers,output_negatives=facts(output)
+    _,source_negatives=facts(source)
+    _,output_negatives=facts(output)
     if source_negatives!=output_negatives: return 'numbers_or_negation'
-    if not numbers_survive(source_numbers,output_numbers): return 'numbers_or_negation'
+    if not numbers_survive(clean_stutters(source),output): return 'numbers_or_negation'
     first_source = re.split(r'[.!?؟？]',source,maxsplit=1)[0]
     first_output = re.split(r'[.!?؟？]',output,maxsplit=1)[0]
     if starts_question(first_source) and not starts_question(first_output): return 'question_intent'

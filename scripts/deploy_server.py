@@ -6,6 +6,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import tempfile
+from sync_learning_toolchain import sync
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -40,6 +41,11 @@ def main():
                 command += ['--environment', remote + '/environment.json']
             if args.activate: command += ['--activate']
             subprocess.run(ssh + [shlex.join(command)], check=True)
+            # Serving is already healthy. A sync failure leaves it running and
+            # reports that learning still needs alignment; it never rolls back
+            # production or launches a training job.
+            if args.activate:
+                sync(repo, ssh, scp, args.host, args.python, args.root, args.plist)
     finally:
         subprocess.run(ssh + ['rm -rf ' + shlex.quote(remote)], check=True)
 

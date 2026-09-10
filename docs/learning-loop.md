@@ -36,3 +36,17 @@ The baseline remains Qwen2.5 14B with Whisper Large V3 recognition. Two 14B adap
 This is a measured improvement loop, not a promise that every recording automatically improves model weights or that a finite benchmark proves perfect accuracy.
 
 The reservation ledger is cumulative and mandatory at the command-line entry point. It excludes protected inputs even if a later reference file reclassifies them, or an explicit correction has the same input. Preparation and isolated experiments are distinct from promotion: a staged candidate does not replace the live model.
+# Keep deployment and learning aligned
+
+`scripts/deploy_server.py --activate` now installs the matching versioned learning
+toolchain after the new server is healthy, if a private learning workspace exists.
+The installer checks the bundle, deployed source manifest, loaded policy and model
+route, and shares the learning lock. It never prepares data or trains a model.
+Previous versions remain available. If synchronization fails, serving remains
+healthy but deployment reports the learning failure; the checked learning entry
+point continues to refuse drift.
+
+After a deployment made through another route, run
+`python3 scripts/sync_learning_toolchain.py --host <server>` from the matching
+verified source checkout, then run the private checked entry point. Do not bypass
+the policy check or retrain a rejected unchanged candidate merely to clear drift.

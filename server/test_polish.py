@@ -200,6 +200,25 @@ class CopyeditingTests(unittest.TestCase):
         self.assertEqual(result, 'Call it report-final-v2.')
         self.assertIsNone(event['rejection'])
 
+    def test_a_hedge_may_never_be_dropped(self):
+        # Three releases asked the prompt for this and the model dropped them
+        # anyway, so it is enforced. Real cases from a held-out draw.
+        for src,out in [("Wouldn't that be a good thing? I think let's do that.",
+                         "Wouldn't that be a good thing? Let's do that."),
+                        ('Because in my opinion and I may be wrong, Uli becomes the director',
+                         'Because in my opinion, Uli becomes the director'),
+                        ('which I believe should relatively help you much better',
+                         'which I believe should help you much better')]:
+            with self.subTest(src=src):
+                self.assertEqual(rejection_reason(src,out),'hedge_removed')
+
+    def test_hedges_that_survive_are_accepted(self):
+        for src,out in [('i kind of agree but the numbers are sort of soft',
+                          'I kind of agree, but the numbers are sort of soft.'),
+                        ('um so i think we should ship it by friday',
+                          'I think we should ship it by Friday.')]:
+            with self.subTest(src=src): self.assertIsNone(rejection_reason(src,out))
+
     def test_multilingual_punctuation(self):
         self.assertTrue(punctuation_is_faithful('متى ينتهي العمل','متى ينتهي العمل؟'))
         self.assertFalse(punctuation_is_faithful('¿Cuándo estará listo?','Estará listo mañana.'))

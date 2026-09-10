@@ -323,6 +323,30 @@ def _quantity_values(text):
     return values
 
 
+# Hedges carry how certain the speaker is, which is meaning. The prompt has asked
+# for these to be kept across three releases and the model dropped them anyway:
+# on a held-out draw "Wouldn't that be a good thing? I think let's do that." lost
+# its hedge, and "in my opinion and I may be wrong, ..." lost "and I may be
+# wrong". Instruction is not enforcement, so this is a guard rule.
+#
+# Calibrated before being imposed: the reference output itself drops a hedge in
+# only 1.5% of pairs, so refusing the edit costs almost nothing -- measured at
+# 0.1 points of held-out acceptance. Bare modals ("might", "could") are excluded
+# because rewording those is grammar repair, not a change of stance.
+HEDGES = (r"\bi think\b", r"\bi believe\b", r"\bi guess\b", r"\bi feel\b",
+          r"\bi may be wrong\b", r"\bin my opinion\b", r"\bmaybe\b", r"\bperhaps\b",
+          r"\bprobably\b", r"\bpossibly\b", r"\bkind of\b", r"\bsort of\b",
+          r"\bsomewhat\b", r"\brelatively\b", r"\ba bit\b")
+
+
+def hedges_kept(source, output):
+    """No hedge the speaker used may disappear from the output."""
+    for pattern in HEDGES:
+        if len(re.findall(pattern, output, re.I)) < len(re.findall(pattern, source, re.I)):
+            return False
+    return True
+
+
 def numbers_survive(source_text, output_text):
     """Preserve ordered quantities and occurrences in spoken or digit form."""
     return _quantity_values(source_text) == _quantity_values(output_text)
@@ -347,6 +371,7 @@ def rejection_reason(source, output):
     _,output_negatives=facts(output)
     if source_negatives!=output_negatives: return 'numbers_or_negation'
     if not numbers_survive(clean_stutters(source),output): return 'numbers_or_negation'
+    if not hedges_kept(clean_stutters(source),output): return 'hedge_removed'
     first_source = re.split(r'[.!?؟？]',source,maxsplit=1)[0]
     first_output = re.split(r'[.!?؟？]',output,maxsplit=1)[0]
     if starts_question(first_source) and not starts_question(first_output): return 'question_intent'

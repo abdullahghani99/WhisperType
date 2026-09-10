@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "a5cb92c82d34920b485300eb64636ea6d3d906e29ac91b55c63e88d7c993429c",
+    "VERSION": "b0e9dad898b99c10ad2965748463c096b10e514cba38e72374078e2202b3b36a",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/CallDetectorTests.swift": "95a8f91d2bc8d63037d64e9c411b11368420a411118be3cbc0ca38c03e42687f",
@@ -104,7 +104,7 @@
     "server/test_reliability.py": "66d21a337fa61d59b1baf5a39e64887444001b1ea437eafac161484a5e151ac6",
     "server/test_speakers.py": "08debdb8e31183c2d4d8a3d5c18c2a9ceb897e3c2ba772d16cbf6d4a5815d7e7",
     "server/test_speech_act.py": "794579d6546107d124dc87bd0adc8062bc3031ee15f1d145a5e982476ac2bb4e",
-    "server/server.py": "07f7a2a05bb9f6fffcfbcfce60d4a20e3f94c2b9d2fe9f32d74ad59c3022c0df",
+    "server/server.py": "ff818d6d1968bbce7e167a8765c5f95e747a5f91162fbe65f6ba6237b88cf368",
     "tests/agent/AgentTests.swift": "0330465f4f0df8fb027f775b5d326ceb6e3f815a9a7d8f2d13f3fe1740c51d40",
     "tests/agent/test_agent_http.py": "a1167a745ff010c7335d43a97d400f23ac729dee5dbc43725d610d4180a5b84a",
     "tests/live/DestinationFocus.swift": "176708c8d168f963306fb92ed5705f9d3f6a2cd1888ef6c7057430a714028d73",

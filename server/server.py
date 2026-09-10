@@ -66,6 +66,13 @@ PROMPT_MODEL = os.environ.get("VF_PROMPT_MODEL", "mlx-community/Qwen2.5-14B-Inst
 # Distilled LoRA adapter for the fast polish model — teaches the 8B the strong
 # model's "format-only, never answer/paraphrase" discipline. If present, polish
 # runs on the fast 8B+adapter (14B quality at 8B speed) instead of the 14B.
+# An adapter for the model that ACTUALLY serves polish. VF_POLISH_ADAPTER only
+# ever attached to POLISH_MODEL, while `_polish_result` prefers the prompt model,
+# so a candidate distilled on the prompt model had no way to be promoted at all:
+# pointing VF_POLISH_ADAPTER at it would load prompt-model-shaped weights onto the
+# polish model, fail, and fall back to the base silently -- a promotion that
+# looks applied and changes nothing.
+PROMPT_ADAPTER = os.environ.get("VF_PROMPT_ADAPTER", "")
 POLISH_ADAPTER = os.environ.get("VF_POLISH_ADAPTER",
                                 os.path.join(os.path.dirname(__file__), "lora-polish"))
 # Speaker diarization runs in an ISOLATED venv (heavy torch deps kept away from
@@ -193,6 +200,10 @@ async def authenticate(request: Request, call_next):
 _model = None
 _tok = None
 _prompt_model = None
+# Whether the model serving polish carries a distilled adapter. Distinct from
+# `_polish_distilled`, which describes POLISH_MODEL and is therefore silent about
+# the route polish actually takes.
+_prompt_distilled = False
 _model_startup = None
 _prompt_tok = None
 _polish_distilled = False   # True when the polish model carries the distilled LoRA adapter
@@ -1077,11 +1088,24 @@ async def _startup():
 async def _load_prompt_model():
     """Load the stronger prompt-engineering model in the background. Falls back
     to the fast polish model if it can't be loaded, so prompt mode still works."""
-    global _prompt_model, _prompt_tok
+    global _prompt_model, _prompt_tok, _prompt_distilled
     t0 = time.time()
-    log.info("loading prompt model %s (background) ...", PROMPT_MODEL)
+    adapter = PROMPT_ADAPTER if PROMPT_ADAPTER and os.path.exists(
+        os.path.join(PROMPT_ADAPTER, "adapters.safetensors")) else None
+    if PROMPT_ADAPTER and adapter is None:
+        log.error("VF_PROMPT_ADAPTER set to %s but no adapters.safetensors there; "
+                  "serving the base prompt model", PROMPT_ADAPTER)
+    log.info("loading prompt model %s (background, adapter=%s) ...", PROMPT_MODEL, adapter or "none")
     try:
-        _prompt_model, _prompt_tok = await _infer(load, PROMPT_MODEL)
+        if adapter:
+            # A failure here must not silently degrade to the base model: a
+            # promoted candidate that quietly did not load is worse than a
+            # refused one, because the measurements would be attributed to it.
+            _prompt_model, _prompt_tok = await _infer(load, PROMPT_MODEL, adapter_path=adapter)
+            _prompt_distilled = True
+            log.info("prompt model adapter attached: %s", adapter)
+        else:
+            _prompt_model, _prompt_tok = await _infer(load, PROMPT_MODEL)
         await _infer(_engineer, "warm up", "concise")  # force graph compile
         log.info("prompt model (%s) warm in %.1fs", PROMPT_MODEL, time.time() - t0)
     except Exception as e:  # noqa: BLE001
@@ -1168,6 +1192,18 @@ async def health():
         "status": "ok",
         "release": os.environ.get("VF_RELEASE_ID"),
         "polish": "on" if (POLISH_ENABLED and _model is not None) else "off (near-verbatim)",
+        # `polish_distilled` described POLISH_MODEL, which does not serve polish
+        # while the prompt model is loaded -- it read True for a legacy adapter
+        # polish never used. These say which model serves polish and whether an
+        # adapter is attached to THAT one.
+        "polish_route": (PROMPT_MODEL if (_prompt_model is not None and _prompt_model is not _model)
+                         else (POLISH_MODEL if _model is not None else None)),
+        "polish_route_distilled": (_prompt_distilled
+                                   if (_prompt_model is not None and _prompt_model is not _model)
+                                   else _polish_distilled),
+        "polish_route_adapter": (PROMPT_ADAPTER or None
+                                 if (_prompt_model is not None and _prompt_model is not _model)
+                                 else (POLISH_ADAPTER if _polish_distilled else None)),
         "polish_distilled": _polish_distilled,
         "polish_policy_sha256": _POLISH_POLICY_SHA256,
         "learning": "corrections and measured candidates",

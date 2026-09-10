@@ -1,6 +1,6 @@
 import re
 import unittest
-from polish import (copyedit,rejection_reason,clean_stutters,spoken_symbols,punctuation_is_faithful,
+from polish import (copyedit,rejection_reason,clean_stutters,spoken_symbols,looped_transcription,punctuation_is_faithful,
                     project_punctuation,words,starts_question,SYSTEM,EXAMPLES)
 
 class CopyeditingTests(unittest.TestCase):
@@ -218,6 +218,23 @@ class CopyeditingTests(unittest.TestCase):
                         ('um so i think we should ship it by friday',
                           'I think we should ship it by Friday.')]:
             with self.subTest(src=src): self.assertIsNone(rejection_reason(src,out))
+
+    def test_recogniser_loops_are_detected(self):
+        # Both real: an 8-minute press returned one sentence 32 times, and an
+        # earlier capture returned "I-0" 48 times and was inserted unnoticed.
+        self.assertTrue(looped_transcription('What is the job of a Guardian? ' +
+                                             'We have to find the right Guardian. '*32))
+        self.assertTrue(looped_transcription('IA, I-2, ' + 'I-0, '*48))
+
+    def test_ordinary_speech_is_not_a_loop(self):
+        # Measured over 300 real dictations the most-repeated 6-gram occurs at
+        # most twice, so deliberate repetition must stay under the threshold.
+        for text in ('I think we should ship the thing by Friday and then review it.',
+                     'the report is ready now now can you check it please and confirm',
+                     'very very good indeed, very very good',
+                     'yes yes yes absolutely'):
+            with self.subTest(text=text):
+                self.assertFalse(looped_transcription(text))
 
     def test_multilingual_punctuation(self):
         self.assertTrue(punctuation_is_faithful('متى ينتهي العمل','متى ينتهي العمل؟'))

@@ -142,6 +142,34 @@ def spoken_symbols(text):
                   codes, text, flags=re.I)
 
 
+# Whisper loops when it is given more audio than the dictation path expects: an
+# 8-minute press came back as "We have to find the right Guardian." 32 times, and
+# an earlier one as "I-0, I-0, I-0" 48 times. The second was inserted into
+# whatever the speaker was typing, unnoticed.
+#
+# Measured over 300 real dictations, the most-repeated 6-gram occurs at most
+# TWICE (298 of 300 at 0-2, none between 3 and 31). The two loops sat at 32 and
+# 48. The threshold is placed in that gap rather than chosen: it needs no
+# tuning, and share-of-text metrics were tried first and do not separate --
+# a long loop dilutes to 0.2 while an ordinary short dictation reaches 0.33.
+LOOP_NGRAM = 6
+LOOP_REPEATS = 5
+
+
+def looped_transcription(text, size=LOOP_NGRAM, limit=LOOP_REPEATS):
+    """True when a transcript repeats one phrase far more than speech ever does.
+
+    Detection only. The caller decides what to do, and the right answer is never
+    to insert it: the audio is fine and belongs in the meeting pipeline, which
+    chunks and produced a clean 627-word transcript from the same recording.
+    """
+    from collections import Counter
+    tokens = re.sub(r'[^\w\s]', '', (text or '').lower()).split()
+    if len(tokens) < size * 2: return False
+    grams = [' '.join(tokens[i:i + size]) for i in range(len(tokens) - size + 1)]
+    return Counter(grams).most_common(1)[0][1] >= limit
+
+
 def clean_stutters(text):
     # Closed list: don't flatten deliberate "very very" or "no, no" emphasis.
     text = re.sub(r"\b(the|a|and|to|now|not)(?:\s+\1\b)+", r"\1", text, flags=re.I)

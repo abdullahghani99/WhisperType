@@ -1254,6 +1254,14 @@ async def voice_flow(
             _POLISH_POLICY_SHA256)
     except Exception:
         log.exception("could not save polish diagnostics; dictation remains captured")
+    # A looping transcript is a recogniser failure, not speech. Reported rather
+    # than silently returned so the client can refuse to insert it and offer the
+    # meeting pipeline instead, which handles the same audio correctly. Additive
+    # field: an older client ignores it and behaves exactly as before.
+    looped = copyediting.looped_transcription(raw)
+    if looped:
+        log.warning("transcript looks like a recogniser loop (id=%s, %d words); "
+                    "audio is retained and belongs in the meeting pipeline", row_id, len(raw.split()))
     return JSONResponse({
         "id": row_id,
         "raw": raw,
@@ -1261,6 +1269,7 @@ async def voice_flow(
         "text": text,
         "timing_ms": {"asr": asr_ms, "polish": polish_ms},
         "polishing": diagnostic,
+        "transcription_looped": looped,
     })
 
 

@@ -28,9 +28,16 @@ def write(path,value):
     path.write_text(value);path.chmod(0o600)
 
 
-def prepare(database,references,destination):
+def prepare(database,references,destination,reserved=None):
     refs=json.loads(references.read_text())
     protected={key(r['asrText']) for r in refs if r['partition']=='heldout'}
+    reserved_hashes = {hashlib.sha256(k.encode()).hexdigest() for k in protected}
+    if reserved is not None:
+        ledger = json.loads(reserved.read_text())
+        hashes = ledger.get('reserved_input_sha256') if isinstance(ledger, dict) else ledger
+        if not isinstance(hashes, list) or not all(isinstance(v, str) and re.fullmatch(r'[0-9a-f]{64}', v) for v in hashes):
+            raise ValueError('Invalid reservation ledger; preparation refused')
+        reserved_hashes.update(hashes)
     feedback=learning.dataset(database)
     candidates=[{'source':r['asrText'],'target':r['formattedText'],'origin':'wispr_reference','task':'dictation'} for r in refs if r['partition']=='development']
     candidates += feedback
@@ -38,7 +45,7 @@ def prepare(database,references,destination):
     for row in candidates:
         if row['task']!='dictation': continue
         source,target=row['source'].strip(),row['target'].strip();k=key(source)
-        if not source or not target or k in protected:skipped['heldout_or_empty']+=1;continue
+        if not source or not target or hashlib.sha256(k.encode()).hexdigest() in reserved_hashes:skipped['heldout_or_empty']+=1;continue
         if len(source.split())<4 or len(source.split())>300:skipped['length']+=1;continue
         # References are not infallible. Only conservative pairs qualify without
         # explicit user correction; user labels can correct names/recognition.
@@ -48,7 +55,7 @@ def prepare(database,references,destination):
         if current and current['target']!=target and row['origin']!='user_correction':skipped['conflicting_reference']+=1;conflicts.add(k);groups.pop(k,None);continue
         groups[k]={'source':source,'target':target,'origin':row['origin']}
     rows=[{'messages':[{'role':'system','content':polish.SYSTEM},{'role':'user','content':'<dictation>\n'+r['source']+'\n</dictation>'},{'role':'assistant','content':r['target']}]} for _,r in sorted(groups.items())]
-    identity={'policy':hashlib.sha256(Path(polish.__file__).read_bytes()).hexdigest(),'pairs':list(groups.values()),'reserved_inputs':sorted(protected)}
+    identity={'policy':hashlib.sha256(Path(polish.__file__).read_bytes()).hexdigest(),'pairs':list(groups.values()),'reserved_inputs':sorted(reserved_hashes)}
     fingerprint=digest(identity);run=destination/fingerprint[:16];run.mkdir(parents=True,exist_ok=True,mode=0o700)
     partitions=split(rows) if len(rows)>=10 else {'train':[],'valid':[],'test':[]}
     for name,data in partitions.items():write(run/'data'/f'{name}.jsonl',''.join(json.dumps(r,ensure_ascii=False)+'\n' for r in data))
@@ -59,7 +66,7 @@ def prepare(database,references,destination):
         recent=[dict(r) for r in c.execute('SELECT id,raw,corrected,polished,edited FROM history ORDER BY id DESC LIMIT 50')]
         counts={'dictations':c.execute('SELECT count(*) FROM history').fetchone()[0],'meetings':c.execute('SELECT count(*) FROM meetings').fetchone()[0]}
     write(run/'recent.json',json.dumps(recent,ensure_ascii=False,indent=2))
-    manifest={'fingerprint':fingerprint,'created':datetime.now(timezone.utc).isoformat(),'policy_sha256':identity['policy'],'reference_sha256':hashlib.sha256(references.read_bytes()).hexdigest(),'approved_feedback':len(feedback),'counts':counts,'qualifying_pairs':len(rows),'partitions':{k:len(v) for k,v in partitions.items()},'reserved_reference_inputs':len(protected),'skipped':dict(skipped),'origins':dict(Counter(r['origin'] for r in groups.values())),'status':'dataset_ready' if rows else 'waiting_for_labels','promotion':'Requires actual baseline/candidate evaluation and recorded review; never training loss alone.'}
+    manifest={'fingerprint':fingerprint,'created':datetime.now(timezone.utc).isoformat(),'policy_sha256':identity['policy'],'reference_sha256':hashlib.sha256(references.read_bytes()).hexdigest(),'approved_feedback':len(feedback),'counts':counts,'qualifying_pairs':len(rows),'partitions':{k:len(v) for k,v in partitions.items()},'reserved_reference_inputs':len(reserved_hashes),'skipped':dict(skipped),'origins':dict(Counter(r['origin'] for r in groups.values())),'status':'dataset_ready' if rows else 'waiting_for_labels','promotion':'Requires actual baseline/candidate evaluation and recorded review; never training loss alone.'}
     write(run/'manifest.json',json.dumps(manifest,indent=2));write(destination/'latest.json',json.dumps({'run':str(run),**manifest},indent=2))
     return run,manifest
 
@@ -88,6 +95,7 @@ def check_policy_drift(url,allow):
         raise SystemExit(f'Cannot reach {url} to confirm the serving policy ({error}). '
                          'Training against an unverified policy is refused; pass '
                          '--allow-policy-drift only if you have checked it by hand.')
+    if not live and not allow: raise SystemExit('Serving policy identity missing; preparation refused')
     if live and live!=local and not allow:
         raise SystemExit(f'Policy drift: this toolchain has {local[:16]} but the server is '
                          f'serving {live[:16]}. Sync the toolchain to the serving policy '
@@ -98,6 +106,7 @@ def check_policy_drift(url,allow):
 def main():
     os.umask(0o077)
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--database',type=Path,required=True);p.add_argument('--references',type=Path,required=True);p.add_argument('--out',type=Path,required=True)
+    p.add_argument('--reserved',type=Path,required=True,help='Cumulative reservation ledger; applies to references AND corrections')
     p.add_argument('--train',action='store_true');p.add_argument('--model',default='mlx-community/Qwen2.5-14B-Instruct-4bit');p.add_argument('--iterations',type=int,default=60)
     p.add_argument('--health',default=os.environ.get('VF_HEALTH_URL','http://127.0.0.1:8790/health'),
                    help='Server health endpoint used to confirm the serving copyediting policy')
@@ -105,9 +114,11 @@ def main():
                    help='Proceed even when the toolchain policy differs from the serving one')
     a=p.parse_args()
     local_policy,live_policy=check_policy_drift(a.health,a.allow_drift)
-    run,manifest=prepare(a.database,a.references,a.out)
+    run,manifest=prepare(a.database,a.references,a.out,a.reserved)
     manifest['serving_policy_sha256']=live_policy
     manifest['policy_matches_serving']=bool(live_policy) and live_policy==local_policy
+    write(run/'manifest.json',json.dumps(manifest,indent=2))
+    write(a.out/'latest.json',json.dumps({'run':str(run),**manifest},indent=2))
     if a.train:
         if not 1<=a.iterations<=300:raise SystemExit('Use 1–300 iterations per bounded cycle')
         if manifest['qualifying_pairs']<30:raise SystemExit('At least 30 qualifying unique pairs are needed; retain the current model')

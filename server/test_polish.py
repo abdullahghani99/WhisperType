@@ -149,6 +149,57 @@ class CopyeditingTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(spoken_symbols(text), text)
 
+    def test_spoken_quantities_cannot_disappear_or_change(self):
+        for source, proposal in [
+            ('We need five boxes.', 'We need boxes.'),
+            ('We need five boxes.', 'We need fifteen boxes.'),
+            ('Send two boxes and two labels.', 'Send two boxes and labels.'),
+            ('Send 5 boxes.', 'Send boxes.'),
+            ('Move from one to two.', 'Move from two to one.'),
+            ('Send five boxes and 2 labels.', 'Send 2 boxes and five labels.'),
+        ]:
+            with self.subTest(source=source, proposal=proposal):
+                result, event = copyedit(source, lambda *args: proposal)
+                self.assertEqual(result, source)
+                self.assertEqual(event['rejection'], 'numbers_or_negation')
+
+    def test_quantity_representation_can_change_in_either_direction(self):
+        for source, output in [('We need five boxes.', 'We need 5 boxes.'),
+                               ('We need 5 boxes.', 'We need five boxes.'),
+                               ('Send two hundred and five boxes.', 'Send 205 boxes.'),
+                               ('Send one million two hundred thousand units.', 'Send 1,200,000 units.'),
+                               ('Send two boxes and two labels.', 'Send 2 boxes and 2 labels.')]:
+            with self.subTest(source=source):
+                self.assertIsNone(rejection_reason(source, output))
+
+    def test_symbol_cue_cannot_leak_to_another_expression(self):
+        for source in [
+            'Open the folder. Please explain slash commands.',
+            'Name it report. The keyboard hyphen key is broken.',
+            'Open the folder and please explain slash commands.',
+            'The HTML slash syntax needs explanation.',
+        ]:
+            with self.subTest(source=source):
+                seen = []
+                def identity(system, value):
+                    seen.append(value)
+                    return value
+                result, event = copyedit(source, identity)
+                self.assertEqual(seen, [source])
+                self.assertEqual(result, source)
+                self.assertEqual(event['status'], 'unchanged')
+
+    def test_symbol_conversion_is_a_checked_output_proposal(self):
+        source = 'Call it report hyphen final hyphen v2.'
+        seen = []
+        def identity(system, value):
+            seen.append(value)
+            return value
+        result, event = copyedit(source, identity)
+        self.assertEqual(seen, [source])
+        self.assertEqual(result, 'Call it report-final-v2.')
+        self.assertIsNone(event['rejection'])
+
     def test_multilingual_punctuation(self):
         self.assertTrue(punctuation_is_faithful('متى ينتهي العمل','متى ينتهي العمل؟'))
         self.assertFalse(punctuation_is_faithful('¿Cuándo estará listo?','Estará listo mañana.'))

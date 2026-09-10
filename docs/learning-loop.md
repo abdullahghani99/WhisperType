@@ -24,7 +24,7 @@ Meeting details have separate **Teach correction** actions for notes and transcr
 Prepare a private dataset on the inference host:
 
 ```sh
-python scripts/learning_cycle.py --database /private/history.sqlite --references /private/references.json --out /private/learning-runs
+python scripts/learning_cycle.py --database /private/history.sqlite --references /private/references.json --out /private/learning-runs --reserved /private/reserved-inputs.json
 ```
 
 Add `--train` for a bounded response-only candidate. Use `scripts/evaluate_polish.py` to run actual model/policy replays; its manifest binds the corpus, policy and adapter weights. Never overwrite an evaluated adapter. `scripts/redistill.sh` delegates to this workflow and cannot run the retired unattended 8B promotion path.
@@ -34,3 +34,5 @@ Add `--train` for a bounded response-only candidate. Use `scripts/evaluate_polis
 The baseline remains Qwen2.5 14B with Whisper Large V3 recognition. Two 14B adapter experiments were trained and evaluated during the September repair. Neither justified replacement: the response-only candidate increased fallback on the first reserved comparison. They remain rejected experiments. The deployed improvement is the verified copyediting policy, punctuation recovery, correction capture and relevant examples, rather than a claimed fine-tuning win.
 
 This is a measured improvement loop, not a promise that every recording automatically improves model weights or that a finite benchmark proves perfect accuracy.
+
+The reservation ledger is cumulative and mandatory at the command-line entry point. It excludes protected inputs even if a later reference file reclassifies them, or an explicit correction has the same input. Preparation and isolated experiments are distinct from promotion: a staged candidate does not replace the live model.

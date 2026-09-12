@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "b0cb276cde517779ca43a5f8fe94adcd6b1ca3b4e7da5e97f2ccd9c3b4381df8",
+    "VERSION": "ec17a75580c4eacbe03c9b3ea28fe5d77b571617b56704eee363d68595d35137",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/CallDetectorTests.swift": "95a8f91d2bc8d63037d64e9c411b11368420a411118be3cbc0ca38c03e42687f",
@@ -38,7 +38,7 @@
     "client/Sources/WhisperType/Resources/Inter-OFL.txt": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
     "client/Sources/WhisperType/Resources/Inter-Regular.ttf": "64f8be6e55c37e32ef03da99714bf3aa58b8f2099bfe4f759a7578e3b8291123",
     "client/Sources/WhisperType/Resources/Inter-SemiBold.ttf": "0dc98e8aa59585394880f25ab89e6d915ad5134522e961b046ca51fad3a18255",
-    "client/Sources/WhisperType/ServerClient.swift": "6bac0587c87aa22a922aac7f0fb1e1101df1a6e2f4f6a9b39195fde8a883c4ff",
+    "client/Sources/WhisperType/ServerClient.swift": "ef230da60b42fa7d56f2e7b6c1b531a63d8b048571aef5f58a71492e2c973574",
     "client/Sources/WhisperType/SessionMicrophone.swift": "6263cd82f648da3c6f411f51360fcd0a7eeec6e599e81a1d3284c529d2586182",
     "client/Sources/WhisperType/SettingsWindow.swift": "3740e507ccb9935b3f0985b7061879a55ee8dbdfb6aa97bf5a6783a8ee66b13c",
     "client/Sources/WhisperType/SoundFeedback.swift": "df9cf3cc1a29c962cbcfeff5f983753740f0a6eb9e944a5bb9b13117848b88c2",

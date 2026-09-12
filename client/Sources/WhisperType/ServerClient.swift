@@ -1,4 +1,5 @@
 import Foundation
+import WhisperTypeKit
 
 /// Talks to the whispertype server on the server Mac.
 struct ServerClient {

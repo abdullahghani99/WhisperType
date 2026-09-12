@@ -299,12 +299,23 @@ struct ServerClient {
             req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
         req.timeoutInterval = 300
+        // Compress for the wire only. Upload is roughly three quarters of the
+        // felt wait on a long link, and mu-law halves it. On any doubt -- an
+        // unexpected WAV shape, an encoder that returns nil -- the original
+        // bytes go instead, because losing a dictation to an encoding problem
+        // is far worse than a slow one, and an older server must keep working.
+        let compressed = MuLaw.encodeWAV(wav)
+        let payload = compressed ?? wav
+
         var body = Data()
         func add(_ s: String) { body.append(s.data(using: .utf8)!) }
         add("--\(boundary)\r\n")
-        add("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n")
-        add("Content-Type: audio/wav\r\n\r\n")
-        body.append(wav)
+        add("Content-Disposition: form-data; name=\"encoding\"\r\n\r\n")
+        add(compressed == nil ? "wav" : "mulaw")
+        add("\r\n--\(boundary)\r\n")
+        add("Content-Disposition: form-data; name=\"file\"; filename=\"audio.\(compressed == nil ? "wav" : "ulaw")\"\r\n")
+        add("Content-Type: \(compressed == nil ? "audio/wav" : "audio/basic")\r\n\r\n")
+        body.append(payload)
         add("\r\n--\(boundary)--\r\n")
         req.httpBody = body
 

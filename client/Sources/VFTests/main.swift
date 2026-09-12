@@ -115,6 +115,13 @@ func run(_ name: String, _ body: () -> Void) {
         run("MicLifecycleTests.testCoverageReportsDeliveredAudio") { t.testCoverageReportsDeliveredAudio() }
         run("MicLifecycleTests.testCoverageCannotExceed100") { t.testCoverageCannotExceed100() }
     }
+    suite("MuLawTests") {
+        let t = MuLawTests()
+        run("MuLawTests.testExpansionMatchesTheStandard") { t.testExpansionMatchesTheStandard() }
+        run("MuLawTests.testRoundTripStaysWithinMuLawQuantisation") { t.testRoundTripStaysWithinMuLawQuantisation() }
+        run("MuLawTests.testEncodingAWAVHalvesIt") { t.testEncodingAWAVHalvesIt() }
+        run("MuLawTests.testUnexpectedAudioFallsBackRatherThanCorrupting") { t.testUnexpectedAudioFallsBackRatherThanCorrupting() }
+    }
     suite("PillPlacementTests") {
         let t = PillPlacementTests()
         run("PillPlacementTests.testFourEdgesKeepCompactAndExpandedCapsulesVisible") { t.testFourEdgesKeepCompactAndExpandedCapsulesVisible() }
@@ -175,7 +182,7 @@ if let files = try? fm.contentsOfDirectory(atPath: "Sources/VFTests") {
         }
     }
 }
-let registered = 107
+let registered = 111
 print("")
 if declared > 0 && declared != registered {
     print("  ✘ DRIFT: \(declared) test functions on disk, \(registered) registered.")

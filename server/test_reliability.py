@@ -270,6 +270,31 @@ class MuLawDecodingTests(unittest.TestCase):
         decoded = _wav_to_array(buf.getvalue())
         self.assertLess(float(np.abs(decoded - tone / 32768.0).max()), 1e-6)
 
+    def test_unknown_encodings_are_refused_not_guessed(self):
+        from server import _normalise_upload
+        from fastapi import HTTPException
+        # Sniffing accepted b"not an audio container" as 22 samples. Declared
+        # encodings mean a client is told, not silently reinterpreted.
+        self.assertEqual(_normalise_upload(b"RIFFwhatever", "wav"), b"RIFFwhatever")
+        with self.assertRaises(HTTPException): _normalise_upload(b"abc", "flac")
+        with self.assertRaises(HTTPException): _normalise_upload(b"", "mulaw")
+
+    def test_mulaw_upload_becomes_a_canonical_wav(self):
+        # Normalising at ingest is what keeps _audio_rms, _transcribe_remote and
+        # _diarize correct without any of them knowing about compression.
+        import wave, io
+        from server import _normalise_upload
+        out = _normalise_upload(bytes([0x7F]) * 1600, "mulaw")
+        self.assertTrue(out.startswith(b"RIFF"))
+        with wave.open(io.BytesIO(out)) as w:
+            self.assertEqual((w.getnchannels(), w.getsampwidth(), w.getframerate()), (1, 2, 16000))
+            self.assertEqual(w.getnframes(), 1600)
+
+    def test_mulaw_beginning_with_riff_is_not_mistaken_for_a_wav(self):
+        from server import _normalise_upload, _wav_to_array
+        raw = b"RIFF" + bytes([0x7F]) * 100
+        self.assertEqual(len(_wav_to_array(_normalise_upload(raw, "mulaw"))), 104)
+
     def test_raw_mulaw_decodes_to_the_same_signal(self):
         import io, wave, math
         import numpy as np
@@ -278,7 +303,8 @@ class MuLawDecodingTests(unittest.TestCase):
         tone = [int(math.sin(i * 2 * math.pi * 440 / 16000) * 12000) for i in range(1600)]
         encoded = bytes(min(table.items(), key=lambda kv: abs(kv[0] - v))[1] for v in tone)
         # Raw stream, no container: stdlib `wave` cannot carry mu-law at all.
-        decoded = _wav_to_array(encoded)
+        from server import _normalise_upload
+        decoded = _wav_to_array(_normalise_upload(encoded, 'mulaw'))
         self.assertEqual(len(decoded), len(tone))
         reference = np.array(tone, dtype=np.float32) / 32768.0
         self.assertLess(float(np.abs(decoded - reference).max()), 0.01)

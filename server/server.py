@@ -288,20 +288,59 @@ def _mulaw_expand(byte: int) -> int:
 _MULAW_TABLE = np.array([_mulaw_expand(b) for b in range(256)], dtype=np.float32) / 32768.0
 # Anchors from ITU-T G.711. Checked at import so a corrupted table can never
 # silently reach audio.
-_MULAW_ANCHORS = {0x00: -32124, 0x80: 32124, 0xFF: 0, 0xFE: 8, 0x7E: -8}
+_MULAW_ANCHORS = {0x00: -32124, 0x80: 32124, 0x7F: 0, 0xFF: 0, 0xFE: 8, 0x7E: -8}
 for _byte, _expected in _MULAW_ANCHORS.items():
     assert _mulaw_expand(_byte) == _expected, f"mu-law table wrong at 0x{_byte:02X}"
 
 
+def _normalise_upload(audio: bytes, encoding: str) -> bytes:
+    """Turn a declared upload into the canonical WAV every consumer expects.
+
+    Unknown encodings are refused rather than guessed at: a client that sends
+    something this server cannot decode should be told so, not have its bytes
+    reinterpreted as samples.
+    """
+    declared = (encoding or "wav").strip().lower()
+    if declared in ("", "wav", "pcm"):
+        return audio
+    if declared in ("mulaw", "ulaw", "g711u"):
+        if not audio:
+            raise HTTPException(status_code=422, detail="Empty audio upload.")
+        return mulaw_to_wav(audio)
+    raise HTTPException(status_code=415,
+                        detail=f"Unsupported audio encoding {declared!r}; send 'wav' or 'mulaw'.")
+
+
+def mulaw_to_wav(raw: bytes, rate: int = 16000) -> bytes:
+    """Expand a raw G.711 mu-law stream into a canonical 16 kHz mono PCM WAV.
+
+    Conversion happens ONCE, at ingest, so nothing downstream has to know the
+    upload was compressed. That matters more than it sounds: `_audio_rms` parses
+    WAV and fail-safes to 1.0 (= "has speech") when it cannot, which would have
+    silently disabled silence protection for compressed uploads; `_transcribe_remote`
+    forwards the bytes as `audio.wav` to a recogniser that would not understand
+    them; and `_diarize` writes them to a `.wav` temporary file. Normalising here
+    leaves all three correct and untouched.
+
+    The encoding is declared by the caller, never sniffed. A previous version
+    treated any payload not starting with "RIFF" as mu-law, which accepted
+    arbitrary bytes as audio -- `b"not an audio container"` decoded to 22
+    samples -- and rejected genuine mu-law that happened to begin with those
+    four bytes.
+    """
+    samples = (_MULAW_TABLE[np.frombuffer(raw, dtype=np.uint8)] * 32768.0)
+    pcm = np.clip(samples, -32768, 32767).astype(np.int16)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as writer:
+        writer.setnchannels(1); writer.setsampwidth(2); writer.setframerate(rate)
+        writer.writeframes(pcm.tobytes())
+    return buffer.getvalue()
+
+
 def _wav_to_array(audio: bytes) -> np.ndarray:
     """Decode WAV bytes to a float32 mono array at [-1, 1] using stdlib `wave`
-    (no ffmpeg dependency). Accepts 16 kHz mono int16 PCM in a WAV container, or
-    a raw 16 kHz mono mu-law stream at half the bytes."""
-    # Raw mu-law carries no container, and stdlib `wave` cannot read a mu-law
-    # WAV in any case (it handles PCM only). A WAV always begins with "RIFF", so
-    # anything else is the compressed stream -- no API change, no ambiguity.
-    if not audio.startswith(b"RIFF"):
-        return _MULAW_TABLE[np.frombuffer(audio, dtype=np.uint8)]
+    (no ffmpeg dependency). WAV only: a compressed upload is normalised to WAV at
+    ingest by `mulaw_to_wav`, so every consumer downstream sees one format."""
     with wave.open(io.BytesIO(audio), "rb") as w:
         sr, ch, sw = w.getframerate(), w.getnchannels(), w.getsampwidth()
         frames = w.readframes(w.getnframes())
@@ -1258,10 +1297,12 @@ async def voice_flow(
     file: UploadFile = File(...),
     language: str | None = Form(None),
     polish: bool | None = Form(None),   # None → server default (VF_POLISH); off by default
+    encoding: str = Form("wav"),        # "wav" (default) or "mulaw" — declared, never sniffed
     authorization: str | None = Header(None),
 ):
     _check_auth(authorization)
     audio = await file.read()
+    audio = _normalise_upload(audio, encoding)
 
     # 1) ASR — local biased Whisper (spells your vocab right), HTTP fallback.
     raw, asr_ms = await _run_asr(audio, file.filename, language)

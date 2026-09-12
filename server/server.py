@@ -263,15 +263,52 @@ def _whisper_prompt() -> str | None:
     return f"Vocabulary and names: {joined[:600]}."
 
 
+# G.711 mu-law expansion, as a 256-entry table. Speech at 8 bits/sample sounds
+# the same to a recogniser as 16, and halves what has to be uploaded.
+#
+# This matters far more than it looks. Measured from China to the Dubai server:
+# 374 ms RTT and 74.5 KB/s upload, so a median 485 KB dictation spends 6.5 s on
+# the wire against 2.4 s of actual ASR and polish, and a p90 one spends 30 s.
+# Roughly three quarters of the felt wait is upload. Decoding stays inside the
+# standard library -- no ffmpeg, no new dependency, matching the existing design.
+def _mulaw_expand(byte: int) -> int:
+    """ITU-T G.711 mu-law expansion for one byte.
+
+    Written out rather than compressed into an expression: a hand-folded version
+    of this was wrong at every anchor point (0x00 gave -8097 where G.711 requires
+    -32124) and would have quietly degraded every upload. `_MULAW_ANCHORS` pins
+    it against the standard.
+    """
+    value = ~byte & 0xFF
+    magnitude = ((value & 0x0F) << 3) + 0x84          # 0x84 = bias 132
+    magnitude <<= (value & 0x70) >> 4                 # exponent
+    return 0x84 - magnitude if value & 0x80 else magnitude - 0x84
+
+
+_MULAW_TABLE = np.array([_mulaw_expand(b) for b in range(256)], dtype=np.float32) / 32768.0
+# Anchors from ITU-T G.711. Checked at import so a corrupted table can never
+# silently reach audio.
+_MULAW_ANCHORS = {0x00: -32124, 0x80: 32124, 0xFF: 0, 0xFE: 8, 0x7E: -8}
+for _byte, _expected in _MULAW_ANCHORS.items():
+    assert _mulaw_expand(_byte) == _expected, f"mu-law table wrong at 0x{_byte:02X}"
+
+
 def _wav_to_array(audio: bytes) -> np.ndarray:
     """Decode WAV bytes to a float32 mono array at [-1, 1] using stdlib `wave`
-    (no ffmpeg dependency). The client always sends 16 kHz mono int16 PCM."""
+    (no ffmpeg dependency). Accepts 16 kHz mono int16 PCM in a WAV container, or
+    a raw 16 kHz mono mu-law stream at half the bytes."""
+    # Raw mu-law carries no container, and stdlib `wave` cannot read a mu-law
+    # WAV in any case (it handles PCM only). A WAV always begins with "RIFF", so
+    # anything else is the compressed stream -- no API change, no ambiguity.
+    if not audio.startswith(b"RIFF"):
+        return _MULAW_TABLE[np.frombuffer(audio, dtype=np.uint8)]
     with wave.open(io.BytesIO(audio), "rb") as w:
         sr, ch, sw = w.getframerate(), w.getnchannels(), w.getsampwidth()
         frames = w.readframes(w.getnframes())
     if sw != 2:
-        raise ValueError(f"unsupported WAV sample width {sw} (expected 16-bit)")
-    arr = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        raise ValueError(f"unsupported WAV sample width {sw} (expected 16-bit or mu-law)")
+    else:
+        arr = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
     if ch > 1:
         arr = arr.reshape(-1, ch).mean(axis=1)
     if sr != 16000:

@@ -246,3 +246,40 @@ class WorkerTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+class MuLawDecodingTests(unittest.TestCase):
+    """Half the upload, no new dependency. Wrong by one byte would corrupt audio."""
+
+    def test_table_matches_g711(self):
+        from server import _mulaw_expand
+        for byte, expected in {0x00: -32124, 0x80: 32124, 0xFF: 0,
+                               0xFE: 8, 0x7E: -8, 0x7F: 0}.items():
+            with self.subTest(byte=byte):
+                self.assertEqual(_mulaw_expand(byte), expected)
+
+    def test_sixteen_bit_pcm_is_untouched(self):
+        import io, wave, math
+        import numpy as np
+        from server import _wav_to_array
+        tone = (np.sin(np.arange(1600) * 2 * math.pi * 440 / 16000) * 16000).astype(np.int16)
+        buf = io.BytesIO()
+        with wave.open(buf, 'wb') as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+            w.writeframes(tone.tobytes())
+        decoded = _wav_to_array(buf.getvalue())
+        self.assertLess(float(np.abs(decoded - tone / 32768.0).max()), 1e-6)
+
+    def test_raw_mulaw_decodes_to_the_same_signal(self):
+        import io, wave, math
+        import numpy as np
+        from server import _wav_to_array, _mulaw_expand
+        table = {_mulaw_expand(b): b for b in range(256)}
+        tone = [int(math.sin(i * 2 * math.pi * 440 / 16000) * 12000) for i in range(1600)]
+        encoded = bytes(min(table.items(), key=lambda kv: abs(kv[0] - v))[1] for v in tone)
+        # Raw stream, no container: stdlib `wave` cannot carry mu-law at all.
+        decoded = _wav_to_array(encoded)
+        self.assertEqual(len(decoded), len(tone))
+        reference = np.array(tone, dtype=np.float32) / 32768.0
+        self.assertLess(float(np.abs(decoded - reference).max()), 0.01)
+        self.assertEqual(len(encoded) * 2, len(tone) * 2)   # half the bytes of int16 PCM

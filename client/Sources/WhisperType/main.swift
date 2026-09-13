@@ -869,6 +869,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dockController.onRecovery = { [weak self] in
             guard let self = self else { return }; self.mainWC.show(client: self.client, section: .inbox)
         }
+        dockController.onCorrectLast = { [weak self] in self?.correctLastDictation() }
         settings.onCheckPermissions = { [weak self] in self?.refreshPermissions() }
         settings.onRequestMicrophone = { [weak self] in self?.requestMicPermission() }
         settings.onRequestAccessibility = { [weak self] in self?.ensureAccessibilityPrompt() }

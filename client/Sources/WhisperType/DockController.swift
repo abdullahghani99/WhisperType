@@ -76,6 +76,7 @@ final class DockController {
     var onAcceptCall: () -> Void = {}
     var onSettings: () -> Void = {}
     var onRecovery: () -> Void = {}
+    var onCorrectLast: () -> Void = {}
     var micDevices: () -> [(uid: String, name: String)] = { [] }
 
     private static let originDefaultsKey = "vf_dock_origin"
@@ -113,6 +114,7 @@ final class DockController {
             onSettings: { [weak self] in self?.onSettings() },
             micDevices: { [weak self] in self?.micDevices() ?? [] },
             onRecovery: { [weak self] in self?.onRecovery() },
+            onCorrectLast: { [weak self] in self?.onCorrectLast() },
             onHoverChanged: { [weak self] over in self?.hoverChanged(over) },
             onAcceptCall: { [weak self] in self?.onAcceptCall() },
             onDrag: { [weak self] event in self?.handleDrag(event) },

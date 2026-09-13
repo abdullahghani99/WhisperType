@@ -12,6 +12,8 @@ public struct DockView: View {
     let onAcceptCall: () -> Void
     let onSettings: () -> Void
     let onRecovery: () -> Void
+    /// Teach a fix for the dictation that just landed.
+    let onCorrectLast: () -> Void
     let micDevices: () -> [(uid: String, name: String)]
     let onDrag: (PillDragEvent) -> Void
     let onSelectPosition: (PillEdge) -> Void
@@ -30,7 +32,8 @@ public struct DockView: View {
                 onToggleRecord: @escaping () -> Void, onPickMic: @escaping (String) -> Void,
                 onToggleMode: @escaping () -> Void, onMeeting: @escaping () -> Void,
                 onSettings: @escaping () -> Void, micDevices: @escaping () -> [(uid: String, name: String)],
-                onRecovery: @escaping () -> Void = {}, onHoverChanged: @escaping (Bool) -> Void = { _ in },
+                onRecovery: @escaping () -> Void = {}, onCorrectLast: @escaping () -> Void = {},
+                onHoverChanged: @escaping (Bool) -> Void = { _ in },
                 onAcceptCall: @escaping () -> Void = {},
                 onDrag: @escaping (PillDragEvent) -> Void = { _ in },
                 onSelectPosition: @escaping (PillEdge) -> Void = { _ in }) {
@@ -39,6 +42,7 @@ public struct DockView: View {
         self.onToggleRecord = onToggleRecord; self.onPickMic = onPickMic
         self.onToggleMode = onToggleMode; self.onMeeting = onMeeting; self.onAcceptCall = onAcceptCall
         self.onSettings = onSettings; self.micDevices = micDevices; self.onRecovery = onRecovery
+        self.onCorrectLast = onCorrectLast
     }
 
     public var body: some View {
@@ -133,7 +137,14 @@ public struct DockView: View {
                 HStack(spacing: 8) {
                     Image(systemName: state.placementUnverified ? "paperplane" : "checkmark.circle.fill").foregroundStyle(VF.Color.healthy(dark: true)).accessibilityHidden(true)
                     Text(state.placementUnverified ? "Sent" : state.lastWordCount > 0 ? "\(state.lastWordCount) words sent" : "Text sent")
-                }.accessibilityElement(children: .combine)
+                        .accessibilityElement(children: .combine)
+                    // The only moment a correction is cheap: the words are on
+                    // screen and still fresh. Teaching one otherwise means
+                    // remembering later and finding the dictation in a list,
+                    // which is why 4,224 dictations have produced 7 labels --
+                    // and why the learning pipeline has nothing to train on.
+                    textAction("Fix…", action: onCorrectLast)
+                }
             case .error:
                 HStack(spacing: 10) {
                     Image(systemName: "exclamationmark.circle.fill").foregroundStyle(VF.Color.attention(dark: true)).accessibilityHidden(true)

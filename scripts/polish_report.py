@@ -215,6 +215,9 @@ def classify(item):
     repetition_before = has_repetition(source)
     row = {
         'id': item.get('id'), 'status': item.get('status'), 'rejection': item.get('rejection'),
+        # Carried so the gate can ask what the speaker's own accepted output did
+        # with the same input.
+        'input': source, 'reference': item.get('reference'),
         'word_changed': changed, 'word_percent': percent,
         'filler_before': filler_count(source), 'filler_after': filler_count(output),
         'repetition_after': has_repetition(output),
@@ -333,6 +336,21 @@ def gate(pairs):
         if before['questions_preserved'] and not after['questions_preserved']:
             failures.append(f'case {case}: a question mark was newly lost')
         newly_dropped = set(after['dropped_content']) - set(before['dropped_content'])
+        # A word the REFERENCE also dropped is not a regression. The gate
+        # otherwise compares a candidate only against its predecessor, so any
+        # candidate that edits more than a barely-editing baseline fails by
+        # construction -- including where it drops exactly what the speaker
+        # accepted. Observed: collapsing "Keep going. Keep going!" into "Keep
+        # going!", which is verbatim what the reference produced, was reported as
+        # content newly dropped.
+        #
+        # This ADDS evidence rather than relaxing the check. Without a reference
+        # (a production replay) every drop still fails, and a word the reference
+        # KEPT still fails even when the candidate has a tidier reason for
+        # removing it.
+        if newly_dropped and after.get('reference'):
+            excused = newly_dropped - set(dropped_content(after['input'], after['reference']))
+            newly_dropped = excused
         if newly_dropped:
             failures.append(f'case {case}: content newly dropped from accepted output '
                             f'({sorted(newly_dropped)[:4]})')
@@ -340,7 +358,8 @@ def gate(pairs):
         if newly_added:
             failures.append(f'case {case}: content newly invented in accepted output '
                             f'({sorted(newly_added)[:4]})')
-        if before['order_preserved'] and not after['order_preserved']:
+        if before['order_preserved'] and not after['order_preserved'] \
+                and not (after.get('reference') and not order_preserved(after['input'], after['reference'])):
             failures.append(f'case {case}: content order newly broken (attribution risk)')
 
         # --- quality: reported, not fatal ---

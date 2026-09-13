@@ -17,6 +17,12 @@ def case(identifier, source, output, rejection=None, status='edited'):
             'status': status, 'rejection': rejection, 'seconds': 1.0}
 
 
+def referenced(identifier, source, output, reference, rejection=None, status='edited'):
+    row = case(identifier, source, output, rejection, status)
+    row['reference'] = reference
+    return row
+
+
 def run(*arms):
     """Run the gate as a subprocess so the exit code is what is tested."""
     with tempfile.TemporaryDirectory() as directory:
@@ -220,6 +226,46 @@ class MeaningVersusQualityTests(unittest.TestCase):
         row = report.classify(case(1, source, 'The report is ready.'))
         self.assertEqual(row['dropped_content'], [])
         self.assertTrue(row['content_preserved'])
+
+
+
+
+class ReferenceAwareDrops(unittest.TestCase):
+    """A candidate is judged against the baseline, which punishes it for editing
+    at all if the baseline barely edits. When the speaker's own accepted output
+    made the same deletion, that is agreement with them, not a regression."""
+
+    SOURCE = 'keep going keep going I finally like it so keep going'
+
+    def test_a_drop_the_reference_also_made_is_not_a_regression(self):
+        base = [referenced('c1', self.SOURCE, 'Keep going. Keep going! I finally like it, so keep going.',
+                           'Keep going! I finally like it, so keep going.')]
+        candidate = [referenced('c1', self.SOURCE, 'Keep going! I finally like it, so keep going.',
+                                'Keep going! I finally like it, so keep going.')]
+        code, out = run(base, candidate)
+        # Exit 1 is a meaning failure, 2 is warnings only. Agreeing with the
+        # reference must not be a meaning failure; a style warning is fine.
+        self.assertNotEqual(code, 1, f'agreeing with the accepted reference must not fail:\n{out}')
+        self.assertNotIn('content newly dropped', out)
+        self.assertNotIn('order newly broken', out)
+
+    def test_a_drop_the_reference_kept_still_fails(self):
+        source = 'make sure that you make them or first audit them on a full ten on ten'
+        base = [referenced('c2', source, 'Make sure that you make them or first audit them on a full 10-on-10.',
+                           'Make sure that you make them or first audit them on a full 10-on-10.')]
+        candidate = [referenced('c2', source, 'Make sure that you audit them on a full 10-on-10.',
+                                'Make sure that you make them or first audit them on a full 10-on-10.')]
+        code, out = run(base, candidate)
+        self.assertEqual(code, 1, f'dropping what the reference kept must still fail:\n{out}')
+        self.assertIn('content newly dropped', out)
+
+    def test_without_a_reference_every_new_drop_still_fails(self):
+        source = 'please audit the numbers carefully before Friday'
+        base = [case('c3', source, 'Please audit the numbers carefully before Friday.')]
+        candidate = [case('c3', source, 'Please audit the numbers before Friday.')]
+        code, out = run(base, candidate)
+        self.assertEqual(code, 1, f'a production replay has no reference to excuse a drop:\n{out}')
+        self.assertIn('content newly dropped', out)
 
 
 if __name__ == '__main__':

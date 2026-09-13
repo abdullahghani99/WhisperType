@@ -68,6 +68,11 @@ final class SettingsState: ObservableObject {
     var onConfirmPlacement: ((UUID) -> Void)?
     var onCancelRecording: ((UUID) -> Void)?
     var onDiscardRecording: ((UUID) -> Void)?
+    /// Send this recording's saved audio to the meeting pipeline instead. The
+    /// escape hatch for a capture that turned out to be a meeting -- a mis-hit
+    /// key, or a dictation that ran long -- without making duration itself
+    /// decide, which would silently turn a long dictation into a different task.
+    var onProcessAsMeeting: ((UUID) -> Void)?
     var unsavedRecordings: [RecordingStore.Entry] = []
     var activeJournal: URL?
 
@@ -652,6 +657,11 @@ struct HistoryTab: View {
                     Button("Open audio") { NSWorkspace.shared.open(RecordingStore.audioURL(entry.id)) }
                         .disabled(!FileManager.default.fileExists(atPath: RecordingStore.audioURL(entry.id).path))
                     if !entry.text.isEmpty { Button("Copy result") { copy(entry.text) } }
+                    if entry.kind != "meeting" {
+                        Button("Process as meeting") { state.onProcessAsMeeting?(entry.id) }
+                            .disabled(entry.status == "processing"
+                                      || !FileManager.default.fileExists(atPath: RecordingStore.audioURL(entry.id).path))
+                    }
                     Divider()
                     Button("Remove recording…", role: .destructive) { discard = entry }.disabled(entry.status == "processing")
                 } label: { Image(systemName: "ellipsis").frame(width: 24, height: 24) }

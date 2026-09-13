@@ -892,6 +892,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         settings.onReviewRecording = { [weak self] id in self?.reviewRecording(id) }
         settings.onCancelRecording = { [weak self] id in self?.processingTasks[id]?.cancel() }
+        settings.onProcessAsMeeting = { [weak self] id in self?.processAsMeeting(id) }
         settings.onDiscardRecording = { [weak self] id in
             guard let self = self else { return }
             guard self.processingTasks[id] == nil else { settings.status = "Cancel processing before removing this recording."; return }
@@ -1176,6 +1177,49 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         enqueueRecording(id)
     }
 
+    /// Send an Inbox recording's saved audio to the meeting pipeline instead.
+    ///
+    /// For the capture that turned out to be a meeting: a mis-hit key, or a
+    /// dictation that ran long enough to come back as a recogniser loop. The
+    /// alternative -- routing anything over some duration to meetings
+    /// automatically -- would let the clock overrule what the speaker asked for,
+    /// so this stays an explicit choice.
+    ///
+    /// The local recording is kept either way. Meeting processing is async and
+    /// server-side; if it fails or the notes are wrong, the audio is still here.
+    private func processAsMeeting(_ id: UUID) {
+        guard processingTasks[id] == nil else { return }
+        let audio = RecordingStore.audioURL(id)
+        guard FileManager.default.fileExists(atPath: audio.path) else {
+            mainWC.settings.status = "That recording no longer has saved audio on this Mac."
+            return
+        }
+        let title = "Meeting \(Date().formatted(date: .abbreviated, time: .shortened))"
+        mainWC.settings.status = "Sending recording to Meetings…"
+        Task { @MainActor in
+            do {
+                // Already 16 kHz mono WAV from the recorder, but the same
+                // conversion the file importer uses costs little and keeps one
+                // definition of what the meeting endpoint accepts.
+                let conversion = Task.detached { try MeetingCapture.convertToWav16k(audio) }
+                let wav = try await conversion.value
+                let job = try await client.submitMeeting(wav: wav, title: title)
+                vlog("inbox recording \(id) submitted as meeting job \(job)")
+                if var entry = (try? RecordingStore.entries())?.first(where: { $0.id == id }) {
+                    entry.status = "ready"
+                    entry.error = "Sent to Meetings as “\(title)”. The audio is still saved here."
+                    try? RecordingStore.save(entry)
+                    recordingsChanged()
+                }
+                mainWC.settings.status = "Processing in Meetings."
+                mainWC.show(client: client, section: .meetings)
+            } catch {
+                vlog("inbox recording \(id) could not be sent as a meeting: \(error)")
+                mainWC.settings.status = "Could not send it to Meetings: \(error.localizedDescription). The recording is unchanged."
+            }
+        }
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if isRecording || meetingStarting || meetingFinishing || meetingRecorder.isStarting || meetingRecorder.isRecording {
             let alert = NSAlert()
@@ -1266,7 +1310,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if result.looped {
                     vlog("transcript looks like a recogniser loop: id=\(id) — not inserting")
                     entry.status = "ready"
-                    entry.error = "The transcription repeats itself, which usually means the recording was longer than dictation handles. The audio is saved — summarize it as a recording instead."
+                    entry.error = "The transcription repeats itself, which usually means the recording was longer than dictation handles. The audio is saved — use Process as meeting to summarize it instead."
                     try RecordingStore.save(entry); recordingsChanged()
                     if presentationID == id && !isRecording {
                         dockController.state.ready()

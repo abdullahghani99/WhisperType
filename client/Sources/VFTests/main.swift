@@ -18,6 +18,13 @@ func run(_ name: String, _ body: () -> Void) {
     body()
 }
 
+    suite("AudioUploadTests") {
+        let t = AudioUploadTests()
+        run("AudioUploadTests.testUploadSendsThePlainWAV") { t.testUploadSendsThePlainWAV() }
+        run("AudioUploadTests.testEveryEndpointGetsTheSameBodyShape") { t.testEveryEndpointGetsTheSameBodyShape() }
+        run("AudioUploadTests.testUploadDeclaresNoEncodingTheEndpointsDoNotAllShare") { t.testUploadDeclaresNoEncodingTheEndpointsDoNotAllShare() }
+        run("AudioUploadTests.testBodyIsAWellFormedMultipart") { t.testBodyIsAWellFormedMultipart() }
+    }
     suite("CallDetectorTests") {
         let t = CallDetectorTests()
         run("CallDetectorTests.testNothingHappeningIsNotACall") { t.testNothingHappeningIsNotACall() }
@@ -114,13 +121,6 @@ func run(_ name: String, _ body: () -> Void) {
         run("MicLifecycleTests.testCoverageExcludesPaddingSoADeadMicCannotReport100") { t.testCoverageExcludesPaddingSoADeadMicCannotReport100() }
         run("MicLifecycleTests.testCoverageReportsDeliveredAudio") { t.testCoverageReportsDeliveredAudio() }
         run("MicLifecycleTests.testCoverageCannotExceed100") { t.testCoverageCannotExceed100() }
-    }
-    suite("MuLawTests") {
-        let t = MuLawTests()
-        run("MuLawTests.testExpansionMatchesTheStandard") { t.testExpansionMatchesTheStandard() }
-        run("MuLawTests.testRoundTripStaysWithinMuLawQuantisation") { t.testRoundTripStaysWithinMuLawQuantisation() }
-        run("MuLawTests.testEncodingAWAVHalvesIt") { t.testEncodingAWAVHalvesIt() }
-        run("MuLawTests.testUnexpectedAudioFallsBackRatherThanCorrupting") { t.testUnexpectedAudioFallsBackRatherThanCorrupting() }
     }
     suite("PillPlacementTests") {
         let t = PillPlacementTests()

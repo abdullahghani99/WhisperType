@@ -1267,6 +1267,11 @@ async def health():
     return {
         "status": "ok",
         "release": os.environ.get("VF_RELEASE_ID"),
+        # Which upload encodings /whispertype understands. The client compresses
+        # ONLY when it has seen mu-law advertised here. An older server omits the
+        # field, the client reads that as no, and keeps sending PCM -- so a server
+        # rollback cannot silently feed mu-law bytes to a WAV-only decoder.
+        "accepts_encodings": ["wav", "mulaw"],
         "polish": "on" if (POLISH_ENABLED and _model is not None) else "off (near-verbatim)",
         # `polish_distilled` described POLISH_MODEL, which does not serve polish
         # while the prompt model is loaded -- it read True for a legacy adapter

@@ -295,44 +295,27 @@ struct ServerClient {
         }
     }
 
+    /// The one audio POST. Both callers below route through it, so an upload
+    /// change reaches every endpoint or none -- the exact way v0.7.0 changed the
+    /// composer's upload while believing it had changed dictation's.
+    private func postAudio(to path: String, wav: Data,
+                           timeout: TimeInterval) async throws -> [String: Any] {
+        let boundary = "vf-\(UUID().uuidString)"
+        var req = URLRequest(url: baseURL.appendingPathComponent(path))
+        req.httpMethod = "POST"
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        // Long dictations take a while to transcribe; a short timeout silently
+        // drops them.
+        req.timeoutInterval = timeout
+        req.httpBody = AudioUpload.multipart(wav: wav, boundary: boundary)
+        let (data, _) = try await request(req)
+        return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+    }
+
     /// POST the WAV to /engineer (prompt mode) — returns a concise and a detailed
     /// engineered prompt built from the rough spoken request.
     func engineer(wav: Data) async throws -> Engineered {
-        let boundary = "vf-\(UUID().uuidString)"
-        var req = URLRequest(url: baseURL.appendingPathComponent("engineer"))
-        req.httpMethod = "POST"
-        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        if let apiKey = apiKey, !apiKey.isEmpty {
-            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        }
-        req.timeoutInterval = 300
-        // Compress for the wire only. Upload is roughly three quarters of the
-        // felt wait on a long link, and mu-law halves it. On any doubt -- an
-        // unexpected WAV shape, an encoder that returns nil -- the original
-        // bytes go instead, because losing a dictation to an encoding problem
-        // is far worse than a slow one, and an older server must keep working.
-        let compressed = MuLaw.encodeWAV(wav)
-        let payload = compressed ?? wav
-
-        var body = Data()
-        func add(_ s: String) { body.append(s.data(using: .utf8)!) }
-        add("--\(boundary)\r\n")
-        add("Content-Disposition: form-data; name=\"encoding\"\r\n\r\n")
-        add(compressed == nil ? "wav" : "mulaw")
-        add("\r\n--\(boundary)\r\n")
-        add("Content-Disposition: form-data; name=\"file\"; filename=\"audio.\(compressed == nil ? "wav" : "ulaw")\"\r\n")
-        add("Content-Type: \(compressed == nil ? "audio/wav" : "audio/basic")\r\n\r\n")
-        body.append(payload)
-        add("\r\n--\(boundary)--\r\n")
-        req.httpBody = body
-
-        let (data, resp) = try await request(req)
-        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? "unknown"
-            throw NSError(domain: "whispertype", code: 4,
-                          userInfo: [NSLocalizedDescriptionKey: "server error: \(msg)"])
-        }
-        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        let obj = try await postAudio(to: "engineer", wav: wav, timeout: 300)
         return Engineered(raw: obj["raw"] as? String ?? "",
                           concise: obj["concise"] as? String ?? "",
                           detailed: obj["detailed"] as? String ?? "",
@@ -341,34 +324,7 @@ struct ServerClient {
 
     /// POST the WAV to /whispertype and return the polished transcript.
     func transcribe(wav: Data) async throws -> Result {
-        let boundary = "vf-\(UUID().uuidString)"
-        var req = URLRequest(url: baseURL.appendingPathComponent("dictate"))
-        req.httpMethod = "POST"
-        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        if let apiKey = apiKey, !apiKey.isEmpty {
-            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        }
-        req.timeoutInterval = 60
-
-        var body = Data()
-        func add(_ s: String) { body.append(s.data(using: .utf8)!) }
-        add("--\(boundary)\r\n")
-        add("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n")
-        add("Content-Type: audio/wav\r\n\r\n")
-        body.append(wav)
-        add("\r\n--\(boundary)--\r\n")
-        req.httpBody = body
-        // Long dictations take a while to transcribe on the server; a short
-        // timeout silently drops them. Allow up to 5 minutes.
-        req.timeoutInterval = 300
-
-        let (data, resp) = try await request(req)
-        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? "unknown"
-            throw NSError(domain: "whispertype", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "server error: \(msg)"])
-        }
-        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        let obj = try await postAudio(to: "whispertype", wav: wav, timeout: 300)
         return Result(id: obj["id"] as? Int,
                       raw: obj["raw"] as? String ?? "",
                       text: obj["text"] as? String ?? "",

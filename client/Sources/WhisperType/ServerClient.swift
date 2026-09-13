@@ -57,6 +57,12 @@ struct ServerClient {
         let id: Int?      // history row id — used to teach a correction later
         let raw: String
         let text: String
+        /// The recogniser repeated one phrase far more than speech ever does.
+        /// Whisper loops when given more audio than the dictation path expects:
+        /// an 8-minute press came back as one sentence 32 times, and an earlier
+        /// capture as "I-0" 48 times -- which was typed into the speaker's
+        /// document and went unnoticed for days.
+        let looped: Bool
     }
 
     /// A learning candidate the server derived from a correction or history scan.
@@ -365,7 +371,8 @@ struct ServerClient {
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
         return Result(id: obj["id"] as? Int,
                       raw: obj["raw"] as? String ?? "",
-                      text: obj["text"] as? String ?? "")
+                      text: obj["text"] as? String ?? "",
+                      looped: obj["transcription_looped"] as? Bool ?? false)
     }
 
     /// Helper: POST JSON to a path with the optional bearer token.

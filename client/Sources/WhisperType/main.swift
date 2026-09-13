@@ -1258,6 +1258,22 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     entry.text = SpokenListFormatter.format(result.text, destinationName: target.isRemote ? remoteDestinationNames[id] : target.name)
                 }
                 guard entry.hasResult else { throw emptyTranscriptionError() }
+                // A looping transcript is a recogniser failure, not speech, and
+                // must never be typed into whatever the speaker has focused. The
+                // audio is good -- the same recording transcribed cleanly through
+                // the meeting pipeline -- so it is kept rather than discarded, and
+                // the result waits in Inbox where it can be sent on or reprocessed.
+                if result.looped {
+                    vlog("transcript looks like a recogniser loop: id=\(id) — not inserting")
+                    entry.status = "ready"
+                    entry.error = "The transcription repeats itself, which usually means the recording was longer than dictation handles. The audio is saved — summarize it as a recording instead."
+                    try RecordingStore.save(entry); recordingsChanged()
+                    if presentationID == id && !isRecording {
+                        dockController.state.ready()
+                        mainWC.settings.captureStatus = "Repeated transcript — kept in Inbox"
+                    }
+                    return
+                }
                 entry.status = "ready"
                 try RecordingStore.save(entry); recordingsChanged()
                 addToHistory(entry.text); lastDictationId = result.id; lastDictationText = entry.text

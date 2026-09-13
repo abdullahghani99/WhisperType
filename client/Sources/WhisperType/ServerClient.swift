@@ -43,7 +43,7 @@ struct ServerClient {
                     try require(object["id"] is Int && object["status"] is String && object["transcript"] is String && object["notes"] is String)
                 }
             }
-        } else if endpoint == "whispertype" {
+        } else if endpoint == "dictate" {
             try require(object["text"] is String && object["raw"] is String)
         } else if endpoint == "engineer" {
             try require(object["raw"] is String && object["concise"] is String && object["detailed"] is String && object["coding"] is String)
@@ -324,7 +324,7 @@ struct ServerClient {
 
     /// POST the WAV to /whispertype and return the polished transcript.
     func transcribe(wav: Data) async throws -> Result {
-        let obj = try await postAudio(to: "whispertype", wav: wav, timeout: 300)
+        let obj = try await postAudio(to: "dictate", wav: wav, timeout: 300)
         return Result(id: obj["id"] as? Int,
                       raw: obj["raw"] as? String ?? "",
                       text: obj["text"] as? String ?? "",

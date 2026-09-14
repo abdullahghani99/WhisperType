@@ -33,27 +33,7 @@ enum Acceptance {
         }
         guard let wav = try? Data(contentsOf: URL(fileURLWithPath: wavPath)) else { fail("cannot read \(wavPath)") }
 
-        // ---- 1. the server leg, timed the way the speaker experiences it
-        let boundary = "vf-acceptance-\(UUID().uuidString)"
-        var request = URLRequest(url: URL(string: server)!.appendingPathComponent("dictate"))
-        request.httpMethod = "POST"
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 300
-        request.httpBody = AudioUpload.multipart(wav: wav, boundary: boundary)
-        let started = Date()
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            fail("the server did not accept the dictation")
-        }
-        let serverMs = Int(Date().timeIntervalSince(started) * 1000)
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let raw = object["raw"] as? String, let polished = object["text"] as? String,
-              !polished.isEmpty else { fail("the server returned no transcript") }
-        print("  heard    : \(raw.prefix(140))")
-        print("  polished : \(polished.prefix(140))")
-        print("  server   : \(serverMs) ms for \(wav.count / 1024) KB")
-
-        // ---- 2. a real destination application
+        // ---- 1. a real destination application, before any timing
         // Launched through LaunchServices, not spawned directly: a process the
         // window server did not register never becomes the frontmost
         // application, and the focused-application query then returns nothing.
@@ -92,6 +72,33 @@ enum Acceptance {
             print("  note     : frontmost is \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "unknown")")
         }
 
+        // ---- 2. the server leg
+        //
+        // Timed only after the destination exists. An earlier version started
+        // the clock here and launched the target afterwards, so the "total"
+        // swallowed app launch plus fixed 800 ms and 400 ms settle waits, and
+        // the remainder was reported as client overhead. It was test setup.
+        // What `server` measures is the HTTP round trip -- upload, inference and
+        // download together -- not isolated server compute.
+        let boundary = "vf-acceptance-\(UUID().uuidString)"
+        var request = URLRequest(url: URL(string: server)!.appendingPathComponent("dictate"))
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 300
+        request.httpBody = AudioUpload.multipart(wav: wav, boundary: boundary)
+        let started = Date()
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            fail("the server did not accept the dictation")
+        }
+        let serverMs = Int(Date().timeIntervalSince(started) * 1000)
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = object["raw"] as? String, let polished = object["text"] as? String,
+              !polished.isEmpty else { fail("the server returned no transcript") }
+        print("  heard    : \(raw.prefix(140))")
+        print("  polished : \(polished.prefix(140))")
+        print("  server   : \(serverMs) ms round trip for \(wav.count / 1024) KB (upload + inference + download)")
+
         // ---- 3. the production insertion path, unchanged
         // Focus acquisition is racy: the window server can still be settling
         // when the first query lands, and the system-wide focused-application
@@ -127,7 +134,7 @@ enum Acceptance {
         }
         let landed = destination.readableValue() ?? ""
         print("  typing   : \(typingMs) ms")
-        print("  total    : \(Int(Date().timeIntervalSince(started) * 1000)) ms stop-to-insertion")
+        print("  total    : \(Int(Date().timeIntervalSince(started) * 1000)) ms request-to-text-on-screen")
         print("  landed   : \(landed.prefix(140))")
 
         guard verified else {

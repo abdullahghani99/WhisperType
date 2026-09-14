@@ -1197,7 +1197,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let title = "Meeting \(Date().formatted(date: .abbreviated, time: .shortened))"
         mainWC.settings.status = "Sending recording to Meetings…"
-        Task { @MainActor in
+        // Mark it processing BEFORE the upload starts, and register the task.
+        // The guard above only consulted `processingTasks`, which this function
+        // never populated, and the menu only disables entries already marked
+        // processing -- so a second click started a second upload and the server
+        // created a second meeting for the same audio.
+        if var entry = (try? RecordingStore.entries())?.first(where: { $0.id == id }) {
+            entry.status = "processing"
+            try? RecordingStore.save(entry)
+            recordingsChanged()
+        }
+        processingTasks[id] = Task { @MainActor in
+            defer { processingTasks[id] = nil }
             do {
                 // Already 16 kHz mono WAV from the recorder, but the same
                 // conversion the file importer uses costs little and keeps one
@@ -1216,6 +1227,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 mainWC.show(client: client, section: .meetings)
             } catch {
                 vlog("inbox recording \(id) could not be sent as a meeting: \(error)")
+                // Never leave it stuck as processing, or the action can never be
+                // retried and the recording is stranded in Inbox.
+                if var entry = (try? RecordingStore.entries())?.first(where: { $0.id == id }) {
+                    entry.status = entry.hasResult ? "ready" : "pending"
+                    try? RecordingStore.save(entry)
+                    recordingsChanged()
+                }
                 mainWC.settings.status = "Could not send it to Meetings: \(error.localizedDescription). The recording is unchanged."
             }
         }

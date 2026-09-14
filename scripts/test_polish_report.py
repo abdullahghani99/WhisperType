@@ -231,9 +231,7 @@ class MeaningVersusQualityTests(unittest.TestCase):
 
 
 class ReferenceAwareDrops(unittest.TestCase):
-    """A candidate is judged against the baseline, which punishes it for editing
-    at all if the baseline barely edits. When the speaker's own accepted output
-    made the same deletion, that is agreement with them, not a regression."""
+    """References can confirm exact repetition cleanup, not waive meaning checks."""
 
     SOURCE = 'keep going keep going I finally like it so keep going'
 
@@ -265,6 +263,39 @@ class ReferenceAwareDrops(unittest.TestCase):
         candidate = [case('c3', source, 'Please audit the numbers before Friday.')]
         code, out = run(base, candidate)
         self.assertEqual(code, 1, f'a production replay has no reference to excuse a drop:\n{out}')
+        self.assertIn('content newly dropped', out)
+
+    def test_reference_omission_does_not_license_losing_a_qualifier(self):
+        source = 'Please audit the numbers carefully before Friday.'
+        shortened = 'Please audit the numbers before Friday.'
+        code, out = run([referenced('qualifier', source, source, shortened)],
+                        [referenced('qualifier', source, shortened, shortened)])
+        self.assertEqual(code, 1)
+        self.assertIn('content newly dropped', out)
+
+    def test_reference_reordering_does_not_license_a_different_role_reversal(self):
+        source = 'Alice tells Bob that Carol owes Dan.'
+        reference = 'Bob was told by Alice that Carol owes Dan.'
+        candidate = 'Alice tells Bob that Dan owes Carol.'
+        code, out = run([referenced('roles', source, source, reference)],
+                        [referenced('roles', source, candidate, reference)])
+        self.assertEqual(code, 1)
+        self.assertIn('order newly broken', out)
+
+    def test_even_matching_reference_cannot_license_reversed_ownership(self):
+        source = 'Alice tells Bob that Carol owes Dan.'
+        candidate = 'Alice tells Bob that Dan owes Carol.'
+        code, out = run([referenced('same-roles', source, source, candidate)],
+                        [referenced('same-roles', source, candidate, candidate)])
+        self.assertEqual(code, 1)
+        self.assertIn('order newly broken', out)
+
+    def test_repetition_cleanup_does_not_hide_an_additional_deletion(self):
+        source = 'Keep going keep going and audit the numbers carefully before Friday.'
+        candidate = 'Keep going and audit the numbers before Friday.'
+        code, out = run([referenced('extra-drop', source, source, candidate)],
+                        [referenced('extra-drop', source, candidate, candidate)])
+        self.assertEqual(code, 1)
         self.assertIn('content newly dropped', out)
 
 

@@ -1491,13 +1491,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .appendingPathComponent("WhisperType/RemotePairing.json")
         let pairing = (try? JSONDecoder().decode([String:String].self, from: Data(contentsOf: pairingURL))) ?? [:]
         let match = env["VF_REMOTE_WINDOW_MATCH"] ?? pairing["VF_REMOTE_WINDOW_MATCH"] ?? ""
-        // Screen Sharing is identified by its window title; a paired remote
-        // client is identified by being that client at all.
-        let identified = target.isRemoteByBundle || (!match.isEmpty && target.title.localizedCaseInsensitiveContains(match))
+        // Both kinds must name the MACHINE, not just the app. Screen Sharing
+        // carries it in the AX window title; a remote-desktop client carries it
+        // in the window-server name, because its AX title is empty. A client
+        // whose session cannot be identified is refused rather than assumed to
+        // be the paired machine -- the whole risk here is inserting a dictation
+        // into a Mac the speaker is not looking at.
+        let sessionName = target.isRemoteByBundle ? target.windowServerName() : target.title
+        let identified = !match.isEmpty && (sessionName?.localizedCaseInsensitiveContains(match) ?? false)
+        if target.isRemoteByBundle && sessionName == nil {
+            throw insertionError("WhisperType cannot read which machine the remote desktop window is showing. "
+                                 + "Allow Screen Recording for WhisperType, or use Screen Sharing. "
+                                 + "Your result is kept in Inbox.")
+        }
         guard identified,
               let address = env["VF_REMOTE_AGENT_URL"] ?? pairing["VF_REMOTE_AGENT_URL"], let base = URL(string: address),
               ["http", "https"].contains(base.scheme ?? ""), base.host != nil else {
-            throw insertionError("Pair the remote agent, and identify its Screen Sharing window or remote-desktop app, before insertion.")
+            throw insertionError("This window does not name the paired machine (\(match)). Result kept in Inbox.")
         }
         let key = env["VF_REMOTE_AGENT_KEY"] ?? pairing["VF_REMOTE_AGENT_KEY"] ?? ""
         guard key.utf8.count >= 32 else { throw insertionError("Remote pairing needs a key of at least 32 bytes.") }

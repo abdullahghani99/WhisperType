@@ -121,11 +121,48 @@ class ReliabilityTests(unittest.TestCase):
         """The case the whole-clip test cannot see: a real dictation that ends
         with filler Whisper appended after the speaker stopped talking. 26 of
         1,605 dictations in 14 days ended this way."""
-        segments = [{'text': ' Please review the numbers before Friday.', 'no_speech_prob': 0.03},
-                    {'text': ' Thank you.', 'no_speech_prob': 0.22}]
+        segments = [{'text': ' Please review the numbers before Friday.', 'no_speech_prob': 0.03, 'start': 0.0, 'end': 4.0},
+                    {'text': ' Thank you.', 'no_speech_prob': 0.22, 'start': 4.0, 'end': 6.0}]
         self.assertEqual(
-            self.m._drop_trailing_hallucination('Please review the numbers before Friday. Thank you.', segments),
+            self.m._drop_trailing_hallucination('Please review the numbers before Friday. Thank you.', segments, __import__('numpy').zeros(16000*8, dtype='float32')),
             'Please review the numbers before Friday.')
+
+    def test_a_quiet_real_goodbye_survives_a_high_no_speech_probability(self):
+        """no_speech_prob is the model's opinion, not proof. A quiet or clipped
+        real utterance can carry a high one, and deleting it cannot be undone."""
+        import numpy as np
+        loud = np.full(16000 * 6, 0.05, dtype='float32')      # audible throughout
+        segments = [{'text': ' Send it today.', 'no_speech_prob': 0.03, 'start': 0.0, 'end': 4.0},
+                    {'text': ' Thank you.', 'no_speech_prob': 0.40, 'start': 4.0, 'end': 5.0}]
+        text = 'Send it today. Thank you.'
+        self.assertEqual(self.m._drop_trailing_hallucination(text, segments, loud), text)
+
+    def test_the_phantom_goes_when_the_audio_under_it_is_silent(self):
+        import numpy as np
+        audio = np.concatenate([np.full(16000 * 4, 0.05, dtype='float32'),
+                                np.zeros(16000 * 2, dtype='float32')])
+        segments = [{'text': ' Send it today.', 'no_speech_prob': 0.03, 'start': 0.0, 'end': 4.0},
+                    {'text': ' Thank you.', 'no_speech_prob': 0.40, 'start': 4.0, 'end': 6.0}]
+        self.assertEqual(self.m._drop_trailing_hallucination('Send it today. Thank you.', segments, audio),
+                         'Send it today.')
+
+    def test_unmeasurable_audio_never_trims(self):
+        segments = [{'text': ' Send it today.', 'no_speech_prob': 0.03, 'start': 0.0, 'end': 4.0},
+                    {'text': ' Thank you.', 'no_speech_prob': 0.40, 'start': 4.0, 'end': 6.0}]
+        text = 'Send it today. Thank you.'
+        self.assertEqual(self.m._drop_trailing_hallucination(text, segments, None), text)
+
+    def test_casing_dares_less_without_a_word_list(self):
+        """The vocabulary accepts arbitrary strings. With no word list to rule a
+        term out, only terms that cannot be prose at all may be recased."""
+        self.m._vocab['terms'] = ['CAN', 'GO', 'ERP42', 'URL']
+        original_words, original_flag = self.m._ENGLISH_WORDS, self.m._ENGLISH_WORDS_AVAILABLE
+        try:
+            self.m._ENGLISH_WORDS, self.m._ENGLISH_WORDS_AVAILABLE = set(), False
+            self.assertEqual(self.m._apply_term_casing('i can go to the url'), 'i can go to the url')
+            self.assertEqual(self.m._apply_term_casing('open erp42 now'), 'open ERP42 now')
+        finally:
+            self.m._ENGLISH_WORDS, self.m._ENGLISH_WORDS_AVAILABLE = original_words, original_flag
 
     def test_a_thank_you_the_speaker_actually_said_survives(self):
         """Whisper reporting it heard speech is the whole basis for keeping it."""

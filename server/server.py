@@ -380,12 +380,26 @@ def _transcribe_local(audio: bytes, language: str | None) -> tuple[str, float]:
         kwargs["language"] = language
     res = mlx_whisper.transcribe(audio_arr, **kwargs)
     segments = res.get("segments", []) or []
-    text = _drop_trailing_hallucination(res.get("text") or "", segments)
+    text = _drop_trailing_hallucination(res.get("text") or "", segments, audio_arr)
     nsp = max((float(s.get("no_speech_prob", 0.0)) for s in segments), default=0.0)
     return text, nsp
 
 
-def _drop_trailing_hallucination(text: str, segments: list) -> str:
+def _segment_rms(audio_arr, start: float, end: float) -> float:
+    """Energy of the audio under one segment, 0..1. Returns 1.0 ("has speech")
+    when it cannot be measured, so an unmeasurable tail is never trimmed."""
+    try:
+        import numpy as np
+        lo, hi = int(max(0.0, start) * 16000), int(max(0.0, end) * 16000)
+        window = audio_arr[lo:hi]
+        if window is None or len(window) == 0:
+            return 1.0
+        return float(np.sqrt(np.mean(np.square(np.asarray(window, dtype="float32")))))
+    except Exception:  # noqa: BLE001
+        return 1.0
+
+
+def _drop_trailing_hallucination(text: str, segments: list, audio_arr=None) -> str:
     """Drop a filler phrase Whisper appended AFTER real speech.
 
     `_strip_hallucinations` handles a clip that is ENTIRELY filler, and filler
@@ -411,6 +425,15 @@ def _drop_trailing_hallucination(text: str, segments: list) -> str:
             break
         if float(last.get("no_speech_prob", 0.0)) < _NO_SPEECH_PROB:
             break                      # Whisper believes it heard this: keep it.
+        # `no_speech_prob` is the model's opinion, not proof. A quiet or clipped
+        # real utterance can carry a high one, and deleting it is irreversible.
+        # Require the audio under the segment to be silent as well -- the same
+        # corroboration the whole-clip rule already demands.
+        energy = _segment_rms(audio_arr, float(last.get("start", 0.0)), float(last.get("end", 0.0)))
+        if energy >= _SILENCE_RMS:
+            log.info("kept trailing %r: nsp=%.2f but the audio under it has energy %.4f",
+                     (last.get("text") or "").strip(), float(last.get("no_speech_prob", 0.0)), energy)
+            break
         remainder = "".join(seg.get("text") or "" for seg in segments[:-1]).strip()
         if not remainder:
             break                      # the whole clip is filler; not our case.
@@ -564,15 +587,20 @@ def apply_vocab(text: str) -> str:
 # rewrite prose: "US" would capitalise every "us", "RAG" every "rag". The system
 # word list decides, so the rule stays true as terms are added, with a small
 # fallback for hosts that do not ship one.
-def _ambiguous_terms() -> set:
+def _ambiguous_terms() -> tuple:
+    """(words, available). `available` is False when the host ships no word list,
+    which is a reason to attempt less rather than to guess from a short list."""
     try:
         with open("/usr/share/dict/words", encoding="utf-8", errors="ignore") as words:
-            return {w.strip().lower() for w in words if w.strip()}
+            found = {w.strip().lower() for w in words if w.strip()}
+        if len(found) > 1000:
+            return found, True
     except OSError:
-        return {"us", "rag", "id", "pi", "it", "in", "on", "no", "at", "so", "or", "am", "be", "we"}
+        pass
+    return {"us", "rag", "id", "pi", "it", "in", "on", "no", "at", "so", "or", "am", "be", "we"}, False
 
 
-_ENGLISH_WORDS = _ambiguous_terms()
+_ENGLISH_WORDS, _ENGLISH_WORDS_AVAILABLE = _ambiguous_terms()
 
 
 def _apply_term_casing(text: str) -> str:
@@ -589,8 +617,15 @@ def _apply_term_casing(text: str) -> str:
     for term in _vocab.get("terms", []):
         if len(term) < 2 or not term.isupper() or not term.isalnum():
             continue
-        if term.lower() in _ENGLISH_WORDS:
-            continue
+        # A term that contains a digit cannot be ordinary prose: ERP42, B2B, O2C,
+        # GB300. Anything else is only safe to recase when a real word list is
+        # available to rule it out -- the built-in fallback is short, and the
+        # vocabulary accepts arbitrary strings, so a term like CAN or GO would
+        # otherwise rewrite "I can" into "I CAN" on a host with no word list.
+        # When the evidence is missing, do less.
+        if not any(c.isdigit() for c in term):
+            if not _ENGLISH_WORDS_AVAILABLE or term.lower() in _ENGLISH_WORDS:
+                continue
         text = re.sub(rf"\b{re.escape(term.lower())}\b", term, text)
     return text
 

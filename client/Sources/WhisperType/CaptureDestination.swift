@@ -35,10 +35,34 @@ struct CaptureDestination {
         return !configured.isEmpty && bundle.localizedCaseInsensitiveContains(configured)
     }
 
-    /// True when this destination is identified by the paired client rather than
-    /// by a window title, so the title checks do not apply to it.
+    /// True when this destination is a paired remote-desktop client rather than
+    /// Screen Sharing.
     var isRemoteByBundle: Bool {
         !(app.bundleIdentifier ?? "").contains("ScreenSharing") && isRemote
+    }
+
+    /// The name the window server has for this window, which is where a remote
+    /// desktop client puts the host it is currently showing.
+    ///
+    /// Naming the CLIENT is not naming the SESSION: the bundle identifies the
+    /// app, never which machine its window is connected to right now. Switching
+    /// the session to another host leaves the same app in the same window, so
+    /// bundle identity alone would keep sending text to the configured agent --
+    /// typing a dictation into a machine the speaker is not looking at. So the
+    /// session still has to be identified, and the accessibility tree cannot do
+    /// it here (this window reports no AX title at all).
+    ///
+    /// Returns nil when the name cannot be read, which is what happens without
+    /// Screen Recording permission. Nil must refuse the insertion, never allow
+    /// it: an unidentifiable session is exactly the case this guards against.
+    func windowServerName() -> String? {
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                       kCGNullWindowID) as? [[String: Any]] else { return nil }
+        let pid = app.processIdentifier
+        for info in windows where (info[kCGWindowOwnerPID as String] as? pid_t) == pid {
+            if let name = info[kCGWindowName as String] as? String, !name.isEmpty { return name }
+        }
+        return nil
     }
 
     static func capture(diagnose: (String) -> Void = { _ in }) -> CaptureDestination? {

@@ -303,6 +303,29 @@ def paired(base_items, candidate_items, path_a, path_b):
     return [(a[k], b[k]) for k in sorted(a)]
 
 
+def reference_confirms_repetition_cleanup(source, output, reference):
+    """Permit only exact adjacent phrase deduplication supported by a reference.
+
+    An archive reference may itself omit meaning or reorder attribution. It
+    cannot grant a general allowance to drop the same word or reorder different
+    actors. Preserve every other token, and require the candidate and reference
+    to agree on the complete result. Facts and questions remain checked below.
+    """
+    if not reference or polish.words(output) != polish.words(reference):
+        return False
+    original = polish.words(source)
+    collapsed = list(original)
+    index = 0
+    while index < len(collapsed):
+        for width in range(1, min(8, (len(collapsed) - index) // 2) + 1):
+            if collapsed[index:index + width] == collapsed[index + width:index + 2 * width]:
+                del collapsed[index + width:index + 2 * width]
+                break
+        else:
+            index += 1
+    return collapsed != original and collapsed == polish.words(output)
+
+
 def gate(pairs):
     """Per-case results, split by what a failure actually costs.
 
@@ -327,6 +350,8 @@ def gate(pairs):
     for base_item, candidate_item in pairs:
         before, after = classify(base_item), classify(candidate_item)
         case = after['id']
+        reference_dedup = reference_confirms_repetition_cleanup(
+            candidate_item['input'], candidate_item['output'], candidate_item.get('reference'))
 
         # --- meaning: fatal ---
         if before['facts_preserved'] and not after['facts_preserved']:
@@ -336,21 +361,10 @@ def gate(pairs):
         if before['questions_preserved'] and not after['questions_preserved']:
             failures.append(f'case {case}: a question mark was newly lost')
         newly_dropped = set(after['dropped_content']) - set(before['dropped_content'])
-        # A word the REFERENCE also dropped is not a regression. The gate
-        # otherwise compares a candidate only against its predecessor, so any
-        # candidate that edits more than a barely-editing baseline fails by
-        # construction -- including where it drops exactly what the speaker
-        # accepted. Observed: collapsing "Keep going. Keep going!" into "Keep
-        # going!", which is verbatim what the reference produced, was reported as
-        # content newly dropped.
-        #
-        # This ADDS evidence rather than relaxing the check. Without a reference
-        # (a production replay) every drop still fails, and a word the reference
-        # KEPT still fails even when the candidate has a tidier reason for
-        # removing it.
-        if newly_dropped and after.get('reference'):
-            excused = newly_dropped - set(dropped_content(after['input'], after['reference']))
-            newly_dropped = excused
+        # The reference can confirm exact repetition cleanup, not authorize
+        # unrelated omissions merely because it also omitted those words.
+        if reference_dedup:
+            newly_dropped = set()
         if newly_dropped:
             failures.append(f'case {case}: content newly dropped from accepted output '
                             f'({sorted(newly_dropped)[:4]})')
@@ -359,7 +373,7 @@ def gate(pairs):
             failures.append(f'case {case}: content newly invented in accepted output '
                             f'({sorted(newly_added)[:4]})')
         if before['order_preserved'] and not after['order_preserved'] \
-                and not (after.get('reference') and not order_preserved(after['input'], after['reference'])):
+                and not reference_dedup:
             failures.append(f'case {case}: content order newly broken (attribution risk)')
 
         # --- quality: reported, not fatal ---

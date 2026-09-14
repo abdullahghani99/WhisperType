@@ -1499,15 +1499,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // into a Mac the speaker is not looking at.
         let sessionName = target.isRemoteByBundle ? target.windowServerName() : target.title
         let identified = !match.isEmpty && (sessionName?.localizedCaseInsensitiveContains(match) ?? false)
-        if target.isRemoteByBundle && sessionName == nil {
-            throw insertionError("WhisperType cannot read which machine the remote desktop window is showing. "
-                                 + "Allow Screen Recording for WhisperType, or use Screen Sharing. "
-                                 + "Your result is kept in Inbox.")
+        if target.isRemoteByBundle {
+            // Say what was actually seen. The requirement that this window names
+            // the paired machine was shipped without ever checking that the name
+            // contains it -- the AX title was verified empty and the window
+            // server's name was assumed to carry the host. Refusing while hiding
+            // the evidence makes the next guess as blind as the last one.
+            vlog("remote session name: \(sessionName.map { "\"\($0)\"" } ?? "unavailable") (need: \"\(match)\")")
+            if sessionName == nil {
+                throw insertionError("WhisperType cannot read which machine the remote desktop window is showing. "
+                                     + "Allow Screen Recording for WhisperType, or use Screen Sharing. "
+                                     + "Your result is kept in Inbox.")
+            }
         }
         guard identified,
               let address = env["VF_REMOTE_AGENT_URL"] ?? pairing["VF_REMOTE_AGENT_URL"], let base = URL(string: address),
               ["http", "https"].contains(base.scheme ?? ""), base.host != nil else {
-            throw insertionError("This window does not name the paired machine (\(match)). Result kept in Inbox.")
+            throw insertionError("This window is named \(sessionName.map { "“\($0)”" } ?? "(unreadable)"), which does not name the paired machine (\(match)). Result kept in Inbox.")
         }
         let key = env["VF_REMOTE_AGENT_KEY"] ?? pairing["VF_REMOTE_AGENT_KEY"] ?? ""
         guard key.utf8.count >= 32 else { throw insertionError("Remote pairing needs a key of at least 32 bytes.") }

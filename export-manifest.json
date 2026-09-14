@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "a92b0248b8baacfaf54e8d59caaca7d5e6b9a0a25ee140c81ea973b4ae25142f",
+    "VERSION": "c074d5425fe451c07dbf79321a1710141d34c6e74780231b899ec1d620d04a19",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/AudioUploadTests.swift": "1bd8f3580878381507e4d23ede7f5ff16b90d7fc1ff05f1adf068b7c5298328e",
@@ -42,7 +42,7 @@
     "client/Sources/WhisperType/SessionMicrophone.swift": "6263cd82f648da3c6f411f51360fcd0a7eeec6e599e81a1d3284c529d2586182",
     "client/Sources/WhisperType/SettingsWindow.swift": "9dd39193e8a63f430fecbe1b9474a474ea252242cb2e836b7741389cfd0efd34",
     "client/Sources/WhisperType/SoundFeedback.swift": "df9cf3cc1a29c962cbcfeff5f983753740f0a6eb9e944a5bb9b13117848b88c2",
-    "client/Sources/WhisperType/main.swift": "302e8ebf20ccb9774c897b52339c198249a9bebbeabcd35ec6ff1104c3f99347",
+    "client/Sources/WhisperType/main.swift": "5c23271abf704e5a17aaafe040ad43514520db991ad4afe69af2b3084a6afc1e",
     "client/Sources/WhisperTypeKit/AudioUpload.swift": "953eb88f45eb53be93c2f3edbd2015c8c727d61fa7f2b3c2a88ecdfe4063f0ff",
     "client/Sources/WhisperTypeKit/BoundedProcess.swift": "ea2b422c2d3343dd33efdb47047e65cfb885c1b3ef1dacb57b9475bc21c6ff2b",
     "client/Sources/WhisperTypeKit/CallDetector.swift": "a7f4d800e65c6c03a82b74a36dc0cdb16e2e14056dcc75e66f6f658785696a2a",

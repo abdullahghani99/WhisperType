@@ -252,6 +252,24 @@ class InventedWordsAreNotRehearings(unittest.TestCase):
                                     'How do we now handle these external blockers?'),
             'new_content')
 
+    def test_a_word_beside_the_one_it_resembles_is_an_addition(self):
+        """"repeat" resembles "report" -- but "report" is still in the output, so
+        nothing was re-heard and an instruction was added. Raising the minimum
+        word length hid the "do"/"handle" case without touching this mechanism."""
+        self.assertEqual(rejection_reason('Please send the report.',
+                                          'Please repeat and send the report.'), 'new_content')
+
+    def test_the_dictionary_cannot_license_a_new_recipient(self):
+        """Knowing how Microsoft is spelled does not establish that this
+        utterance mentioned Microsoft."""
+        self.assertEqual(rejection_reason('Please send the report.',
+                                          'Please send the report to Microsoft.',
+                                          known_terms=['Microsoft']), 'new_content')
+
+    def test_a_rehearing_requires_something_to_have_been_replaced(self):
+        self.assertFalse(rehearing('microsoft', [], known_terms=['Microsoft']))
+        self.assertTrue(rehearing('microsoft', ['microsystems'], known_terms=['Microsoft']))
+
     def test_a_term_the_speaker_keeps_in_their_dictionary_is_not_invented(self):
         """A word they wrote down themselves is a correction, not an invention.
         This clears the ADDITION only: an edit can still be refused for what it

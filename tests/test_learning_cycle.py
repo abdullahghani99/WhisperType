@@ -48,3 +48,30 @@ class CycleTests(unittest.TestCase):
             with self.assertRaises(SystemExit):learning_cycle.check_policy_drift('unused',False)
 
 if __name__=='__main__':unittest.main()
+
+
+class LabelGateBlocksTraining(unittest.TestCase):
+    """Two candidates were trained in one evening on a corpus that had not gained
+    a single label, because nothing at the execution boundary compared the label
+    count with the one at the last run. Retraining unchanged evidence yields a
+    different model, not a better one, and spends evaluation data that cannot be
+    recovered."""
+
+    def gate(self, have, seen, hypothesis=''):
+        """The condition as written in scripts/learning_cycle.py."""
+        return seen is not None and have < seen + 5 and not hypothesis
+
+    def test_unchanged_labels_are_refused(self):
+        self.assertTrue(self.gate(have=7, seen=7))
+
+    def test_four_new_labels_are_still_refused(self):
+        self.assertTrue(self.gate(have=11, seen=7))
+
+    def test_five_new_labels_open_the_gate(self):
+        self.assertFalse(self.gate(have=12, seen=7))
+
+    def test_a_first_run_is_not_blocked(self):
+        self.assertFalse(self.gate(have=7, seen=None))
+
+    def test_a_recorded_hypothesis_is_an_explicit_route_through(self):
+        self.assertFalse(self.gate(have=7, seen=7, hypothesis='tests response masking, not new data'))

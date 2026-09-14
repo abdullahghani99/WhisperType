@@ -108,6 +108,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--database',type=Path,required=True);p.add_argument('--references',type=Path,required=True);p.add_argument('--out',type=Path,required=True)
     p.add_argument('--reserved',type=Path,required=True,help='Cumulative reservation ledger; applies to references AND corrections')
     p.add_argument('--train',action='store_true');p.add_argument('--model',default='mlx-community/Qwen2.5-14B-Instruct-4bit');p.add_argument('--iterations',type=int,default=60)
+    p.add_argument('--hypothesis',default='',help='train despite the label gate; the reason is recorded with the candidate')
     p.add_argument('--health',default=os.environ.get('VF_HEALTH_URL','http://127.0.0.1:8790/health'),
                    help='Server health endpoint used to confirm the serving copyediting policy')
     p.add_argument('--allow-policy-drift',action='store_true',dest='allow_drift',
@@ -122,12 +123,32 @@ def main():
     if a.train:
         if not 1<=a.iterations<=300:raise SystemExit('Use 1–300 iterations per bounded cycle')
         if manifest['qualifying_pairs']<30:raise SystemExit('At least 30 qualifying unique pairs are needed; retain the current model')
+        # Five NEW labels since the last candidate, enforced here at the
+        # execution boundary rather than described in a runbook.
+        #
+        # Nothing enforced this before. The iteration count and the dataset
+        # fingerprint both varied freely, so a differently-shaped run reached the
+        # trainer on unchanged evidence -- which is how two candidates were
+        # trained in one evening on a corpus that had not gained a single label.
+        # Retraining on identical data yields a different model, not a better
+        # one, and each run spends evaluation data that cannot be got back.
+        ledger=a.out/'trained-at-labels.json'
+        seen=json.loads(ledger.read_text())['approved_feedback'] if ledger.exists() else None
+        have=manifest['approved_feedback']
+        if seen is not None and have<seen+5 and not a.hypothesis:
+            raise SystemExit(f'{have} approved labels; the last candidate trained at {seen}. '
+                             f'Five new ones are needed before another run is worth the data it spends. '
+                             f'Pass --hypothesis "<what this run tests and why the evidence supports it>" '
+                             f'to train anyway; the reason is recorded with the candidate.')
+        manifest['trained_at_labels']=have
+        manifest['hypothesis']=a.hypothesis or 'five new labels since the last candidate'
         adapter=run/('candidate-'+str(a.iterations)+'-response-v1');log=run/('training-'+str(a.iterations)+'-response-v1.log')
         if (adapter/'adapters.safetensors').exists():raise SystemExit('Candidate already exists; evaluate it instead of overwriting reviewed weights')
         with log.open('w') as output:
             subprocess.run([sys.executable,'-m','mlx_lm.lora','--model',a.model,'--train','--data',str(run/'data'),'--iters',str(a.iterations),'--batch-size','1','--num-layers','4','--max-seq-length','2048','--mask-prompt','--adapter-path',str(adapter),'--save-every',str(a.iterations),'--steps-per-report','10','--steps-per-eval',str(a.iterations),'--val-batches','5'],stdout=output,stderr=subprocess.STDOUT,check=True)
         manifest.update(status='candidate_trained_not_promoted',model=a.model,iterations=a.iterations,adapter=str(adapter),weights_sha256=hashlib.sha256((adapter/'adapters.safetensors').read_bytes()).hexdigest())
         write(run/'candidate.json',json.dumps(manifest,indent=2))
+        write(ledger,json.dumps({'approved_feedback':have,'run':str(run),'hypothesis':manifest['hypothesis']},indent=2))
         write(a.out/'latest.json',json.dumps({'run':str(run),**manifest},indent=2))
     print(json.dumps({'run':str(run),**manifest}))
 

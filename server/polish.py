@@ -273,13 +273,20 @@ def rehearing(word, source_words, known_terms=()):
     2 of 903 accepted outputs -- but it is the only part of this rule that rests
     on evidence rather than resemblance.
     """
+    # `source_words` must be the words the output REPLACED -- source words that
+    # are gone from it. That is the whole idea: a re-hearing is a substitution,
+    # so something has to have been substituted.
+    #
+    # Passing every source word instead is what made this unsafe, and raising the
+    # minimum word length only hid it. "Please send the report." -> "Please
+    # repeat and send the report." was accepted because "repeat" resembles
+    # "report" -- while "report" was still sitting in the output. Nothing was
+    # re-heard; an instruction was added. Requiring the candidate to be absent
+    # makes that impossible to express.
+    if not source_words:
+        return False
     if word.lower() in {t.lower() for t in known_terms}:
         return True
-    # Resemblance to ANY source word is a loose test, and it was too loose: it
-    # passed "handle" as a re-hearing of "do", because "handle" resembles the
-    # unrelated word "and" at 2/3. A dictation then said the speaker asked how to
-    # HANDLE external blockers when they asked how to DO them. Short words
-    # collide by coincidence most, so neither side may be short now.
     if len(word) < 5:
         return False
     return any(difflib.SequenceMatcher(None, word, candidate).ratio() >= REHEARING_SIMILARITY
@@ -424,7 +431,10 @@ def rejection_reason(source, output, known_terms=()):
     source_roots = {root(w) for w in src}
     added = [w for w in out if w not in FUNCTION_WORDS | set(_UNITS) | set(_SCALES) and root(w) not in source_roots
              and not w.isdigit()]
-    if [w for w in added if not rehearing(w, src, known_terms)] or len(added) > REHEARING_BUDGET:
+    # Only words the output dropped can have been re-heard as something else.
+    output_roots = {root(w) for w in out}
+    replaced = [w for w in src if root(w) not in output_roots]
+    if [w for w in added if not rehearing(w, replaced, known_terms)] or len(added) > REHEARING_BUDGET:
         return 'new_content'
     def content_words(text):
         # Discourse filler is contextual: "or something" may be removed, but

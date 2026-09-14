@@ -32,13 +32,24 @@ def digest(text: str) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--pairs', type=Path, required=True)
-    ap.add_argument('--consumed', type=Path, required=True, help='ledger of inputs a benchmark has already seen')
+    ap.add_argument('--consumed', type=Path, required=True,
+                    help='the CANONICAL consumed ledger (evidence/learning-consumed-benchmark.json). '
+                         'Not a dated snapshot: those are immutable before-states and using one lets '
+                         'already-scored inputs be drawn as fresh.')
+    ap.add_argument('--reserved', type=Path, required=True,
+                    help='reservation ledger (reserved-inputs.json). Reserved inputs are protected '
+                         'from TRAINING, which is a separate promise from benchmark freshness.')
+    ap.add_argument('--release-reservations', action='store_true',
+                    help='train on reserved inputs anyway, changing their role deliberately')
     ap.add_argument('--out', type=Path, required=True)
     args = ap.parse_args()
 
     pairs = json.loads(args.pairs.read_text())
-    ledger = json.loads(args.consumed.read_text())
-    consumed = set(ledger.get('consumed_input_sha256') or [])
+    if 'daily-' in str(args.consumed):
+        raise SystemExit(f'{args.consumed} is a dated snapshot. Pass the canonical ledger: '
+                         'evidence/learning-consumed-benchmark.json')
+    consumed = set(json.loads(args.consumed.read_text()).get('consumed_input_sha256') or [])
+    reserved = set(json.loads(args.reserved.read_text()).get('reserved_input_sha256') or [])
 
     rows, seen = [], set()
     for pair in pairs:
@@ -62,6 +73,15 @@ def main() -> None:
     eval_keys = {r['sha256'] for r in evaluation}
     rest = [r for r in rows if r['sha256'] not in eval_keys]
     validation, training = rest[:VALIDATION_SIZE], rest[VALIDATION_SIZE:]
+    # Reservation protects an input from TRAINING. Benchmark freshness and
+    # training exposure are different promises, and reading only the consumed
+    # ledger honoured one of them while silently breaking the other: 610 of 726
+    # training rows were reserved.
+    trained_on_reserved = [r for r in training + validation if r['sha256'] in reserved]
+    if trained_on_reserved and not args.release_reservations:
+        raise SystemExit(f'{len(trained_on_reserved)} of {len(training) + len(validation)} training/validation '
+                         f'inputs are reserved. Re-run with --release-reservations to change their role '
+                         f'deliberately, and record replacement evaluation evidence.')
 
     args.out.mkdir(parents=True, exist_ok=True)
     for name, part in (('train', training), ('validation', validation), ('evaluation', evaluation)):
@@ -82,6 +102,8 @@ def main() -> None:
     print(f'  train             {len(training)}')
     print(f'  validation        {len(validation)}')
     print(f'  evaluation        {len(evaluation)}   all fresh, none in train/validation')
+    print(f'  reserved in train {len(trained_on_reserved)}' +
+          ('   (released deliberately)' if trained_on_reserved else ''))
 
 
 if __name__ == '__main__':

@@ -283,6 +283,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         client = ServerClient(baseURL: URL(string: urlStr)!, apiKey: apiKey)
         vlog("server url: \(urlStr)")
         Task {
+            // Teach the destination layer which remote-desktop client reaches the
+            // paired machine, before the first dictation can be captured.
+            if let pairing = try? JSONDecoder().decode([String: String].self, from: Data(contentsOf:
+                    FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                        .appendingPathComponent("WhisperType/RemotePairing.json"))) {
+                CaptureDestination.remoteBundleMatch =
+                    ProcessInfo.processInfo.environment["VF_REMOTE_BUNDLE_MATCH"] ?? pairing["VF_REMOTE_BUNDLE_MATCH"] ?? ""
+                if !CaptureDestination.remoteBundleMatch.isEmpty {
+                    vlog("remote-desktop client paired: \(CaptureDestination.remoteBundleMatch)")
+                }
+            }
+
             do { vlog("startup health check: \(try await client.health())") }
             catch { vlog("startup health check FAILED: \(error)") }
         }
@@ -1479,10 +1491,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .appendingPathComponent("WhisperType/RemotePairing.json")
         let pairing = (try? JSONDecoder().decode([String:String].self, from: Data(contentsOf: pairingURL))) ?? [:]
         let match = env["VF_REMOTE_WINDOW_MATCH"] ?? pairing["VF_REMOTE_WINDOW_MATCH"] ?? ""
-        guard !match.isEmpty, target.title.localizedCaseInsensitiveContains(match),
+        // Screen Sharing is identified by its window title; a paired remote
+        // client is identified by being that client at all.
+        let identified = target.isRemoteByBundle || (!match.isEmpty && target.title.localizedCaseInsensitiveContains(match))
+        guard identified,
               let address = env["VF_REMOTE_AGENT_URL"] ?? pairing["VF_REMOTE_AGENT_URL"], let base = URL(string: address),
               ["http", "https"].contains(base.scheme ?? ""), base.host != nil else {
-            throw insertionError("Pair the remote agent and identify its Screen Sharing window before insertion.")
+            throw insertionError("Pair the remote agent, and identify its Screen Sharing window or remote-desktop app, before insertion.")
         }
         let key = env["VF_REMOTE_AGENT_KEY"] ?? pairing["VF_REMOTE_AGENT_KEY"] ?? ""
         guard key.utf8.count >= 32 else { throw insertionError("Remote pairing needs a key of at least 32 bytes.") }

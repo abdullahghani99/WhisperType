@@ -379,10 +379,58 @@ def _transcribe_local(audio: bytes, language: str | None) -> tuple[str, float]:
     if language:
         kwargs["language"] = language
     res = mlx_whisper.transcribe(audio_arr, **kwargs)
-    text = (res.get("text") or "").strip()
-    nsp = max((float(s.get("no_speech_prob", 0.0)) for s in res.get("segments", [])),
-              default=0.0)
+    segments = res.get("segments", []) or []
+    text = _drop_trailing_hallucination(res.get("text") or "", segments)
+    nsp = max((float(s.get("no_speech_prob", 0.0)) for s in segments), default=0.0)
     return text, nsp
+
+
+def _drop_trailing_hallucination(text: str, segments: list) -> str:
+    """Drop a filler phrase Whisper appended AFTER real speech.
+
+    `_strip_hallucinations` handles a clip that is ENTIRELY filler, and filler
+    glued to the FRONT. Neither sees the common case: a real dictation that ends
+    with a phantom "Thank you." because the speaker stopped talking before
+    releasing the key. Measured on 14 days of history, 26 of 1,605 dictations end
+    that way -- and the whole-clip test cannot catch them, because the clip does
+    contain speech.
+
+    The decision is per SEGMENT, not per clip, using the evidence Whisper already
+    reports: the phantom segment carries a high `no_speech_prob` (0.18-0.28 in
+    logs) while genuine speech sits near 0.03. A trailing segment is dropped only
+    when it is BOTH a known filler phrase AND self-reported as probably not
+    speech, so a dictation that really ends "thank you" survives.
+    """
+    stripped = (text or "").strip()
+    if not segments or not stripped:
+        return stripped
+    while segments:
+        last = segments[-1]
+        phrase = re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", (last.get("text") or "").lower())).strip()
+        if phrase not in _HALLUCINATION_ALWAYS | _HALLUCINATION_IF_SILENT:
+            break
+        if float(last.get("no_speech_prob", 0.0)) < _NO_SPEECH_PROB:
+            break                      # Whisper believes it heard this: keep it.
+        remainder = "".join(seg.get("text") or "" for seg in segments[:-1]).strip()
+        if not remainder:
+            break                      # the whole clip is filler; not our case.
+        log.info("dropped trailing filler %r (no_speech_prob=%.2f)",
+                 (last.get("text") or "").strip(), float(last.get("no_speech_prob", 0.0)))
+        segments = segments[:-1]
+        stripped = remainder
+    # Whether the phantom even ARRIVES as its own segment is an assumption: it
+    # could equally be glued onto the last real segment, where a segment-level
+    # rule can never see it. Synthetic silence and synthetic noise both failed to
+    # reproduce the hallucination, so production is the only place to find out.
+    # Log the misses too, or the assumption never gets tested.
+    tail = re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", stripped.lower())).strip()
+    for phrase in _HALLUCINATION_ALWAYS | _HALLUCINATION_IF_SILENT:
+        if tail.endswith(" " + phrase):
+            log.info("transcript still ends with %r after trailing-filler check "
+                     "(last segment nsp=%.2f) — phantom may not be its own segment",
+                     phrase, float(segments[-1].get("no_speech_prob", 0.0)) if segments else -1.0)
+            break
+    return stripped
 
 
 def _transcribe_local_segments(audio: bytes, language: str | None, translate: bool = False):
@@ -499,6 +547,7 @@ def apply_vocab(text: str) -> str:
         text = text.replace(trig, exp)
     for frm, to in _vocab.get("replacements", {}).items():
         text = re.sub(rf"\b{re.escape(frm)}\b", lambda _: to, text, flags=re.IGNORECASE)
+    text = _apply_term_casing(text)
     # Spoken symbol: "foo underscore bar" -> "foo_bar" (technical identifiers like
     # ET_Service). Looped to handle chains (a underscore b underscore c). High
     # signal — two alphanumerics around "underscore" is almost always an identifier.
@@ -508,6 +557,41 @@ def apply_vocab(text: str) -> str:
         if new == text:
             break
         text = new
+    return text
+
+
+# Terms whose lowercase form is an ordinary English word. Recasing those would
+# rewrite prose: "US" would capitalise every "us", "RAG" every "rag". The system
+# word list decides, so the rule stays true as terms are added, with a small
+# fallback for hosts that do not ship one.
+def _ambiguous_terms() -> set:
+    try:
+        with open("/usr/share/dict/words", encoding="utf-8", errors="ignore") as words:
+            return {w.strip().lower() for w in words if w.strip()}
+    except OSError:
+        return {"us", "rag", "id", "pi", "it", "in", "on", "no", "at", "so", "or", "am", "be", "we"}
+
+
+_ENGLISH_WORDS = _ambiguous_terms()
+
+
+def _apply_term_casing(text: str) -> str:
+    """Give a dictionary term the capitalisation the dictionary records.
+
+    Terms were only ever fed to the recogniser as a bias, which nudges spelling
+    and nothing else -- so "URL" in the dictionary still arrived as "url", and so
+    did ERP42, API, UX and 70-odd others. A dictionary the user maintains should
+    decide how its own words are written.
+
+    Only an all-lowercase whole word is rewritten: text that already carries
+    capitals is the speaker's or the recogniser's choice and is left alone.
+    """
+    for term in _vocab.get("terms", []):
+        if len(term) < 2 or not term.isupper() or not term.isalnum():
+            continue
+        if term.lower() in _ENGLISH_WORDS:
+            continue
+        text = re.sub(rf"\b{re.escape(term.lower())}\b", term, text)
     return text
 
 

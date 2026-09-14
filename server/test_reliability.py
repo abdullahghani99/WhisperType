@@ -117,6 +117,49 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(self.m._strip_hallucinations(phrase, has_speech=True),phrase)
         self.assertEqual(self.m._strip_hallucinations('Thanks for watching.',has_speech=False),'')
 
+    def test_a_phantom_thank_you_after_real_speech_is_dropped(self):
+        """The case the whole-clip test cannot see: a real dictation that ends
+        with filler Whisper appended after the speaker stopped talking. 26 of
+        1,605 dictations in 14 days ended this way."""
+        segments = [{'text': ' Please review the numbers before Friday.', 'no_speech_prob': 0.03},
+                    {'text': ' Thank you.', 'no_speech_prob': 0.22}]
+        self.assertEqual(
+            self.m._drop_trailing_hallucination('Please review the numbers before Friday. Thank you.', segments),
+            'Please review the numbers before Friday.')
+
+    def test_a_thank_you_the_speaker_actually_said_survives(self):
+        """Whisper reporting it heard speech is the whole basis for keeping it."""
+        segments = [{'text': ' Please review the numbers.', 'no_speech_prob': 0.03},
+                    {'text': ' Thank you.', 'no_speech_prob': 0.02}]
+        text = 'Please review the numbers. Thank you.'
+        self.assertEqual(self.m._drop_trailing_hallucination(text, segments), text)
+
+    def test_a_clip_that_is_only_filler_is_left_to_the_whole_clip_rule(self):
+        """Dropping the last segment here would return an empty transcript from a
+        function that is only meant to trim a tail."""
+        segments = [{'text': ' Thank you.', 'no_speech_prob': 0.9}]
+        self.assertEqual(self.m._drop_trailing_hallucination('Thank you.', segments), 'Thank you.')
+
+    def test_real_words_are_never_trimmed_as_filler(self):
+        segments = [{'text': ' Ship it.', 'no_speech_prob': 0.03},
+                    {'text': ' Send the contract to Jane.', 'no_speech_prob': 0.9}]
+        text = 'Ship it. Send the contract to Jane.'
+        self.assertEqual(self.m._drop_trailing_hallucination(text, segments), text)
+
+    def test_the_dictionary_decides_how_its_own_terms_are_written(self):
+        """Terms only biased the recogniser, so "URL" in the dictionary still
+        arrived as "url" -- along with ERP42, API, UX and 70-odd others."""
+        self.m._vocab['terms'] = ['URL', 'ERP42', 'API', 'US', 'RAG']
+        self.assertEqual(self.m._apply_term_casing('the url is broken'), 'the URL is broken')
+        self.assertEqual(self.m._apply_term_casing('check erp42 and the api'), 'check ERP42 and the API')
+
+    def test_terms_that_are_ordinary_words_are_left_alone(self):
+        """Recasing these would rewrite prose: every "us", every "rag"."""
+        self.m._vocab['terms'] = ['US', 'RAG', 'URL']
+        self.assertEqual(self.m._apply_term_casing('give us the rag doc'), 'give us the rag doc')
+        self.assertEqual(self.m._apply_term_casing('urls and hurl'), 'urls and hurl')
+        self.assertEqual(self.m._apply_term_casing('the URL was fine'), 'the URL was fine')
+
     def test_legacy_remote_translation_requires_an_actual_translation(self):
         from unittest.mock import Mock
         missing=Mock(status_code=404)

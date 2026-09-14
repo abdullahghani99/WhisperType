@@ -10,7 +10,36 @@ struct CaptureDestination {
     let field: AXUIElement?
     let title: String
     var name: String { app.localizedName ?? "application" }
-    var isRemote: Bool { (app.bundleIdentifier ?? "").contains("ScreenSharing") }
+    /// Bundle identifier fragment of an additional remote-desktop client that
+    /// reaches the paired machine, from `RemotePairing.json`. Empty by default.
+    ///
+    /// Screen Sharing is recognised by name; nothing else was. Chrome Remote
+    /// Desktop therefore looked like an ordinary local application, so a
+    /// dictation into it went down the local path: text onto THIS Mac's
+    /// clipboard and a Cmd+V that the client forwards to the far machine, which
+    /// pastes from its OWN clipboard. The text never crossed.
+    ///
+    /// It cannot be identified the way Screen Sharing is, by window title: that
+    /// window reports no AX title at all (ax=-25200), and reading the name from
+    /// the window server would require Screen Recording permission merely to
+    /// read a string. So the pairing names the client instead — an explicit
+    /// statement that this app's windows are the paired machine. If it is ever
+    /// pointed somewhere else, that statement stops being true, which is why it
+    /// is configured rather than guessed.
+    nonisolated(unsafe) static var remoteBundleMatch = ""
+
+    var isRemote: Bool {
+        let bundle = app.bundleIdentifier ?? ""
+        if bundle.contains("ScreenSharing") { return true }
+        let configured = Self.remoteBundleMatch
+        return !configured.isEmpty && bundle.localizedCaseInsensitiveContains(configured)
+    }
+
+    /// True when this destination is identified by the paired client rather than
+    /// by a window title, so the title checks do not apply to it.
+    var isRemoteByBundle: Bool {
+        !(app.bundleIdentifier ?? "").contains("ScreenSharing") && isRemote
+    }
 
     static func capture(diagnose: (String) -> Void = { _ in }) -> CaptureDestination? {
         guard AXIsProcessTrusted() else { diagnose("accessibility-denied"); return nil }
@@ -152,7 +181,8 @@ struct CaptureDestination {
             guard isRemote || !Self.isNonEditingControl(role) else { diagnose("non-editing-control"); return false }
             if let field, !CFEqual(field, current) { diagnose("field-changed"); return false }
         } else if isRemote { diagnose("remote-field-unavailable"); return false }
-        if isRemote && (attribute(window, kAXTitleAttribute) as? String ?? "") != title {
+        if isRemote && !isRemoteByBundle
+            && (attribute(window, kAXTitleAttribute) as? String ?? "") != title {
             diagnose("remote-window-title-changed"); return false
         }
         return true

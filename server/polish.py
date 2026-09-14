@@ -259,7 +259,7 @@ REHEARING_BUDGET = 2
 REHEARING_SIMILARITY = 0.6
 
 
-def rehearing(word, source_words):
+def rehearing(word, source_words, known_terms=()):
     """True when an added word looks like a misheard word put right.
 
     The guard forbade every word the speaker did not say, which also forbade
@@ -267,8 +267,23 @@ def rehearing(word, source_words):
     ("Annie" for "Danny", "hysterics" for "asterisks"). Those corrections are a
     large part of what good dictation software does, and refusing them capped
     quality below the reference on 12% of its output.
+
+    `known_terms` is the vocabulary the speaker maintains: a word they wrote down
+    themselves is not invented. Measured, that allowance is small -- it changes
+    2 of 903 accepted outputs -- but it is the only part of this rule that rests
+    on evidence rather than resemblance.
     """
+    if word.lower() in {t.lower() for t in known_terms}:
+        return True
+    # Resemblance to ANY source word is a loose test, and it was too loose: it
+    # passed "handle" as a re-hearing of "do", because "handle" resembles the
+    # unrelated word "and" at 2/3. A dictation then said the speaker asked how to
+    # HANDLE external blockers when they asked how to DO them. Short words
+    # collide by coincidence most, so neither side may be short now.
+    if len(word) < 5:
+        return False
     return any(difflib.SequenceMatcher(None, word, candidate).ratio() >= REHEARING_SIMILARITY
+               and len(candidate) >= 4
                for candidate in source_words)
 
 
@@ -380,7 +395,7 @@ def numbers_survive(source_text, output_text):
     return _quantity_values(source_text) == _quantity_values(output_text)
 
 
-def rejection_reason(source, output):
+def rejection_reason(source, output, known_terms=()):
     if not output.strip(): return 'empty'
     prose = re.sub(r'^\s*\d+[.)]\s+', '', output, flags=re.M)
     if re.search(r'[.!?؟？]\s+[^.!?؟？]+$', prose) and not re.search(r'[.!?؟？][\"’\']?$', prose.strip()):
@@ -409,7 +424,7 @@ def rejection_reason(source, output):
     source_roots = {root(w) for w in src}
     added = [w for w in out if w not in FUNCTION_WORDS | set(_UNITS) | set(_SCALES) and root(w) not in source_roots
              and not w.isdigit()]
-    if [w for w in added if not rehearing(w, src)] or len(added) > REHEARING_BUDGET:
+    if [w for w in added if not rehearing(w, src, known_terms)] or len(added) > REHEARING_BUDGET:
         return 'new_content'
     def content_words(text):
         # Discourse filler is contextual: "or something" may be removed, but
@@ -433,7 +448,7 @@ def rejection_reason(source, output):
         source_by_root = {}
         for word in src: source_by_root.setdefault(root(word), []).append(word)
         lost = {r for r in lost
-                if not any(rehearing(candidate, source_by_root.get(r, []))
+                if not any(rehearing(candidate, source_by_root.get(r, []), known_terms)
                            for candidate in output_words)}
     # The reference trims one idea from a rambling sentence and the speaker keeps
     # it: 74 of its rejected outputs dropped exactly one content root, 25 dropped
@@ -496,7 +511,7 @@ def project_punctuation(source, proposal):
     return ''.join(result)
 
 
-def copyedit(text, generate, examples=()):
+def copyedit(text, generate, examples=(), known_terms=()):
     """Return text plus non-sensitive diagnostics; generate(system, input)."""
     source = clean_stutters(text)
     system = SYSTEM
@@ -510,7 +525,7 @@ def copyedit(text, generate, examples=()):
         if len(value)>1 and value[0]==value[-1]=='"' and not source.startswith('"'):value=value[1:-1].strip()
         return value
     candidate = spoken_symbols(unquote(generate(system,source)))
-    reason = rejection_reason(source,candidate)
+    reason = rejection_reason(source,candidate, known_terms)
     if reason is None:
         return candidate, {'status':'edited' if candidate!=text else 'unchanged','rejection':None,'recovery':False,'examples':len(examples)}
     # The rejected candidate already contains sentence boundaries and question

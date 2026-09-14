@@ -1,6 +1,6 @@
 import re
 import unittest
-from polish import (copyedit,rejection_reason,clean_stutters,spoken_symbols,looped_transcription,punctuation_is_faithful,
+from polish import (copyedit,rejection_reason,rehearing,clean_stutters,spoken_symbols,looped_transcription,punctuation_is_faithful,
                     project_punctuation,words,starts_question,SYSTEM,EXAMPLES)
 
 class CopyeditingTests(unittest.TestCase):
@@ -239,4 +239,26 @@ class CopyeditingTests(unittest.TestCase):
     def test_multilingual_punctuation(self):
         self.assertTrue(punctuation_is_faithful('متى ينتهي العمل','متى ينتهي العمل؟'))
         self.assertFalse(punctuation_is_faithful('¿Cuándo estará listo?','Estará listo mañana.'))
+
+class InventedWordsAreNotRehearings(unittest.TestCase):
+    """The spelling allowance compared an added word against ANY source word, so
+    "handle" passed as a re-hearing of "do" -- it resembles the unrelated word
+    "and" at 2/3. The transcript then said the speaker asked how to *handle*
+    external blockers when they asked how to *do* them."""
+
+    def test_a_common_verb_is_not_a_rehearing_of_another(self):
+        self.assertEqual(
+            rejection_reason('how do we now do these external blockers',
+                                    'How do we now handle these external blockers?'),
+            'new_content')
+
+    def test_a_term_the_speaker_keeps_in_their_dictionary_is_not_invented(self):
+        """A word they wrote down themselves is a correction, not an invention.
+        This clears the ADDITION only: an edit can still be refused for what it
+        removed, which is why the allowance is worth 2 of 903 accepted outputs
+        rather than the large gain predicted for it."""
+        source = ['open', 'the', 'erp', 'system', 'tomorrow']
+        self.assertTrue(rehearing('erp42', source, known_terms=['ERP42']))
+        self.assertFalse(rehearing('erp42', source))   # resemblance alone cannot reach it
+
 if __name__=='__main__':unittest.main()

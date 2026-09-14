@@ -724,7 +724,13 @@ def _polish_result(text: str):
         prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
         out = generate(model, tok, prompt=prompt, max_tokens=max(400, int(len(value.split()) * 1.8) + 200), verbose=False)
         return out.replace("<dictation>", "").replace("</dictation>", "").strip()
-    result, diagnostic = copyediting.copyedit(text, edit, examples)
+    # The dictionary the speaker maintains is evidence about their words:
+    # a term they wrote down is a correction when it appears, not an
+    # invention. Worth 2 of 903 accepted outputs -- small, but it is the
+    # only part of the spelling allowance that rests on something they said
+    # rather than on one word resembling another.
+    result, diagnostic = copyediting.copyedit(text, edit, examples,
+                                              known_terms=globals().get("_vocab", {}).get("terms", []))
     log.info("polish status=%s rejection=%s examples=%d", diagnostic['status'], diagnostic['rejection'], diagnostic['examples'])
     return result, diagnostic
 

@@ -28,18 +28,21 @@ struct CaptureDestination {
     /// is configured rather than guessed.
     nonisolated(unsafe) static var remoteBundleMatch = ""
 
-    var isRemote: Bool {
+    /// How this destination reaches another machine, if it does. Screen Sharing
+    /// names the machine in its window title; a paired client may name it
+    /// nowhere, so they are identified differently and the kind says which.
+    enum RemoteKind { case none, screenSharing, pairedClient }
+
+    var remoteKind: RemoteKind {
         let bundle = app.bundleIdentifier ?? ""
-        if bundle.contains("ScreenSharing") { return true }
+        if bundle.contains("ScreenSharing") { return .screenSharing }
         let configured = Self.remoteBundleMatch
         return !configured.isEmpty && bundle.localizedCaseInsensitiveContains(configured)
+            ? .pairedClient : .none
     }
 
-    /// True when this destination is a paired remote-desktop client rather than
-    /// Screen Sharing.
-    var isRemoteByBundle: Bool {
-        !(app.bundleIdentifier ?? "").contains("ScreenSharing") && isRemote
-    }
+    var isRemote: Bool { remoteKind != .none }
+    var isRemoteByBundle: Bool { remoteKind == .pairedClient }
 
     /// The name the window server has for this window, which is where a remote
     /// desktop client puts the host it is currently showing.

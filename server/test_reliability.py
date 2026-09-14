@@ -156,13 +156,13 @@ class ReliabilityTests(unittest.TestCase):
         """The vocabulary accepts arbitrary strings. With no word list to rule a
         term out, only terms that cannot be prose at all may be recased."""
         self.m._vocab['terms'] = ['CAN', 'GO', 'ERP42', 'URL']
-        original_words, original_flag = self.m._ENGLISH_WORDS, self.m._ENGLISH_WORDS_AVAILABLE
+        original_words = self.m._ENGLISH_WORDS
         try:
-            self.m._ENGLISH_WORDS, self.m._ENGLISH_WORDS_AVAILABLE = set(), False
+            self.m._ENGLISH_WORDS = set()          # empty == the host ships no list
             self.assertEqual(self.m._apply_term_casing('i can go to the url'), 'i can go to the url')
             self.assertEqual(self.m._apply_term_casing('open erp42 now'), 'open ERP42 now')
         finally:
-            self.m._ENGLISH_WORDS, self.m._ENGLISH_WORDS_AVAILABLE = original_words, original_flag
+            self.m._ENGLISH_WORDS = original_words
 
     def test_a_thank_you_the_speaker_actually_said_survives(self):
         """Whisper reporting it heard speech is the whole basis for keeping it."""

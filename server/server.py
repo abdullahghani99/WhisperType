@@ -402,57 +402,45 @@ def _segment_rms(audio_arr, start: float, end: float) -> float:
 def _drop_trailing_hallucination(text: str, segments: list, audio_arr=None) -> str:
     """Drop a filler phrase Whisper appended AFTER real speech.
 
-    `_strip_hallucinations` handles a clip that is ENTIRELY filler, and filler
+    `_strip_hallucinations` handles a clip that is entirely filler, and filler
     glued to the FRONT. Neither sees the common case: a real dictation that ends
     with a phantom "Thank you." because the speaker stopped talking before
-    releasing the key. Measured on 14 days of history, 26 of 1,605 dictations end
-    that way -- and the whole-clip test cannot catch them, because the clip does
-    contain speech.
+    releasing the key. Measured on 14 days, 26 of 1,605 dictations end that way,
+    and the whole-clip test cannot catch them because the clip contains speech.
 
-    The decision is per SEGMENT, not per clip, using the evidence Whisper already
-    reports: the phantom segment carries a high `no_speech_prob` (0.18-0.28 in
-    logs) while genuine speech sits near 0.03. A trailing segment is dropped only
-    when it is BOTH a known filler phrase AND self-reported as probably not
-    speech, so a dictation that really ends "thank you" survives.
+    Two independent signals must agree before anything is deleted, because
+    deleting a word the speaker said cannot be undone: Whisper's own
+    `no_speech_prob` for that segment, and the energy of the audio underneath it.
+    The probability alone is the model's opinion, and a quiet or clipped real
+    utterance carries a high one.
+
+    Whether the phantom even arrives as its OWN segment is an assumption --
+    neither synthetic silence nor synthetic noise reproduces the hallucination,
+    so production is the only place to find out. Misses are logged for that.
     """
     stripped = (text or "").strip()
-    if not segments or not stripped:
-        return stripped
-    while segments:
-        last = segments[-1]
-        phrase = re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", (last.get("text") or "").lower())).strip()
-        if phrase not in _HALLUCINATION_ALWAYS | _HALLUCINATION_IF_SILENT:
-            break
-        if float(last.get("no_speech_prob", 0.0)) < _NO_SPEECH_PROB:
-            break                      # Whisper believes it heard this: keep it.
-        # `no_speech_prob` is the model's opinion, not proof. A quiet or clipped
-        # real utterance can carry a high one, and deleting it is irreversible.
-        # Require the audio under the segment to be silent as well -- the same
-        # corroboration the whole-clip rule already demands.
+    last = segments[-1] if segments else None
+    filler = _HALLUCINATION_ALWAYS | _HALLUCINATION_IF_SILENT
+
+    def normalise(value):
+        return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", (value or "").lower())).strip()
+
+    if last and stripped and normalise(last.get("text")) in filler:
+        probability = float(last.get("no_speech_prob", 0.0))
         energy = _segment_rms(audio_arr, float(last.get("start", 0.0)), float(last.get("end", 0.0)))
-        if energy >= _SILENCE_RMS:
-            log.info("kept trailing %r: nsp=%.2f but the audio under it has energy %.4f",
-                     (last.get("text") or "").strip(), float(last.get("no_speech_prob", 0.0)), energy)
-            break
         remainder = "".join(seg.get("text") or "" for seg in segments[:-1]).strip()
-        if not remainder:
-            break                      # the whole clip is filler; not our case.
-        log.info("dropped trailing filler %r (no_speech_prob=%.2f)",
-                 (last.get("text") or "").strip(), float(last.get("no_speech_prob", 0.0)))
-        segments = segments[:-1]
-        stripped = remainder
-    # Whether the phantom even ARRIVES as its own segment is an assumption: it
-    # could equally be glued onto the last real segment, where a segment-level
-    # rule can never see it. Synthetic silence and synthetic noise both failed to
-    # reproduce the hallucination, so production is the only place to find out.
-    # Log the misses too, or the assumption never gets tested.
-    tail = re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", stripped.lower())).strip()
-    for phrase in _HALLUCINATION_ALWAYS | _HALLUCINATION_IF_SILENT:
-        if tail.endswith(" " + phrase):
-            log.info("transcript still ends with %r after trailing-filler check "
-                     "(last segment nsp=%.2f) — phantom may not be its own segment",
-                     phrase, float(segments[-1].get("no_speech_prob", 0.0)) if segments else -1.0)
-            break
+        if probability >= _NO_SPEECH_PROB and energy < _SILENCE_RMS and remainder:
+            log.info("dropped trailing filler %r (no_speech_prob=%.2f, energy=%.4f)",
+                     (last.get("text") or "").strip(), probability, energy)
+            return remainder
+        log.info("kept trailing %r (no_speech_prob=%.2f, energy=%.4f)",
+                 (last.get("text") or "").strip(), probability, energy)
+
+    tail = normalise(stripped)
+    if any(tail.endswith(" " + phrase) for phrase in filler):
+        log.info("transcript still ends with filler after the check "
+                 "(last segment nsp=%.2f) — the phantom may not be its own segment",
+                 float(last.get("no_speech_prob", 0.0)) if last else -1.0)
     return stripped
 
 
@@ -587,20 +575,19 @@ def apply_vocab(text: str) -> str:
 # rewrite prose: "US" would capitalise every "us", "RAG" every "rag". The system
 # word list decides, so the rule stays true as terms are added, with a small
 # fallback for hosts that do not ship one.
-def _ambiguous_terms() -> tuple:
-    """(words, available). `available` is False when the host ships no word list,
-    which is a reason to attempt less rather than to guess from a short list."""
+def _english_words() -> set:
+    """The host's word list, or an empty set when it ships none. Empty means the
+    evidence is missing, which is a reason to attempt less rather than to guess
+    from a short hand-written list."""
     try:
         with open("/usr/share/dict/words", encoding="utf-8", errors="ignore") as words:
             found = {w.strip().lower() for w in words if w.strip()}
-        if len(found) > 1000:
-            return found, True
+        return found if len(found) > 1000 else set()
     except OSError:
-        pass
-    return {"us", "rag", "id", "pi", "it", "in", "on", "no", "at", "so", "or", "am", "be", "we"}, False
+        return set()
 
 
-_ENGLISH_WORDS, _ENGLISH_WORDS_AVAILABLE = _ambiguous_terms()
+_ENGLISH_WORDS = _english_words()
 
 
 def _apply_term_casing(text: str) -> str:
@@ -623,9 +610,12 @@ def _apply_term_casing(text: str) -> str:
         # vocabulary accepts arbitrary strings, so a term like CAN or GO would
         # otherwise rewrite "I can" into "I CAN" on a host with no word list.
         # When the evidence is missing, do less.
-        if not any(c.isdigit() for c in term):
-            if not _ENGLISH_WORDS_AVAILABLE or term.lower() in _ENGLISH_WORDS:
-                continue
+        # A term containing a digit cannot be ordinary prose (ERP42, B2B, O2C).
+        # Anything else needs a word list to rule it out, and an empty list means
+        # there is none -- the vocabulary accepts arbitrary strings, so a term
+        # like CAN would otherwise rewrite "I can" into "I CAN".
+        if not any(c.isdigit() for c in term) and (not _ENGLISH_WORDS or term.lower() in _ENGLISH_WORDS):
+            continue
         text = re.sub(rf"\b{re.escape(term.lower())}\b", term, text)
     return text
 

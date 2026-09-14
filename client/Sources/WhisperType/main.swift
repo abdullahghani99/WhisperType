@@ -1491,31 +1491,40 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .appendingPathComponent("WhisperType/RemotePairing.json")
         let pairing = (try? JSONDecoder().decode([String:String].self, from: Data(contentsOf: pairingURL))) ?? [:]
         let match = env["VF_REMOTE_WINDOW_MATCH"] ?? pairing["VF_REMOTE_WINDOW_MATCH"] ?? ""
-        // Both kinds must name the MACHINE, not just the app. Screen Sharing
-        // carries it in the AX window title; a remote-desktop client carries it
-        // in the window-server name, because its AX title is empty. A client
-        // whose session cannot be identified is refused rather than assumed to
-        // be the paired machine -- the whole risk here is inserting a dictation
-        // into a Mac the speaker is not looking at.
+        // Screen Sharing names the machine in its window title, so it is checked
+        // against the pairing. A remote-desktop client may not name it anywhere:
+        // Chrome Remote Desktop publishes no accessibility tree at all, and the
+        // only name the window server has for it is the signed-in Google account
+        // ("Chrome Remote Desktop - <account>"), not the host being viewed.
+        //
+        // So requiring the window to name the machine, as v0.8.5 did, cannot ever
+        // be satisfied by that client -- it refused every dictation instead. The
+        // identity has to come from the operator: `VF_REMOTE_BUNDLE_SESSION_MATCH`
+        // names the text to require in the window when the client does expose the
+        // host, and when it is absent the pairing itself is the declaration that
+        // this client reaches the paired machine and nothing else.
+        //
+        // That declaration is a statement the software cannot verify, so it is
+        // written down rather than inferred, and every insertion records the
+        // window it went through -- if the client is ever pointed at another
+        // host, the log says which one and when.
+        let sessionMatch = env["VF_REMOTE_BUNDLE_SESSION_MATCH"] ?? pairing["VF_REMOTE_BUNDLE_SESSION_MATCH"] ?? ""
         let sessionName = target.isRemoteByBundle ? target.windowServerName() : target.title
-        let identified = !match.isEmpty && (sessionName?.localizedCaseInsensitiveContains(match) ?? false)
+        let identified: Bool
         if target.isRemoteByBundle {
-            // Say what was actually seen. The requirement that this window names
-            // the paired machine was shipped without ever checking that the name
-            // contains it -- the AX title was verified empty and the window
-            // server's name was assumed to carry the host. Refusing while hiding
-            // the evidence makes the next guess as blind as the last one.
-            vlog("remote session name: \(sessionName.map { "\"\($0)\"" } ?? "unavailable") (need: \"\(match)\")")
-            if sessionName == nil {
-                throw insertionError("WhisperType cannot read which machine the remote desktop window is showing. "
-                                     + "Allow Screen Recording for WhisperType, or use Screen Sharing. "
-                                     + "Your result is kept in Inbox.")
-            }
+            identified = sessionMatch.isEmpty
+                ? true
+                : (sessionName?.localizedCaseInsensitiveContains(sessionMatch) ?? false)
+            vlog("remote insertion via paired client: window=\(sessionName.map { "\"\($0)\"" } ?? "unnamed") "
+                 + "session-match=\(sessionMatch.isEmpty ? "declared by pairing" : "\"\(sessionMatch)\"") -> \(identified)")
+        } else {
+            identified = !match.isEmpty && target.title.localizedCaseInsensitiveContains(match)
         }
+
         guard identified,
               let address = env["VF_REMOTE_AGENT_URL"] ?? pairing["VF_REMOTE_AGENT_URL"], let base = URL(string: address),
               ["http", "https"].contains(base.scheme ?? ""), base.host != nil else {
-            throw insertionError("This window is named \(sessionName.map { "“\($0)”" } ?? "(unreadable)"), which does not name the paired machine (\(match)). Result kept in Inbox.")
+            throw insertionError("This window \(sessionName.map { "(“\($0)”)" } ?? "") does not identify the paired machine. Result kept in Inbox.")
         }
         let key = env["VF_REMOTE_AGENT_KEY"] ?? pairing["VF_REMOTE_AGENT_KEY"] ?? ""
         guard key.utf8.count >= 32 else { throw insertionError("Remote pairing needs a key of at least 32 bytes.") }

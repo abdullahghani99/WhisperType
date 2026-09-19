@@ -1,5 +1,6 @@
 import CoreAudio
 import Foundation
+import WhisperTypeKit
 
 /// Enumerates Core Audio input devices and resolves a saved device by UID, so
 /// WhisperType can pin a microphone the user chose instead of following the
@@ -176,12 +177,13 @@ enum AudioDevices {
     /// candidate meant every press selected the same dead device forever — the
     /// recorder had no way to move on. Now a failing device is simply skipped.
     static func preferredInputs(forWarming: Bool = false) -> [AudioInputDevice] {
-        let physical = inputs().filter {
-            let lower = $0.name.lowercased()
-            return isPhysicalInput($0.id) && !lower.contains("iphone") && !lower.contains("ipad") &&
-                ((UserDefaults.standard.object(forKey: "vf_allowBluetoothInput") as? Bool ?? true) || !Self.isBluetooth($0.id))
-        }
         let pinned = UserDefaults.standard.string(forKey: defaultsKey) ?? ""
+        let allowBluetooth = UserDefaults.standard.object(forKey: "vf_allowBluetoothInput") as? Bool ?? true
+        let physical = inputs().filter {
+            MicSelection.allows(uid: $0.uid, name: $0.name, physical: isPhysicalInput($0.id),
+                                bluetooth: Self.isBluetooth($0.id), pinned: pinned,
+                                allowBluetooth: allowBluetooth)
+        }
         guard !physical.isEmpty else { return [] }
         let def = defaultInputID()
         func rank(_ d: AudioInputDevice) -> Int {

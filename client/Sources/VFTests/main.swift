@@ -122,6 +122,16 @@ func run(_ name: String, _ body: () -> Void) {
         run("MicLifecycleTests.testCoverageReportsDeliveredAudio") { t.testCoverageReportsDeliveredAudio() }
         run("MicLifecycleTests.testCoverageCannotExceed100") { t.testCoverageCannotExceed100() }
     }
+    suite("MicSelectionTests") {
+        let t = MicSelectionTests()
+        run("MicSelectionTests.testAContinuityMicrophoneIsRefusedWhenNobodyAskedForIt") { t.testAContinuityMicrophoneIsRefusedWhenNobodyAskedForIt() }
+        run("MicSelectionTests.testTheSpeakersOwnChoiceIsHonoured") { t.testTheSpeakersOwnChoiceIsHonoured() }
+        run("MicSelectionTests.testPinningOneDeviceDoesNotAdmitTheOthers") { t.testPinningOneDeviceDoesNotAdmitTheOthers() }
+        run("MicSelectionTests.testVirtualDevicesStayRefused") { t.testVirtualDevicesStayRefused() }
+        run("MicSelectionTests.testAPinnedVirtualDeviceIsStillHonoured") { t.testAPinnedVirtualDeviceIsStillHonoured() }
+        run("MicSelectionTests.testAnOrdinaryMicrophoneIsUnaffected") { t.testAnOrdinaryMicrophoneIsUnaffected() }
+        run("MicSelectionTests.testBluetoothStillObeysItsOwnSetting") { t.testBluetoothStillObeysItsOwnSetting() }
+    }
     suite("PillPlacementTests") {
         let t = PillPlacementTests()
         run("PillPlacementTests.testFourEdgesKeepCompactAndExpandedCapsulesVisible") { t.testFourEdgesKeepCompactAndExpandedCapsulesVisible() }
@@ -182,7 +192,7 @@ if let files = try? fm.contentsOfDirectory(atPath: "Sources/VFTests") {
         }
     }
 }
-let registered = 111
+let registered = 118
 print("")
 if declared > 0 && declared != registered {
     print("  ✘ DRIFT: \(declared) test functions on disk, \(registered) registered.")

@@ -18,9 +18,20 @@ BIN_NAME="WhisperType"
 SCRATCH="${VF_SCRATCH:-$HOME/Library/Caches/whispertype-build}"
 mkdir -p "$SCRATCH"
 
-echo "==> swift build (release, scratch=$SCRATCH)"
-swift build -c release --scratch-path "$SCRATCH"
-BIN_PATH="$(swift build -c release --scratch-path "$SCRATCH" --show-bin-path)/$BIN_NAME"
+# A binary built elsewhere. macOS 27's Swift 6.4 command line tools dropped the
+# SwiftUI macro plugin -- a two-line `@State` file stops compiling, and no CLT
+# update restores it because those macros ship with Xcode. ms2 still runs 6.3.1
+# and builds this fine, so the compile can happen there while assembly, stamping
+# and SIGNING stay here, where the keychain identity lives.
+if [ -n "${VF_PREBUILT_BINARY:-}" ]; then
+    [ -f "$VF_PREBUILT_BINARY" ] || { echo "VF_PREBUILT_BINARY not found: $VF_PREBUILT_BINARY"; exit 1; }
+    echo "==> using a prebuilt binary: $VF_PREBUILT_BINARY"
+    BIN_PATH="$VF_PREBUILT_BINARY"
+else
+    echo "==> swift build (release, scratch=$SCRATCH)"
+    swift build -c release --scratch-path "$SCRATCH"
+    BIN_PATH="$(swift build -c release --scratch-path "$SCRATCH" --show-bin-path)/$BIN_NAME"
+fi
 
 echo "==> assembling $APP"
 rm -rf "$APP"

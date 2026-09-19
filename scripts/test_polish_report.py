@@ -301,3 +301,35 @@ class ReferenceAwareDrops(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MetricsCountDefectsNotSpeech(unittest.TestCase):
+    """These two metrics drove a week of decisions and were wrong four times in
+    one day: they counted "B2B Builder" and "AE2 AE3" as repeated words, and
+    counted deliberate speech — "we have to pay what we have to pay", "potato,
+    potato", "What is the best way? What is the best approach?" — as defects
+    polish had failed to remove. A metric that invents damage is worse than no
+    metric, so these deliberately UNDERCOUNT rather than guess."""
+
+    def count(self, text):
+        return report.adjacent_duplicates(text) + report.restated_ngrams(text)
+
+    def test_acronyms_are_not_repeated_words(self):
+        self.assertEqual(self.count('B2B Builder and the AE2 AE3 review'), 0)
+
+    def test_a_real_stutter_is_counted(self):
+        self.assertGreater(self.count('the the numbers are wrong'), 0)
+
+    def test_a_restarted_clause_is_counted(self):
+        self.assertGreater(self.count('we need to, we need to ship it'), 0)
+        self.assertGreater(self.count('I think we should, we should ship on Friday'), 0)
+
+    def test_parallel_phrasing_across_sentences_is_not_a_defect(self):
+        self.assertEqual(self.count('What is the best way? What is the best approach?'), 0)
+
+    def test_idiom_and_emphasis_are_not_defects(self):
+        self.assertEqual(self.count('we have to pay what we have to pay'), 0)
+        self.assertEqual(self.count('It is potato, potato.'), 0)
+
+    def test_ordinary_prose_is_clean(self):
+        self.assertEqual(self.count('Send the report to the team and copy the board'), 0)

@@ -403,22 +403,56 @@ def bench_filler(text):
 
 
 def adjacent_duplicates(text):
-    return len(re.findall(r'\b(\w+)\s+\1\b', text or '', re.I))
+    """Immediately repeated words — a stutter, not emphasis.
+
+    Two things this must NOT count, because both made it report defects that
+    were not there and steer real decisions:
+
+    A token must be a WHOLE alphabetic word. Matching letter runs inside a word
+    turned "B2B Builder" into the pair (b, b) and "AE2 AE3" into (ae, ae): three
+    of six "surviving repetitions" in one production sample were that artifact.
+
+    And a repeat either side of a sentence boundary is usually deliberate --
+    "What is the best way? What is the best approach?" -- which the reference
+    keeps. Only a repeat inside one sentence is a stutter.
+    """
+    total = 0
+    for sentence in re.split(r'[.!?؟？]+', text or ''):
+        words = re.findall(r"\b[A-Za-z][A-Za-z']+\b", sentence)
+        # Only a repeated FUNCTION word. Repeating a content word is almost
+        # always deliberate -- "potato, potato", "very very", "no, no" -- and a
+        # metric that calls those defects reports damage that is not there.
+        # `polish.clean_stutters` takes the same closed-list view of what may be
+        # collapsed without judgement.
+        total += sum(1 for i in range(len(words) - 1)
+                     if words[i].lower() == words[i + 1].lower()
+                     and words[i].lower() in polish.FUNCTION_WORDS)
+    return total
 
 
-def restated_ngrams(text, size=3, window=6):
+def restated_ngrams(text, size=2, window=1):
     """Near-repeated n-grams: a clause restarted or restated within a few words.
 
     This is the behaviour the complaint is about, and it is distinct from an
     adjacent duplicate ("the the"). A speaker who says "should we take, should we
     increase the dataset" leaves no adjacent duplicate at all.
     """
-    tokens = normalised(text or '')
-    seen, count = {}, 0
-    for index in range(len(tokens) - size + 1):
-        gram = ' '.join(tokens[index:index + size])
-        if gram in seen and index - seen[gram] <= window: count += 1
-        seen[gram] = index
+    count = 0
+    # Within ONE sentence. Across a boundary this is parallel phrasing the
+    # speaker chose -- "we have to pay what we have to pay", "that will happen,
+    # but that will happen later" -- and the reference keeps all of it. Counting
+    # those made polish look broken at removing repetition when every flagged
+    # case in a 206-dictation sample was deliberate.
+    for sentence in re.split(r'[.!?؟？]+', text or ''):
+        tokens = normalised(sentence)
+        seen = {}
+        for index in range(len(tokens) - size + 1):
+            gram = ' '.join(tokens[index:index + size])
+            # A restart repeats the run almost immediately: "we need to, we
+            # need to ship". Allowing a wider gap swept in idiom -- "we have to
+            # pay what we have to pay" -- which the reference keeps every time.
+            if gram in seen and index - seen[gram] - size <= window: count += 1
+            seen[gram] = index
     return count
 
 

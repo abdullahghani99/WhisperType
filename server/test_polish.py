@@ -279,4 +279,33 @@ class InventedWordsAreNotRehearings(unittest.TestCase):
         self.assertTrue(rehearing('erp42', source, known_terms=['ERP42']))
         self.assertFalse(rehearing('erp42', source))   # resemblance alone cannot reach it
 
+class GeneratedAngleWrappers(unittest.TestCase):
+    def test_initial_candidate_cannot_add_an_outer_wrapper(self):
+        source = 'Please send the report.'
+        replies = iter(['<Please send the report.>', source])
+        result, diagnostic = copyedit(source, lambda *_: next(replies))
+        self.assertEqual(result, source)
+        self.assertEqual(diagnostic['rejection'], 'generated_wrapper')
+
+    def test_punctuation_recovery_cannot_add_an_outer_wrapper(self):
+        source = 'I meant the report.'
+        replies = iter(['The report is complete.', '<I meant the report.>'])
+        result, _ = copyedit(source, lambda *_: next(replies))
+        self.assertEqual(result, source)
+
+    def test_word_equality_does_not_make_a_wrapper_faithful(self):
+        self.assertFalse(punctuation_is_faithful('Send the report.', '<Send the report.>'))
+
+    def test_literal_outer_brackets_are_preserved(self):
+        source = '<Send the report.>'
+        result, diagnostic = copyedit(source, lambda *_: source)
+        self.assertEqual(result, source)
+        self.assertIsNone(diagnostic['rejection'])
+        self.assertTrue(punctuation_is_faithful(source, source))
+
+    def test_inline_literal_brackets_do_not_license_an_outer_wrapper(self):
+        self.assertEqual(rejection_reason('Send <customer> the report.',
+                                          '<Send <customer> the report.>'),
+                         'generated_wrapper')
+
 if __name__=='__main__':unittest.main()

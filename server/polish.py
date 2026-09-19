@@ -416,6 +416,12 @@ def rejection_reason(source, output, known_terms=()):
         if len(tail.split()) < 4 or len(words(output)) < len(words(clean_stutters(source)))*0.85:
             return 'unfinished_sentence'
     source = spoken_symbols(clean_stutters(source))
+    # Word equality ignores brackets, so both normal edits and punctuation-only
+    # recovery could wrap a whole dictation in invented markup. Preserve literal
+    # source brackets while rejecting a newly generated outer wrapper.
+    if output.strip().startswith('<') and output.strip().endswith('>') \
+            and not (source.strip().startswith('<') and source.strip().endswith('>')):
+        return 'generated_wrapper'
     src, out = words(source), words(output)
     _,source_negatives=facts(source)
     _,output_negatives=facts(output)

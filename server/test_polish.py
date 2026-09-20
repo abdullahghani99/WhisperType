@@ -47,6 +47,38 @@ class CopyeditingTests(unittest.TestCase):
         self.assertFalse(starts_question('Where we go next depends on funding'))
         self.assertTrue(starts_question('What do I need'))
         self.assertIsNone(rejection_reason('what I need is a report','What I need is a report.'))
+    def test_nominal_wh_subject_statements_do_not_owe_question_marks(self):
+        statements = [
+            'What the team told me actually was that the kits were incomplete.',
+            'What our production team reported was a shortage.',
+            'What my manager requested is a report.',
+            'What the customer needs is more time.',
+        ]
+        for source in statements:
+            with self.subTest(source=source):
+                self.assertFalse(starts_question(source))
+                self.assertIsNone(rejection_reason(source, source))
+
+    def test_nominal_wh_subject_exception_preserves_real_questions(self):
+        questions = [
+            'What did the team tell you?',
+            'What does the customer need?',
+            'What the hell did the manager say was missing?',
+            'What the hell is this?',
+            'What is the team doing?',
+            'What the team told you was correct?',
+        ]
+        for source in questions:
+            with self.subTest(source=source):
+                self.assertIsNotNone(rejection_reason(source, source[:-1] + '.'))
+
+    def test_nominal_wh_statement_allows_punctuation_recovery(self):
+        source = 'what the team told me was that kits are missing'
+        expected = 'What the team told me was that kits are missing.'
+        outputs = iter(['The kits are complete.', expected])
+        result, event = copyedit(source, lambda *args: next(outputs))
+        self.assertEqual(result, expected)
+        self.assertEqual(event['status'], 'punctuation_recovery')
     def test_projection_preserves_words_when_model_drops_them(self):
         src='the report includes overtime and approved overtime can you check the totals'
         proposal='The report includes overtime and approved overtime. Can you check totals?'

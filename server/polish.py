@@ -210,6 +210,22 @@ def starts_question(text):
     # Embedded wh-clauses have normal subject/verb order: "what I think is...".
     if re.match(r"(?:what|where|when|why|how|which) (?:i|you|we|he|she|they|it) ", value):
         return False
+    # The subject can also be a noun phrase: "What the team told me was ...".
+    # Require a bounded subject, a reporting/need verb and a following copula;
+    # a leading "what the ..." alone also occurs in real questions. An inverted
+    # auxiliary inside the proposed subject must not qualify ("what the hell
+    # did the team say ..."). Keep explicitly marked echo questions, including
+    # those ending in words that the tag-question check may discount.
+    nominal = re.match(
+        r"what (?:the|my|your|our|his|her|their) (?P<subject>(?:\w+ ){1,3})"
+        r"(?:said|told|reported|explained|requested|suggested|recommended|needs?|needed|wants?|wanted)\b(?P<rest>.*)",
+        value)
+    auxiliaries = {'do','does','did','is','are','was','were','has','have','had',
+                   'can','could','would','will','should','may','might','must'}
+    if nominal and not any(mark in text for mark in '?؟？') \
+            and not (set(nominal['subject'].split()) & auxiliaries) \
+            and re.search(r'\b(?:is|are|was|were)\b', nominal['rest']):
+        return False
     return bool(re.match(r"(?:what|where|when|who|why|how|which)\b|(?:can|could|would|will|should|do|does|did|is|are|have|has|was|were)(?: not)? (?:you|we|i|he|she|they|it|this|that|these|those)\b", value))
 
 
@@ -428,8 +444,10 @@ def rejection_reason(source, output, known_terms=()):
     if source_negatives!=output_negatives: return 'numbers_or_negation'
     if not numbers_survive(clean_stutters(source),output): return 'numbers_or_negation'
     if not hedges_kept(clean_stutters(source),output): return 'hedge_removed'
-    first_source = re.split(r'[.!?؟？]',source,maxsplit=1)[0]
-    first_output = re.split(r'[.!?؟？]',output,maxsplit=1)[0]
+    # Retain the terminator so an explicit echo question cannot be mistaken for
+    # an inferred nominal wh-statement.
+    first_source = re.split(r'(?<=[.!?؟？])',source,maxsplit=1)[0]
+    first_output = re.split(r'(?<=[.!?؟？])',output,maxsplit=1)[0]
     if starts_question(first_source) and not starts_question(first_output): return 'question_intent'
     if starts_question(first_source) and not any(p in output for p in '?؟？'): return 'question_punctuation'
     if questions_owed(source)>sum(output.count(p) for p in '?؟？'): return 'lost_question'

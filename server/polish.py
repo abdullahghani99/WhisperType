@@ -206,7 +206,11 @@ def clean_stutters(text):
 
 def starts_question(text):
     value = " ".join(words(text))
-    value = re.sub(r"^(?:(?:so|and|but|okay|ok|well) )+", "", value)
+    value = re.sub(r"^(?:(?:so|and|but|okay|ok|well|by the way) )+", "", value)
+    # "Do it" takes an object in an imperative; it is not auxiliary-subject
+    # inversion. Keep an explicitly marked echo question as a question.
+    if re.match(r"do it\b", value) and not any(mark in text for mark in '?؟？'):
+        return False
     # Embedded wh-clauses have normal subject/verb order: "what I think is...".
     if re.match(r"(?:what|where|when|why|how|which) (?:i|you|we|he|she|they|it) ", value):
         return False
@@ -418,6 +422,112 @@ def numbers_survive(source_text, output_text):
     return _quantity_values(source_text) == _quantity_values(output_text)
 
 
+def deleted_finite_clause(source, output):
+    """Look for a complete predicate inside a wholly deleted token span.
+
+    Punctuation cannot create a deletion. Shared-subject coordination normally
+    deletes only a repeated subject, not its predicate. This deliberately does
+    not infer clause loss from replacement spans or incomplete fragments.
+    """
+    pronouns = {'i', 'you', 'we', 'he', 'she', 'they', 'it'}
+    auxiliaries = {'am', 'is', 'are', 'was', 'were', 'have', 'has', 'had',
+                   'will', 'would', 'can', 'could', 'should', 'must'}
+    modifiers = {'actually', 'already', 'just', 'really', 'still', 'not', 'never',
+                 'basically', 'obviously', 'literally'}
+    def tokens(text):
+        result = []
+        for token in words(text, expand=False):
+            result.extend(CONTRACTIONS[token].split()
+                          if "'" in token and token in CONTRACTIONS else [token])
+        return result
+    def anchors(span):
+        result = set()
+        for i, subject in enumerate(span):
+            if subject not in pronouns or len(span) - i < 3:
+                continue
+            j = i + 1
+            while j < len(span) and span[j] in modifiers:
+                j += 1
+            if j >= len(span):
+                continue
+            finite = span[j] in auxiliaries or span[j].endswith('ed')
+            while j < len(span) and span[j] in auxiliaries | modifiers | {'a', 'an', 'the'}:
+                j += 1
+            # Require something after the predicate in the deleted span. This
+            # leaves ambiguous terminal adjectives/adverbs and abandoned
+            # auxiliary fragments alone rather than treating them as a point.
+            if finite and j + 1 < len(span) and span[j] not in FUNCTION_WORDS:
+                result.add((subject, root(span[j])))
+        return result
+    src, out = tokens(source), tokens(output)
+    surviving = anchors(out)
+    for kind, start, end, _, _ in difflib.SequenceMatcher(a=src, b=out, autojunk=False).get_opcodes():
+        if kind != 'delete':
+            continue
+        span = src[start:end]
+        # An explicitly superseded proposition may be removed with its marker.
+        if 'sorry' in span or any(span[i:i+2] == ['i', 'mean'] for i in range(len(span))):
+            continue
+        if anchors(span) - surviving:
+            return True
+    return False
+
+
+def internal_attribution_changed(source, output):
+    """Reject a newly assigned pronoun on a locally aligned predicate.
+
+    This is a conservative lexical check, not a parser or proof of equivalence.
+    Only skip auxiliaries and a small set of adverbs; never scan across another
+    subject or a conjunction to find a predicate. Compare aligned occurrences,
+    so a repeated verb elsewhere cannot supply the subject for this clause.
+    """
+    pronouns = {'i', 'you', 'we', 'he', 'she', 'they', 'it'}
+    modifiers = {'am', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+                 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
+                 'can', 'could', 'should', 'may', 'might', 'must',
+                 'actually', 'already', 'also', 'just', 'really', 'still',
+                 'not', 'never'}
+    def assignments(text):
+        result = {}
+        sequence = []
+        for clause in re.split(r'[.!?؟？;:\n]', text):
+            # Do not read bare "were" as "we're" or "well" as "we'll".
+            # A pronoun at the end of one sentence is not the subject of the
+            # next ("a message for you. Review it.").
+            tokens = []
+            for token in words(clause, expand=False):
+                tokens.extend(CONTRACTIONS[token].split()
+                              if "'" in token and token in CONTRACTIONS else [token])
+            for i, token in enumerate(tokens):
+                if token not in pronouns:
+                    continue
+                j = i + 1
+                while j < min(len(tokens), i + 5) and tokens[j] in modifiers:
+                    j += 1
+                if j >= len(tokens) or j > i + 4:
+                    continue
+                predicate = tokens[j]
+                if predicate in FUNCTION_WORDS | FILLER_WORDS or not predicate.isalpha():
+                    continue
+                # In "I want it, want to...", "it" is the object of the first
+                # verb, not a reliable subject for the repeated verb. Leave
+                # this local restart ambiguous instead of assigning a subject.
+                if i > 0 and root(tokens[i - 1]) == root(predicate):
+                    continue
+                result[len(sequence) + j] = token
+            sequence.extend(root(token) for token in tokens)
+        return sequence, result
+    src, original = assignments(source)
+    out, proposed = assignments(output)
+    for block in difflib.SequenceMatcher(a=src, b=out, autojunk=False).get_matching_blocks():
+        for offset in range(block.size):
+            before = original.get(block.a + offset)
+            after = proposed.get(block.b + offset)
+            if before is not None and after is not None and before != after:
+                return True
+    return False
+
+
 def rejection_reason(source, output, known_terms=()):
     if not output.strip(): return 'empty'
     prose = re.sub(r'^\s*\d+[.)]\s+', '', output, flags=re.M)
@@ -439,6 +549,14 @@ def rejection_reason(source, output, known_terms=()):
             and not (source.strip().startswith('<') and source.strip().endswith('>')):
         return 'generated_wrapper'
     src, out = words(source), words(output)
+    if deleted_finite_clause(source, output): return 'deleted_finite_clause'
+    # These cues select an exception or alternative branch. The ordinary
+    # content-loss budget must not license deleting them in a long dictation.
+    # Presence (not count) lets repeated cues and explicitly corrected clauses
+    # collapse while retaining the final cue. This is a bounded deletion check,
+    # not proof that clauses or equivalent conditional paraphrases are aligned.
+    if (set(src) & {'otherwise', 'unless'}) - set(out):
+        return 'conditional_cue_removed'
     _,source_negatives=facts(source)
     _,output_negatives=facts(output)
     if source_negatives!=output_negatives: return 'numbers_or_negation'
@@ -494,6 +612,7 @@ def rejection_reason(source, output, known_terms=()):
             and not re.search(r'\b(?:sorry|i mean)\b',source,re.I): return 'content_or_order'
     for pronoun in ('i','you','we','he','she','they'):
         if src and src[0]==pronoun and (not out or out[0]!=pronoun): return 'attribution'
+    if internal_attribution_changed(source, output): return 'internal_attribution'
     # A repeated sentence cannot be newly introduced by polishing.
     def sentences(t): return [tuple(words(s)) for s in re.split(r'[.!?؟？]+',t) if words(s)]
     a,b=sentences(source),sentences(output)
@@ -576,7 +695,14 @@ def copyedit(text, generate, examples=(), known_terms=()):
         return salvaged, {'status':'punctuation_projection','rejection':reason,'recovery':True,
                           'examples':len(examples),'reused_candidate':True}
     try:
-        recovered = unquote(generate(PUNCTUATION_SYSTEM,source))
+        recovery_system = PUNCTUATION_SYSTEM
+        if reason == 'question_punctuation':
+            recovery_system += (
+                '\nThe opening sentence is a direct question, even if it begins '
+                'with a discourse phrase. Punctuate that question with a question '
+                'mark; keep any later statements declarative.'
+            )
+        recovered = unquote(generate(recovery_system,source))
     except Exception:
         return source, {'status':'verbatim_recovery','rejection':reason,'recovery':False,'examples':len(examples)}
     if punctuation_is_faithful(source,recovered):

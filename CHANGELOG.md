@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.7 — 2026-10-13
+
+- Preserve complete clauses whose noun phrase starts with this, that, these or those.
+- Retain supported restarts, repetition cleanup, coordination and explicit corrections.
+- Server-only policy repair; model weights and native client are unchanged.
+
 ## 0.9.6 — 2026-10-12
 
 - Preserve complete clauses, locally attributed actions and conditional cues during polishing, using the established editing prompt.

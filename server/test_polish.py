@@ -4,6 +4,34 @@ from polish import (copyedit,rejection_reason,rehearing,clean_stutters,spoken_sy
                     project_punctuation,words,starts_question,SYSTEM,EXAMPLES)
 
 class CopyeditingTests(unittest.TestCase):
+    def test_demonstrative_clause_deletion_preserves_distinct_point(self):
+        source = ('We have the templates for every department, so we have those '
+                  'rules already there. I can send the templates to you.')
+        output = ('We have the templates for every department, so I can send '
+                  'the templates to you.')
+        self.assertEqual(rejection_reason(source, output), 'deleted_finite_clause')
+        for determiner in ('this', 'that', 'these', 'those'):
+            noun = 'reference' if determiner in ('this', 'that') else 'references'
+            source = f'We have the templates. We have {determiner} {noun} already available. I can send it.'
+            with self.subTest(determiner=determiner):
+                self.assertEqual(rejection_reason(source, 'We have the templates. I can send it.'),
+                                 'deleted_finite_clause')
+
+    def test_demonstratives_allow_restarts_deduplication_and_coordination(self):
+        pairs = [
+            ('We have that, we have the template ready.', 'We have the template ready.'),
+            ('We have those, we have those templates ready.', 'We have those templates ready.'),
+            ('We have those rules already there. We have those rules already there.',
+             'We have those rules already there.'),
+            ('We have those rules already there, sorry, we still need to write them.',
+             'We still need to write them.'),
+            ('I reviewed this draft. I approved this draft.', 'I reviewed and approved this draft.'),
+        ]
+        from polish import deleted_finite_clause
+        for source, output in pairs:
+            with self.subTest(source=source):
+                self.assertFalse(deleted_finite_clause(source, output))
+
     def test_attribution_uses_the_aligned_verb_occurrence(self):
         from polish import internal_attribution_changed
         # The project and the people can both "start" without sharing a subject.

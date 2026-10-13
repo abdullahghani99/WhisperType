@@ -451,7 +451,11 @@ def deleted_finite_clause(source, output):
             if j >= len(span):
                 continue
             finite = span[j] in auxiliaries or span[j].endswith('ed')
-            while j < len(span) and span[j] in auxiliaries | modifiers | {'a', 'an', 'the'}:
+            # Demonstratives can introduce the predicate's noun phrase just
+            # like articles: "we have those rules already there" is complete.
+            # Leaving "those" as the head hides the deletion because it is a
+            # function word. Incomplete "we have that, we..." still has no head.
+            while j < len(span) and span[j] in auxiliaries | modifiers | {'a', 'an', 'the', 'this', 'that', 'these', 'those'}:
                 j += 1
             # Require something after the predicate in the deleted span. This
             # leaves ambiguous terminal adjectives/adverbs and abandoned

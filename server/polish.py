@@ -643,6 +643,20 @@ def project_punctuation(source, proposal):
         for offset in range(block.size):mapping[block.a+offset]=block.b+offset
     if not a or len(mapping)/len(a)<0.8:return source
     protected=list(re.finditer(r'\b[\w.+-]+@[\w.-]+\.[A-Za-z]+\b|\bhttps?://\S+|\b\d+(?:[.,]\d+)+\b',source))
+    # A punctuation recovery may fix grammar as well as the question mark.
+    # Keep the original words, but let an aligned terminal question mark replace
+    # a period in one clearly inverted question. Do not infer boundaries across
+    # sentences, abbreviations, identifiers, quotes or emphatic punctuation.
+    question_start = " ".join(words(source))
+    question_start = re.sub(r"^(?:(?:so|and|but|okay|ok|well|by the way) )+", "", question_start)
+    inverted = re.match(
+        r"(?:(?:what|where|when|why|how|which) )?"
+        r"(?:can|could|would|will|should|do|does|did|is|are|have|has|was|were)"
+        r"(?: not)? (?:you|we|i|he|she|they|it|this|that|these|those)\b", question_start)
+    question_period = bool(inverted and starts_question(source)
+                           and re.fullmatch(r"[^.!?؟？:;\n\"“”()\[\]]+\.\s*", source)
+                           and re.fullmatch(r"[^.!?؟？:;\n\"“”()\[\]]+[?؟？]\s*", proposal)
+                           and starts_question(proposal))
     result=[];cursor=0;sentence_start=True
     for i,token in enumerate(a):
         result.append(source[cursor:token.start()])
@@ -656,7 +670,9 @@ def project_punctuation(source, proposal):
         j=mapping.get(i)
         adjacent=j is not None and ((i+1<len(a) and mapping.get(i+1)==j+1) or (i==len(a)-1 and j==len(b)-1))
         protected_boundary=any(m.start()<token.end()<m.end() for m in protected)
-        if adjacent and not protected_boundary and not re.search(r"[.!?؟？:;]",gap):
+        replace_question_period = (question_period and i == len(a) - 1
+                                   and re.fullmatch(r"\.\s*", gap))
+        if adjacent and not protected_boundary and (replace_question_period or not re.search(r"[.!?؟？:;]",gap)):
             target_end=b[j+1].start() if j+1<len(b) else len(proposal)
             proposed_gap=proposal[b[j].end():target_end]
             # Never transfer quotation/bracket/list syntax or alter numeric

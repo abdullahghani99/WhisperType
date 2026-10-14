@@ -159,6 +159,39 @@ class CopyeditingTests(unittest.TestCase):
         for source, output in pairs:
             with self.subTest(source=source):
                 self.assertFalse(deleted_finite_clause(source, output))
+    def test_question_period_projection_preserves_words_after_grammar_edit(self):
+        source = "Why don't you download the recording and look it for yourself as well."
+        proposal = "Why don't you download the recording and look at it for yourself as well?"
+        expected = source[:-1] + '?'
+        self.assertEqual(project_punctuation(source, proposal), expected)
+        self.assertTrue(punctuation_is_faithful(source, expected))
+        replies = iter([proposal[:-1] + '.', proposal])
+        result, event = copyedit(source, lambda *_: next(replies))
+        self.assertEqual(result, expected)
+        self.assertEqual(event['status'], 'punctuation_projection')
+        self.assertEqual(words(result, expand=False), words(source, expand=False))
+
+    def test_question_period_projection_does_not_reinterpret_other_boundaries(self):
+        controls = [
+            ('I can send it.', 'I can send it?'),
+            ('What I need is the original.', 'What I need is the original?'),
+            ("What's very important is that we keep the original.",
+             "What's very important is that we keep the original?"),
+            ('Do it however you want.', 'Do it however you want?'),
+            ('Can you send it. I need the original.', 'Can you send it? I need the original.'),
+            ('Can you send it. Is that possible.', 'Can you send it. Is that possible?'),
+            ('Can you check the U.S.', 'Can you check the U.S.?'),
+            ('Can you send it...', 'Can you send it?'),
+            ('Can you send it!', 'Can you send it?'),
+            ('Can you send it?', 'Can you send it.'),
+            ('Can you check version 2.2.', 'Can you check version 2.2?'),
+            ('Can you check https://example.com.', 'Can you check https://example.com?'),
+            ('Can you say "send it".', 'Can you say "send it"?'),
+        ]
+        for source, proposal in controls:
+            with self.subTest(source=source):
+                self.assertEqual(project_punctuation(source, proposal), source)
+
     def test_missing_question_mark_recovery_receives_specific_context(self):
         source = 'By the way, have you checked the draft.'
         calls = []

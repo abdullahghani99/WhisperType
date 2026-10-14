@@ -4,6 +4,240 @@ from polish import (copyedit,rejection_reason,rehearing,clean_stutters,spoken_sy
                     project_punctuation,words,starts_question,SYSTEM,EXAMPLES)
 
 class CopyeditingTests(unittest.TestCase):
+    def test_demonstrative_clause_deletion_preserves_distinct_point(self):
+        source = ('We have the templates for every department, so we have those '
+                  'rules already there. I can send the templates to you.')
+        output = ('We have the templates for every department, so I can send '
+                  'the templates to you.')
+        self.assertEqual(rejection_reason(source, output), 'deleted_finite_clause')
+        for determiner in ('this', 'that', 'these', 'those'):
+            noun = 'reference' if determiner in ('this', 'that') else 'references'
+            source = f'We have the templates. We have {determiner} {noun} already available. I can send it.'
+            with self.subTest(determiner=determiner):
+                self.assertEqual(rejection_reason(source, 'We have the templates. I can send it.'),
+                                 'deleted_finite_clause')
+
+    def test_demonstratives_allow_restarts_deduplication_and_coordination(self):
+        pairs = [
+            ('We have that, we have the template ready.', 'We have the template ready.'),
+            ('We have those, we have those templates ready.', 'We have those templates ready.'),
+            ('We have those rules already there. We have those rules already there.',
+             'We have those rules already there.'),
+            ('We have those rules already there, sorry, we still need to write them.',
+             'We still need to write them.'),
+            ('I reviewed this draft. I approved this draft.', 'I reviewed and approved this draft.'),
+        ]
+        from polish import deleted_finite_clause
+        for source, output in pairs:
+            with self.subTest(source=source):
+                self.assertFalse(deleted_finite_clause(source, output))
+
+    def test_attribution_uses_the_aligned_verb_occurrence(self):
+        from polish import internal_attribution_changed
+        # The project and the people can both "start" without sharing a subject.
+        self.assertFalse(internal_attribution_changed(
+            'We started with a draft. Here is the project, which started in May.',
+            'We started with a draft. Here is the project. It started in May.'))
+        # Reusing a verb elsewhere must not license changing this occurrence.
+        self.assertTrue(internal_attribution_changed(
+            'We reviewed the draft. You reviewed the final report.',
+            'We reviewed the draft. We reviewed the final report.'))
+        self.assertIsNone(rejection_reason(
+            'Whenever I want it, want to close it, it stays open.',
+            'Whenever I want to close it, it stays open.'))
+
+    def test_conditional_cues_cannot_use_the_content_loss_budget(self):
+        pairs = [
+            ('Please review the draft, check the spelling, grammar, layout and formatting. '
+             'If everything is fine, otherwise revise it.',
+             'Please review the draft, check the spelling, grammar, layout and formatting. '
+             'If everything is fine, revise it.'),
+            ('Please check the draft, spelling, grammar, layout, formatting and references. '
+             'Unless the editor approves it, hold publication.',
+             'Please check the draft, spelling, grammar, layout, formatting and references. '
+             'The editor approves it; hold publication.'),
+            ('The draft is otherwise fine. Please check the spelling, grammar, formatting, '
+             'references and page numbers.',
+             'The draft is fine. Please check the spelling, grammar, formatting, '
+             'references and page numbers.'),
+        ]
+        for source, output in pairs:
+            with self.subTest(source=source):
+                self.assertEqual(rejection_reason(source, output), 'conditional_cue_removed')
+
+    def test_conditional_cleanup_keeps_final_cue(self):
+        pairs = [
+            ('If it is ready, send it, otherwise otherwise wait.',
+             'If it is ready, send it; otherwise wait.'),
+            ('If it is ready, send it; otherwise wait, sorry, otherwise ask me.',
+             'If it is ready, send it; otherwise ask me.'),
+            ('Unless unless the editor approves it, hold publication.',
+             'Unless the editor approves it, hold publication.'),
+            ('If the draft is ready, um, send it. Otherwise, wait.',
+             'If the draft is ready, send it. Otherwise, wait.'),
+        ]
+        for source, output in pairs:
+            with self.subTest(source=source):
+                self.assertIsNone(rejection_reason(source, output))
+
+    def test_conditional_recovery_restores_deleted_branch_cue(self):
+        source = ('Please review the draft, check the spelling, grammar, layout and formatting. '
+                  'If everything is fine, otherwise revise it.')
+        proposal = source.replace('otherwise ', '')
+        output, event = copyedit(source, lambda *args: proposal)
+        self.assertIn('otherwise', words(output))
+        self.assertEqual(words(output), words(source))
+        self.assertEqual(event['status'], 'verbatim_recovery')
+        self.assertEqual(event['rejection'], 'conditional_cue_removed')
+
+    def test_internal_subject_must_stay_with_its_predicate(self):
+        pairs = [
+            ('Note here is that we... You actually asked me to update the report.',
+             'Note here is that we actually asked me to update the report.'),
+            ('The issue is that she approved the report and we sent it.',
+             'The issue is that we approved the report and sent it.'),
+            ('Please remember that they reviewed the report and you sent it.',
+             'Please remember that you reviewed the report and sent it.'),
+        ]
+        for source, output in pairs:
+            with self.subTest(source=source):
+                self.assertIsNotNone(rejection_reason(source, output))
+
+    def test_internal_subject_allows_corrections_and_punctuation(self):
+        pairs = [
+            ('Note that I sent it, sorry, we sent it.', 'Note that we sent it.'),
+            ('Well, you reviewed it, I mean I reviewed it.', 'Well, I reviewed it.'),
+            ('The issue is that she actually approved the report and we sent it.',
+             'The issue is that she approved the report. We sent it.'),
+            ('Please remember that we will review the report and you can send it.',
+             'Please remember that we will review the report, and you can send it.'),
+            ('Can you check when were they given access?',
+             'Can you check when they were given access?'),
+            ("The issue is they're reviewing it and we're waiting.",
+             'The issue is they are reviewing it, and we are waiting.'),
+        ]
+        for source, output in pairs:
+            with self.subTest(source=source):
+                self.assertIsNone(rejection_reason(source, output))
+
+    def test_complete_deleted_point_is_not_a_restart(self):
+        pairs = [
+            ('They, I called them, they confirmed the delivery and sent the tracking information.',
+             'They confirmed the delivery and sent the tracking information.'),
+            ('You have the draft. And you are working on it, correct? Please check its spelling and layout.',
+             'You have the draft, correct? Please check its spelling and layout.'),
+        ]
+        for source, output in pairs:
+            with self.subTest(source=source):
+                self.assertIsNotNone(rejection_reason(source, output))
+
+    def test_deleted_clause_guard_allows_coordination_and_punctuation(self):
+        pairs = [
+            ('I called them. I emailed them.', 'I called and emailed them.'),
+            ('We checked it. We approved it.', 'We checked and approved it.'),
+            ('You are reviewing it. You are approving it.',
+             'You are reviewing and approving it.'),
+            ('We are currently reviewing the draft.', 'We are, currently, reviewing the draft.'),
+            ('We have naming conventions for the folders.', 'We have a naming convention for the folders.'),
+            ('You are reviewing the draft.', "You're reviewing the draft."),
+        ]
+        for source, output in pairs:
+            with self.subTest(source=source):
+                self.assertIsNone(rejection_reason(source, output))
+
+    def test_deleted_clause_guard_allows_corrections_and_fragments(self):
+        pairs = [
+            ('I called them, sorry, I emailed them.', 'I emailed them.'),
+            ('We checked it. We checked it.', 'We checked it.'),
+            ('The thing is we have basically I have a, I have a contact.',
+             'The thing is I have a contact.'),
+            ('She is really like, her work speaks for itself.', 'Her work speaks for itself.'),
+        ]
+        # The last edit can still be refused by the existing initial-attribution
+        # rule; this new check must not misidentify its fragment as a lost point.
+        from polish import deleted_finite_clause
+        for source, output in pairs:
+            with self.subTest(source=source):
+                self.assertFalse(deleted_finite_clause(source, output))
+    def test_question_period_projection_preserves_words_after_grammar_edit(self):
+        source = "Why don't you download the recording and look it for yourself as well."
+        proposal = "Why don't you download the recording and look at it for yourself as well?"
+        expected = source[:-1] + '?'
+        self.assertEqual(project_punctuation(source, proposal), expected)
+        self.assertTrue(punctuation_is_faithful(source, expected))
+        replies = iter([proposal[:-1] + '.', proposal])
+        result, event = copyedit(source, lambda *_: next(replies))
+        self.assertEqual(result, expected)
+        self.assertEqual(event['status'], 'punctuation_projection')
+        self.assertEqual(words(result, expand=False), words(source, expand=False))
+
+    def test_question_period_projection_does_not_reinterpret_other_boundaries(self):
+        controls = [
+            ('I can send it.', 'I can send it?'),
+            ('What I need is the original.', 'What I need is the original?'),
+            ("What's very important is that we keep the original.",
+             "What's very important is that we keep the original?"),
+            ('Do it however you want.', 'Do it however you want?'),
+            ('Can you send it. I need the original.', 'Can you send it? I need the original.'),
+            ('Can you send it. Is that possible.', 'Can you send it. Is that possible?'),
+            ('Can you check the U.S.', 'Can you check the U.S.?'),
+            ('Can you send it...', 'Can you send it?'),
+            ('Can you send it!', 'Can you send it?'),
+            ('Can you send it?', 'Can you send it.'),
+            ('Can you check version 2.2.', 'Can you check version 2.2?'),
+            ('Can you check https://example.com.', 'Can you check https://example.com?'),
+            ('Can you say "send it".', 'Can you say "send it"?'),
+        ]
+        for source, proposal in controls:
+            with self.subTest(source=source):
+                self.assertEqual(project_punctuation(source, proposal), source)
+
+    def test_missing_question_mark_recovery_receives_specific_context(self):
+        source = 'By the way, have you checked the draft.'
+        calls = []
+        def generate(system, text):
+            calls.append(system)
+            return source if len(calls) == 1 else source[:-1] + '?'
+        output, event = copyedit(source, generate)
+        self.assertEqual(output, source[:-1] + '?')
+        self.assertEqual(event['status'], 'punctuation_recovery')
+        self.assertIn('opening sentence is a direct question', calls[1])
+
+    def test_statement_recovery_does_not_receive_question_instruction(self):
+        source = 'By the way what I need is the original'
+        calls = []
+        def generate(system, text):
+            calls.append(system)
+            return '' if len(calls) == 1 else source + '.'
+        output, event = copyedit(source, generate)
+        self.assertEqual(output, source + '.')
+        self.assertNotIn('opening sentence is a direct question', calls[1])
+
+    def test_discourse_prefix_does_not_hide_question_punctuation(self):
+        for source in ('By the way, have you checked the draft.',
+                       "So by the way, don't you need the original."):
+            with self.subTest(source=source):
+                self.assertTrue(starts_question(source))
+                self.assertEqual(rejection_reason(source, source), 'question_punctuation')
+                self.assertIsNone(rejection_reason(source, source[:-1] + '?'))
+
+    def test_discourse_prefix_keeps_statements_and_embedded_questions(self):
+        for source in ('By the way, I have checked the draft.',
+                       'By the way, what I need is the original.',
+                       'So by the way, the report explains how we checked it.'):
+            with self.subTest(source=source):
+                self.assertFalse(starts_question(source))
+                self.assertIsNone(rejection_reason(source, source))
+
+    def test_do_it_imperative_can_receive_punctuation(self):
+        source = 'Do it however you want to do it but keep a backup.'
+        output = 'Do it however you want to do it, but keep a backup.'
+        self.assertFalse(starts_question(source))
+        self.assertTrue(punctuation_is_faithful(source, output))
+        for question in ('Do you want a backup?', 'Does it need a backup?', 'Do it?'):
+            self.assertTrue(starts_question(question))
+        self.assertEqual(rejection_reason('Do it?', 'Do it.'), 'question_intent')
+
     def test_preserves_intent(self):
         pairs=[("Don't you use the documentation skills?","Don't use the documentation skills."),
                ('Can you check the report?','The report is ready.'),
@@ -47,6 +281,38 @@ class CopyeditingTests(unittest.TestCase):
         self.assertFalse(starts_question('Where we go next depends on funding'))
         self.assertTrue(starts_question('What do I need'))
         self.assertIsNone(rejection_reason('what I need is a report','What I need is a report.'))
+    def test_nominal_wh_subject_statements_do_not_owe_question_marks(self):
+        statements = [
+            'What the team told me actually was that the kits were incomplete.',
+            'What our production team reported was a shortage.',
+            'What my manager requested is a report.',
+            'What the customer needs is more time.',
+        ]
+        for source in statements:
+            with self.subTest(source=source):
+                self.assertFalse(starts_question(source))
+                self.assertIsNone(rejection_reason(source, source))
+
+    def test_nominal_wh_subject_exception_preserves_real_questions(self):
+        questions = [
+            'What did the team tell you?',
+            'What does the customer need?',
+            'What the hell did the manager say was missing?',
+            'What the hell is this?',
+            'What is the team doing?',
+            'What the team told you was correct?',
+        ]
+        for source in questions:
+            with self.subTest(source=source):
+                self.assertIsNotNone(rejection_reason(source, source[:-1] + '.'))
+
+    def test_nominal_wh_statement_allows_punctuation_recovery(self):
+        source = 'what the team told me was that kits are missing'
+        expected = 'What the team told me was that kits are missing.'
+        outputs = iter(['The kits are complete.', expected])
+        result, event = copyedit(source, lambda *args: next(outputs))
+        self.assertEqual(result, expected)
+        self.assertEqual(event['status'], 'punctuation_recovery')
     def test_projection_preserves_words_when_model_drops_them(self):
         src='the report includes overtime and approved overtime can you check the totals'
         proposal='The report includes overtime and approved overtime. Can you check totals?'

@@ -121,6 +121,12 @@ struct CaptureDestination {
         return CaptureDestination(app: app, window: window, field: field,
                                   title: attribute(window, kAXTitleAttribute) as? String ?? "")
     }
+    /// macOS blocks every synthetic keystroke system-wide while this is on.
+    /// Exposed so the insertion path can tell "secure input" apart from "the
+    /// window changed" — they look identical to `isCurrent()` and have entirely
+    /// different remedies.
+    static var secureInputActive: Bool { IsSecureEventInputEnabled() }
+
     static func acceptsField(role: String?, subrole: String?, remote: Bool, secureInput: Bool) -> Bool {
         guard !secureInput, subrole != kAXSecureTextFieldSubrole else { return false }
         guard let role else { return !remote }

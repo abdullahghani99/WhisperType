@@ -1442,11 +1442,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @MainActor private func insert(_ text: String, into target: CaptureDestination, id: UUID) async throws {
-        guard target.isCurrent() else { throw insertionError("Destination changed. Result retained; review placement.") }
+        guard target.isCurrent() else { throw destinationUnavailable("Destination changed. Result retained; review placement.") }
         if target.isRemote {
             defer { remotePreparations[id] = nil; remoteDestinationNames[id] = nil }
             try await remotePreparations[id]?.value
-            guard target.isCurrent(), !isRecording else { throw insertionError("Destination changed. Review placement in Inbox.") }
+            guard target.isCurrent(), !isRecording else { throw destinationUnavailable("Destination changed. Review placement in Inbox.") }
             let receipt = try await remoteRequest(path: "insert", target: target, id: id, text: text)
             guard receipt["verified"] as? Bool == true else {
                 throw insertionError("Keys were sent; the destination could not confirm the text. Inspect it before inserting again. Audio and result remain in Inbox.", code: 2)
@@ -1479,8 +1479,22 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSError(domain: "whispertype.insertion", code: code, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
+    /// macOS Secure Event Input blocks every synthetic keystroke, system-wide,
+    /// while any password field has focus — including one on the far side of a
+    /// Screen Sharing window. `isCurrent()` refuses in that state, which is
+    /// correct, but it is indistinguishable from the window having changed, and
+    /// the message said the destination changed. It had not. Over three days it
+    /// blocked 23 dictations and sent the speaker looking at the wrong thing
+    /// twice.
+    private func destinationUnavailable(_ whenChanged: String) -> NSError {
+        guard CaptureDestination.secureInputActive else { return insertionError(whenChanged) }
+        return insertionError("macOS secure input is on, so no app can type right now — "
+                              + "a password field has focus somewhere, often on the shared screen. "
+                              + "Click into an ordinary text field and use Review result.")
+    }
+
     @MainActor private func prepareRemote(_ target: CaptureDestination, id: UUID) async throws {
-        guard target.isCurrent() else { throw insertionError("Remote destination changed before capture.") }
+        guard target.isCurrent() else { throw destinationUnavailable("Remote destination changed before capture.") }
         let response = try await remoteRequest(path: "prepare", target: target, id: id)
         remoteDestinationNames[id] = response["application"] as? String
     }

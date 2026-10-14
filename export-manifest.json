@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "050990d5e9bd0494fa852a4a9ab0d60b91c583a63307920c7887a39e692f9998",
+    "VERSION": "ff35aa972931add85900ecabdc1eb4659e398118d3c25601d762079b1ff97dcd",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/AudioUploadTests.swift": "1bd8f3580878381507e4d23ede7f5ff16b90d7fc1ff05f1adf068b7c5298328e",
@@ -22,7 +22,7 @@
     "client/Sources/WhisperType/AudioDevices.swift": "adbc79c526a3a400d6c22dfe559bb1e6f8b9ffc28f813c1659939fb7b61789c9",
     "client/Sources/WhisperType/AudioRecorder.swift": "6c556d45a899390957e4d8339feb69d7b2b83d5fd85c50894c32ad83ce8a102d",
     "client/Sources/WhisperType/CallWatcher.swift": "e6a887df5291cc966e4423c9112ff95d463527aae68069c73d9c8f7be3be3c03",
-    "client/Sources/WhisperType/CaptureDestination.swift": "f6fac51df48df57e5e80efd5757f00542463c15d470e1ac19ea62aa3dcff402c",
+    "client/Sources/WhisperType/CaptureDestination.swift": "fdefab546634485d6875bf639042088b2c62d98086e50b896a51141e188aeffc",
     "client/Sources/WhisperType/CaptureHome.swift": "2f201567b44b73338d76a47f51bf4118da63dc7551dbcd5b4ff836da667dba64",
     "client/Sources/WhisperType/CorrectionPrompt.swift": "ca5d595e84060a6e0de39fb7a306d8eb49dc74ced043f66a106ae71ed3990a87",
     "client/Sources/WhisperType/DockController.swift": "c044d83de1141fc5dbfca3bc0107933cd1163edcb162f9672ba74e64c1ae3129",
@@ -43,7 +43,7 @@
     "client/Sources/WhisperType/SessionMicrophone.swift": "6263cd82f648da3c6f411f51360fcd0a7eeec6e599e81a1d3284c529d2586182",
     "client/Sources/WhisperType/SettingsWindow.swift": "9dd39193e8a63f430fecbe1b9474a474ea252242cb2e836b7741389cfd0efd34",
     "client/Sources/WhisperType/SoundFeedback.swift": "df9cf3cc1a29c962cbcfeff5f983753740f0a6eb9e944a5bb9b13117848b88c2",
-    "client/Sources/WhisperType/main.swift": "960d189163726f15bd69320eda54514c65a597c2158b2dcb8446c7977ea955f5",
+    "client/Sources/WhisperType/main.swift": "4a7466dd58aab27ab474e7b3c065b01a79350bc595acd239356944ad9c9932e9",
     "client/Sources/WhisperTypeKit/AudioUpload.swift": "953eb88f45eb53be93c2f3edbd2015c8c727d61fa7f2b3c2a88ecdfe4063f0ff",
     "client/Sources/WhisperTypeKit/BoundedProcess.swift": "ea2b422c2d3343dd33efdb47047e65cfb885c1b3ef1dacb57b9475bc21c6ff2b",
     "client/Sources/WhisperTypeKit/CallDetector.swift": "a7f4d800e65c6c03a82b74a36dc0cdb16e2e14056dcc75e66f6f658785696a2a",

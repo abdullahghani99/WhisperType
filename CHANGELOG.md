@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.7 — 2026-10-13
+
+- Preserve complete clauses whose noun phrase starts with this, that, these or those.
+- Retain supported restarts, repetition cleanup, coordination and explicit corrections.
+- Server-only policy repair; model weights and native client are unchanged.
+
+## 0.9.6 — 2026-10-12
+
+- Preserve complete clauses, locally attributed actions and conditional cues during polishing, using the established editing prompt.
+- Preserve prefixed direct questions and permit ordinary cleanup of “Do it” instructions.
+- Server-only policy repair; model weights and the native client are unchanged.
+
 ## 0.5.1 — 2026-09-06
 
 - Capture Bluetooth microphone audio in its native format and convert it inside the app; release input after recording when Bluetooth warming is disabled.

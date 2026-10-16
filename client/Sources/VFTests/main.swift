@@ -160,6 +160,22 @@ func run(_ name: String, _ body: () -> Void) {
         run("RecoveryTests.testConverterCancellationEndsTheOwnedProcess") { t.testConverterCancellationEndsTheOwnedProcess() }
         run("RecoveryTests.testStaleMicPublicationCannotReplaceNewEngine") { t.testStaleMicPublicationCannotReplaceNewEngine() }
     }
+    suite("SecureInputTests") {
+        let t = SecureInputTests()
+        run("SecureInputTests.testItNamesTheAppHoldingTheLock") { t.testItNamesTheAppHoldingTheLock() }
+        run("SecureInputTests.testItStillReadsAsASentenceWhenTheHolderIsUnknown") { t.testItStillReadsAsASentenceWhenTheHolderIsUnknown() }
+        run("SecureInputTests.testItNoLongerGuessesAtTheCause") { t.testItNoLongerGuessesAtTheCause() }
+        run("SecureInputTests.testItPointsAtTheRemedy") { t.testItPointsAtTheRemedy() }
+    }
+    suite("ServerRouteTests") {
+        let t = ServerRouteTests()
+        run("ServerRouteTests.testAnEnvironmentOverrideWinsOverEverything") { t.testAnEnvironmentOverrideWinsOverEverything() }
+        run("ServerRouteTests.testTheOverrideIsRecognisedWhenItMatchesAKnownRoute") { t.testTheOverrideIsRecognisedWhenItMatchesAKnownRoute() }
+        run("ServerRouteTests.testTheStoredChoiceIsHonoured") { t.testTheStoredChoiceIsHonoured() }
+        run("ServerRouteTests.testWithNoChoiceItUsesTheOfficeRoute") { t.testWithNoChoiceItUsesTheOfficeRoute() }
+        run("ServerRouteTests.testAnUnknownStoredValueDoesNotStrandTheClient") { t.testAnUnknownStoredValueDoesNotStrandTheClient() }
+        run("ServerRouteTests.testEveryRouteHasAUsableURL") { t.testEveryRouteHasAUsableURL() }
+    }
     suite("SmokeTests") {
         let t = SmokeTests()
         run("SmokeTests.testExpandedDefaultsFalse") { t.testExpandedDefaultsFalse() }
@@ -192,7 +208,7 @@ if let files = try? fm.contentsOfDirectory(atPath: "Sources/VFTests") {
         }
     }
 }
-let registered = 118
+let registered = 128
 print("")
 if declared > 0 && declared != registered {
     print("  ✘ DRIFT: \(declared) test functions on disk, \(registered) registered.")

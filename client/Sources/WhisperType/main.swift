@@ -70,6 +70,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let historyMenu = NSMenu(title: "Recent dictations")
     private var recent: [String] = []
     private let micMenu = NSMenu(title: "Microphone")   // one-click device switch
+    /// Which route the client is currently using, for the menu checkmark.
+    private var activeRoute: ServerRoute?
 
     // Last dictation, so "Correct last dictation…" can teach the server a fix.
     private var lastDictationId: Int?
@@ -277,8 +279,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Config
 
     private func setupClient() {
-        let urlStr = ProcessInfo.processInfo.environment["VF_SERVER_URL"]
-            ?? "http://127.0.0.1:8790" // set VF_SERVER_URL to your server Mac
+        let (urlStr, route) = ServerRoute.resolve()
+        activeRoute = route
         let apiKey = ProcessInfo.processInfo.environment["VF_API_KEY"]
         client = ServerClient(baseURL: URL(string: urlStr)!, apiKey: apiKey)
         vlog("server url: \(urlStr)")
@@ -337,6 +339,21 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         historyMenu.delegate = self
         historyItem.submenu = historyMenu
         menu.addItem(historyItem)
+
+        // Server route submenu — the same machine is reachable two ways and which
+        // one works depends on the day's network, so make it switchable rather
+        // than something only a launchd variable can change.
+        let routeItem = NSMenuItem(title: "Server route", action: nil, keyEquivalent: "")
+        let routeMenu = NSMenu()
+        for option in ServerRoute.allCases {
+            let entry = NSMenuItem(title: option.title, action: #selector(pickServerRoute(_:)), keyEquivalent: "")
+            entry.representedObject = option.rawValue
+            entry.state = (option == activeRoute) ? .on : .off
+            entry.toolTip = option.url
+            routeMenu.addItem(entry)
+        }
+        routeItem.submenu = routeMenu
+        menu.addItem(routeItem)
 
         // Microphone submenu — pick your input device in one click (rebuilt on open).
         let micItem = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
@@ -630,6 +647,29 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Teach the server a fix: show the last dictation, let the user edit it,
     /// and POST the correction. The server diffs it and derives vocab candidates
     /// (which surface in Settings ▸ Learning for approval).
+    /// Switch route, then prove it: a route that cannot be reached is worse than
+    /// the one it replaced, and the speaker should learn that here rather than
+    /// from a dictation that fails five minutes later.
+    @objc private func pickServerRoute(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let chosen = ServerRoute(rawValue: raw) else { return }
+        UserDefaults.standard.set(raw, forKey: ServerRoute.defaultsKey)
+        setupClient()
+        setupMenu()
+        vlog("server route switched to \(chosen.rawValue) (\(chosen.url))")
+        overlay.show(.message("Checking \(chosen.title)…"))
+        Task { @MainActor in
+            let started = Date()
+            let reachable = (try? await client.health()) != nil
+            let ms = Int(Date().timeIntervalSince(started) * 1000)
+            overlay.show(.message(reachable
+                ? "\(chosen.title): connected in \(ms) ms"
+                : "\(chosen.title) did not answer. Switch back if dictation fails."))
+            overlay.hide(after: 4)
+            vlog("route check: \(chosen.rawValue) reachable=\(reachable) in \(ms)ms")
+        }
+    }
+
     @objc private func correctLastDictation() {
         guard let id = lastDictationId else {
             overlay.show(.message("Dictate something first, then teach a correction"))
@@ -1488,9 +1528,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// twice.
     private func destinationUnavailable(_ whenChanged: String) -> NSError {
         guard CaptureDestination.secureInputActive else { return insertionError(whenChanged) }
-        return insertionError("macOS secure input is on, so no app can type right now — "
-                              + "a password field has focus somewhere, often on the shared screen. "
-                              + "Click into an ordinary text field and use Review result.")
+        return insertionError(SecureInput.message(holder: CaptureDestination.secureInputHolder))
     }
 
     @MainActor private func prepareRemote(_ target: CaptureDestination, id: UUID) async throws {

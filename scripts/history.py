@@ -14,7 +14,7 @@ def main():
     parser.add_argument('limit',type=int,nargs='?',default=15)
     args=parser.parse_args()
     if not 1 <= args.limit <= 1000: parser.error('limit must be between 1 and 1000')
-    url=os.environ.get('VF_SERVER_URL','http://127.0.0.1:8790').rstrip('/')
+    url=os.environ.get('VF_SERVER_URL','http://198.51.100.10:8790').rstrip('/')
     key=os.environ.get('VF_API_KEY','')
     request=urllib.request.Request(f'{url}/history?limit={args.limit}',headers={'Authorization':'Bearer '+key} if key else {})
     try:

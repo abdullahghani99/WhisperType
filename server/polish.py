@@ -477,6 +477,48 @@ def deleted_finite_clause(source, output):
     return False
 
 
+def deleted_tag_ending_question(source, output):
+    """Protect a deleted complete question mistaken for a trailing tag.
+
+    A trailing word such as "right" can be the predicate of a real question,
+    not a removable tag. Question-mark totals cannot establish that this point
+    survived. Require token alignment to show the whole question was deleted;
+    do not attempt to parse implicit questions or resolve partial rewrites.
+    """
+    src, out = words(source), words(output)
+    deleted = [(a, b) for kind, a, b, _, _ in
+               difflib.SequenceMatcher(a=src, b=out, autojunk=False).get_opcodes()
+               if kind == 'delete']
+    if not deleted:
+        return False
+    pattern = r'[^.!?؟？]+[?؟？]'
+    surviving = {tuple(words(m[0])) for m in re.finditer(pattern, output)}
+    for match in re.finditer(pattern, source):
+        question = match[0].strip()
+        tokens = words(question)
+        if len(tokens) < 3 or not starts_question(question):
+            continue
+        # Scope this repair to the tag-discount ambiguity. Other missing
+        # questions remain subject to the existing question-count checks.
+        if not TAG_QUESTION.search(question):
+            continue
+        # Repeating the same question need not repeat its meaning. A surviving
+        # copy accounts for it even if the alignment deletes another copy.
+        if tuple(tokens) in surviving:
+            continue
+        # Only the immediately following explicit correction can supersede it.
+        # A later apology or a standalone "sorry" is not a global exemption.
+        following = source[match.end():]
+        correction = re.match(r"\s*(?:(?:sorry|no)[, ]+)?i mean[, ]+", following, re.I)
+        if correction and starts_question(following[correction.end():]):
+            continue
+        start = len(words(source[:match.start()]))
+        end = start + len(tokens)
+        if any(a <= start and end <= b for a, b in deleted):
+            return True
+    return False
+
+
 def internal_attribution_changed(source, output):
     """Reject a newly assigned pronoun on a locally aligned predicate.
 
@@ -554,6 +596,7 @@ def rejection_reason(source, output, known_terms=()):
         return 'generated_wrapper'
     src, out = words(source), words(output)
     if deleted_finite_clause(source, output): return 'deleted_finite_clause'
+    if deleted_tag_ending_question(source, output): return 'deleted_question'
     # These cues select an exception or alternative branch. The ordinary
     # content-loss budget must not license deleting them in a long dictation.
     # Presence (not count) lets repeated cues and explicitly corrected clauses

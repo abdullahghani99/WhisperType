@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Carbon
+import IOKit
 
 /// Ephemeral app/window identity and optional focused field at capture.
 /// Persisted recovery never auto-types after restart: the user reviews placement.
@@ -126,6 +127,32 @@ struct CaptureDestination {
     /// window changed" — they look identical to `isCurrent()` and have entirely
     /// different remedies.
     static var secureInputActive: Bool { IsSecureEventInputEnabled() }
+
+    /// The app holding the secure-input lock, when macOS names it.
+    ///
+    /// Only the owning process can release it, so "secure input is on" is not
+    /// actionable on its own -- the remedy is to go to that app. The message
+    /// used to guess "often on the shared screen" and was wrong: a local
+    /// terminal held the lock for six days while the speaker looked at the
+    /// remote machine. The pid is published in the console-user dictionary.
+    static var secureInputHolder: String? {
+        // IOResources, not IOHIDSystem -- the obvious guess carries no
+        // IOConsoleUsers property and returns nil forever. Verified by probing
+        // both while the lock was actually held.
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOResources"))
+        guard service != 0 else { return nil }
+        defer { IOObjectRelease(service) }
+        let users = IORegistryEntryCreateCFProperty(service, "IOConsoleUsers" as CFString,
+                                                    kCFAllocatorDefault, 0)?.takeRetainedValue()
+        guard let sessions = users as? [[String: Any]] else { return nil }
+        for session in sessions {
+            // via NSNumber: the boxed value does not bridge straight to pid_t.
+            guard let pid = (session["kCGSSessionSecureInputPID"] as? NSNumber)?.int32Value,
+                  pid != 0 else { continue }
+            return NSRunningApplication(processIdentifier: pid)?.localizedName
+        }
+        return nil
+    }
 
     static func acceptsField(role: String?, subrole: String?, remote: Bool, secureInput: Bool) -> Bool {
         guard !secureInput, subrole != kAXSecureTextFieldSubrole else { return false }

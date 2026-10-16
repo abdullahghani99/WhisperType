@@ -60,10 +60,10 @@ class ReleaseAndTrainingTests(unittest.TestCase):
         with self.assertRaises(ValueError): semantic.validate(report,'new')
 
     def test_agent_settings_survive_staging(self):
-        old={'EnvironmentVariables':{'VF_AGENT_KEY':'existing key','VF_AGENT_HOST':'192.168.1.10','EXTRA':'keep'}}
+        old={'EnvironmentVariables':{'VF_AGENT_KEY':'existing key','VF_AGENT_HOST':'127.0.0.1','EXTRA':'keep'}}
         env=agent.agent_environment(old,{'VF_AGENT_PORT':'9001'},'release')
         self.assertEqual(env['VF_AGENT_KEY'],'existing key'); self.assertEqual(env['EXTRA'],'keep')
-        self.assertEqual(env['VF_AGENT_HOST'],'192.168.1.10'); self.assertEqual(env['VF_AGENT_PORT'],'9001')
+        self.assertEqual(env['VF_AGENT_HOST'],'127.0.0.1'); self.assertEqual(env['VF_AGENT_PORT'],'9001')
         self.assertNotIn('VF_AGENT_RELEASE',old['EnvironmentVariables'])
     def test_upgrade_preserves_every_existing_setting_and_data_location(self):
         previous = {'Label':'test.agent', 'WorkingDirectory':'/old/source',

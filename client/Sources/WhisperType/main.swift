@@ -5,6 +5,7 @@ import AVFoundation
 import ApplicationServices
 import UniformTypeIdentifiers
 import CoreText
+import Security
 import WhisperTypeKit
 
 /// Simple timestamped file log so we can diagnose the live pipeline.
@@ -278,12 +279,29 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Config
 
+    /// Generic password, service "WhisperType", account "api-key".
+    private static func keychainAPIKey() -> String? {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrService as String: "WhisperType",
+                                    kSecAttrAccount as String: "api-key",
+                                    kSecReturnData as String: true]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     private func setupClient() {
         let (urlStr, route) = ServerRoute.resolve()
         activeRoute = route
-        let apiKey = ProcessInfo.processInfo.environment["VF_API_KEY"]
+        // The launch agent supplies VF_API_KEY, but only to launches it makes.
+        // Reopening the app from the Dock or Spotlight starts it with no
+        // environment, and every request then failed "invalid or missing API
+        // key" (2026-10-17). The Keychain is there for every launch path.
+        let apiKey = ProcessInfo.processInfo.environment["VF_API_KEY"] ?? Self.keychainAPIKey()
         client = ServerClient(baseURL: URL(string: urlStr)!, apiKey: apiKey)
         vlog("server url: \(urlStr)")
+        vlog("api key: \(ProcessInfo.processInfo.environment["VF_API_KEY"] != nil ? "launch agent" : apiKey != nil ? "keychain" : "MISSING")")
         Task {
             // Teach the destination layer which remote-desktop client reaches the
             // paired machine, before the first dictation can be captured.

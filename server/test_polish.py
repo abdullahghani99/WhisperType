@@ -4,6 +4,25 @@ from polish import (copyedit,rejection_reason,rehearing,clean_stutters,spoken_sy
                     project_punctuation,words,starts_question,SYSTEM,EXAMPLES)
 
 class CopyeditingTests(unittest.TestCase):
+    def test_qualified_restart_survives_an_unrelated_question_failure(self):
+        source = ("So can you finish the task. And also I cannot see the headings right now "
+                  "when I'm generating, trying to generate a document.")
+        proposal = ("Can you finish the task. Also I cannot see the headings "
+                    "when I'm trying to generate a document.")
+        output, diag = copyedit(source, lambda *_: proposal)
+        self.assertEqual(output, "So can you finish the task? And also I cannot see the headings right now "
+                         "when I'm trying to generate a document.")
+        self.assertTrue(diag['reused_candidate'])
+        self.assertIsNone(rejection_reason(source, output))
+
+    def test_question_boundary_inference_does_not_change_statements_or_quotes(self):
+        for source in ('We can finish the task. Send it tomorrow.',
+                       '"Can you finish the task." That is the quotation.'):
+            self.assertEqual(project_punctuation(source, source), source)
+        self.assertEqual(project_punctuation('Can you finish the task. Send it tomorrow.',
+                                            'Can you finish the task. Send it tomorrow.'),
+                         'Can you finish the task. Send it tomorrow.')
+
     def test_demonstrative_clause_deletion_preserves_distinct_point(self):
         source = ('We have the templates for every department, so we have those '
                   'rules already there. I can send the templates to you.')
@@ -178,7 +197,6 @@ class CopyeditingTests(unittest.TestCase):
             ("What's very important is that we keep the original.",
              "What's very important is that we keep the original?"),
             ('Do it however you want.', 'Do it however you want?'),
-            ('Can you send it. I need the original.', 'Can you send it? I need the original.'),
             ('Can you send it. Is that possible.', 'Can you send it. Is that possible?'),
             ('Can you check the U.S.', 'Can you check the U.S.?'),
             ('Can you send it...', 'Can you send it?'),
@@ -191,6 +209,161 @@ class CopyeditingTests(unittest.TestCase):
         for source, proposal in controls:
             with self.subTest(source=source):
                 self.assertEqual(project_punctuation(source, proposal), source)
+
+    def test_pseudo_clefts_are_statements_but_echo_questions_survive(self):
+        from polish import starts_question
+        for source in ["What's very important is that we keep the draft.",
+                       'What is missing is the original.',
+                       'What was wrong was the order.']:
+            with self.subTest(source=source):
+                self.assertFalse(starts_question(source))
+                self.assertIsNone(rejection_reason(source, source))
+                self.assertTrue(starts_question(source[:-1] + '?'))
+        for source in ['What is important here?', 'What is the missing draft?',
+                       'What was wrong with the order?']:
+            self.assertTrue(starts_question(source))
+
+    def test_prefixed_and_topic_questions_need_punctuation(self):
+        for source in ['Also, can you send the draft.',
+                       'So, looking into the project, how do we connect the tools.',
+                       'Regarding the draft, can we send it.']:
+            self.assertEqual(rejection_reason(source, source), 'question_punctuation')
+        from polish import starts_question
+        self.assertFalse(starts_question('Regarding the draft, I know how we connect the tools.'))
+        self.assertFalse(starts_question('Also, send the draft.'))
+
+    def test_first_question_projection_preserves_following_statements(self):
+        source = 'Can you finish these all for the draft. Then send the original.'
+        proposal = 'Can you finish all of these for the draft? Then send the original.'
+        expected = 'Can you finish these all for the draft? Then send the original.'
+        self.assertEqual(project_punctuation(source, proposal), expected)
+        self.assertTrue(punctuation_is_faithful(source, expected))
+        # Later boundaries are not inferred from a question earlier in the text.
+        self.assertEqual(project_punctuation('Can you send it. Is that possible.',
+                                             'Can you send it. Is that possible?'),
+                         'Can you send it. Is that possible.')
+
+    def test_apology_is_not_a_global_content_deletion_permission(self):
+        pairs = [
+            ('Sorry, please send the draft and archive the original.', 'Please send the draft.'),
+            ('Sorry, please send the draft and archive the original.', 'Sorry, please send the draft.'),
+            ('Send it to John, sorry, to Jane. Sorry for the delay.', 'Send it to Jane.'),
+            ('I mean please send the draft and archive the original.', 'Please send the draft.'),
+            ('Archive the original. Send it to John, sorry, to Jane.', 'Send it to Jane.'),
+            ('Archive the original and send it to John, sorry, to Jane.', 'Send it to Jane.'),
+        ]
+        for source, output in pairs:
+            with self.subTest(source=source, output=output):
+                self.assertIsNotNone(rejection_reason(source, output))
+
+    def test_local_corrections_and_independent_apologies_still_clean_up(self):
+        pairs = [
+            ('Send the draft, sorry, I mean the original.', 'Send the original.'),
+            ('Sorry, not the draft, but the original.', 'Not the draft, but the original.'),
+            ('Sorry, not family permits, but family visas.', 'Family visas, but not family permits.'),
+            ('Send it to John, sorry, to Jane. Sorry for the delay.',
+             'Send it to Jane. Sorry for the delay.'),
+            ('I called them, sorry, I emailed them.', 'I emailed them.'),
+            ('Sorry, can you please continue?', 'Sorry, can you continue?'),
+            ('The client said sorry for the delay.', 'The client said sorry for the delay.'),
+        ]
+        for source, output in pairs:
+            with self.subTest(source=source): self.assertIsNone(rejection_reason(source, output))
+
+    def test_literal_knowledge_is_not_filler(self):
+        source = 'You know my work. Please review the draft.'
+        self.assertEqual(rejection_reason(source, 'My work. Please review the draft.'), 'literal_clause_removed')
+        self.assertIsNone(rejection_reason('Please, you know, review my work.', 'Please review my work.'))
+        self.assertIsNone(rejection_reason(source, source))
+
+    def test_dictionary_names_require_a_local_nonfiller_substitution(self):
+        for source, output in [
+            ('Please send the report, you know.', 'Please send the report to Microsoft.'),
+            ('Well, please send the report.', 'Please send the report to Microsoft.'),
+            ('Please send the report actually tomorrow.', 'Please send the report to Microsoft tomorrow.'),
+        ]:
+            with self.subTest(source=source):
+                self.assertEqual(rejection_reason(source, output, known_terms=['Microsoft']), 'new_content')
+        self.assertIsNone(rejection_reason('Please send it to Microsystems.',
+                                          'Please send it to Microsoft.', known_terms=['Microsoft']))
+
+    def test_numeric_references_stay_prose_and_actual_lists_survive(self):
+        source = 'See how references 1, 2, and 3 are merged into the text.'
+        output = 'See how references:\n1. 1\n2. 2\n3. 3\nare merged into the text.'
+        self.assertEqual(rejection_reason(source, output), 'numeric_reference_list')
+        self.assertIsNone(rejection_reason(source, source))
+        self.assertIsNone(rejection_reason('List these references: 1, 2, and 3.',
+                                          'List these references:\n1. 1\n2. 2\n3. 3.'))
+        self.assertIsNone(rejection_reason('First review the draft then send the original.',
+                                          '1. Review the draft\n2. Then send the original.'))
+
+    def test_protected_words_restore_without_discarding_valid_cleanup(self):
+        pairs = [
+            ('Sorry, man, I have actually been busy.', 'I have been busy.', 'Sorry, man, I have been busy.'),
+            ('Sorry, please review the draft.', 'Please review the draft.', 'Sorry, please review the draft.'),
+            ('You know my work and actually my draft.', 'My work and my draft.', 'You know my work and my draft.'),
+            ('Please review it. You know my work and actually my draft.',
+             'Please review it. My work and my draft.', 'Please review it. You know my work and my draft.'),
+        ]
+        for source, proposal, expected in pairs:
+            calls = []
+            def generate(*args):
+                calls.append(args); return proposal
+            with self.subTest(source=source):
+                result, event = copyedit(source, generate)
+                self.assertEqual(result, expected)
+                self.assertEqual(len(calls), 1)
+                self.assertTrue(event['restored_source_words'])
+        # Restoring the prefix cannot license deletion of an unrelated point.
+        source = 'Sorry, please send the draft and archive the original.'
+        result, _ = copyedit(source, lambda *_: 'Please send the draft.')
+        self.assertIn('archive', result)
+
+    def test_qualified_restart_keeps_trying_and_does_not_flatten_activities(self):
+        source = "When I'm generating, trying to generate a report, I cannot see the headers."
+        proposal = "When I'm generating a report, I cannot see the headers."
+        result, event = copyedit(source, lambda *_: proposal)
+        self.assertEqual(result, "When I'm trying to generate a report, I cannot see the headers.")
+        self.assertTrue(event['restored_source_words'])
+        from polish import restore_qualified_restart
+        controls = [
+            'We distinguish generating, trying to generate, and reviewing as three different activities.',
+            "When I'm not generating, trying to generate a report, I check the draft.",
+            "When I'm generating, trying to generate a report, or reviewing, I check the draft.",
+            "When I'm generating, trying to generate a report, I count both activities.",
+            "When I'm writing, trying to read a report, I check the draft.",
+        ]
+        for value in controls:
+            with self.subTest(value=value): self.assertEqual(restore_qualified_restart(value, proposal), proposal)
+
+    def test_related_categories_cannot_be_merged_by_deleting_the_separator(self):
+        source = 'The reviewer and reviewer related and the top ones remain.'
+        proposal = 'The reviewer and reviewer-related top ones remain.'
+        self.assertEqual(rejection_reason(source, proposal), 'related_coordination')
+        result, event = copyedit(source, lambda *_: proposal)
+        self.assertEqual(result, 'The reviewer and reviewer-related and the top ones remain.')
+        self.assertTrue(event['restored_source_words'])
+        for source, proposal in [
+            ('The reviewers and editors and leads remain.', 'The reviewers, editors, and leads remain.'),
+            ('The reviewers and reviewers and leads remain.', 'The reviewers and leads remain.'),
+            ('The reviewer related and the top ones remain.', 'The reviewer-related, the top ones remain.'),
+        ]:
+            self.assertIsNone(rejection_reason(source, proposal))
+
+    def test_free_choice_attachment_keeps_contrast_and_ambiguous_readings(self):
+        source = 'Update the draft however you want to do it because I need it.'
+        proposal = 'Update the draft. However, you want to do it because I need it.'
+        self.assertEqual(rejection_reason(source, proposal), 'free_choice_attachment')
+        self.assertEqual(project_punctuation(source, proposal), source)
+        from polish import free_choice_span
+        for value in [
+            'Update the draft. However, you want to do it differently.',
+            'I prefer a table however you want to do it as text.',
+            'However hard you try, the task stays difficult.',
+            'Update the phrase "however you want to do it" in the draft.',
+        ]:
+            self.assertIsNone(free_choice_span(value))
+            self.assertIsNone(rejection_reason(value, value))
 
     def test_deleted_question_cannot_be_discounted_as_a_tag(self):
         source = ('Should we renew the draft? Do we make it right? '

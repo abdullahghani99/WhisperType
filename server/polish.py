@@ -206,7 +206,21 @@ def clean_stutters(text):
 
 def starts_question(text):
     value = " ".join(words(text))
-    value = re.sub(r"^(?:(?:so|and|but|okay|ok|well|by the way) )+", "", value)
+    value = re.sub(r"^(?:(?:so|and|but|also|okay|ok|well|by the way) )+", "", value)
+    # A comma-delimited topic adjunct can precede an inverted question. Do not
+    # strip arbitrary introductory clauses or infer punctuation inside quotes.
+    topic_text = re.sub(r"^(?:(?:so|and|but|also|okay|ok|well)[, ]+)+", "", text.strip(), flags=re.I)
+    topic = re.match(r"(?:looking (?:at|into)|regarding|as for) [^,.!?;:\n\"“”]{1,180},\s*(.+)", topic_text, re.I)
+    if topic and re.match(r"(?:(?:what|where|when|why|how|which) )?(?:can|could|would|will|should|do|does|did|is|are|have|has|was|were)(?: not)? (?:you|we|i|he|she|they|it|this|that|these|those)\b", " ".join(words(topic[1]))):
+        return True
+    # Pseudo-clefts describe what matters; they do not ask what it is. A
+    # marked echo question keeps its existing question interpretation.
+    cleft = re.sub(r"^what's\b", "what is", value)
+    if not any(mark in text for mark in '?؟？') and re.match(
+            r"what (?:is|was) (?:(?:very|really|most|particularly|especially|also) )?"
+            r"(?:important|essential|critical|necessary|needed|required|missing|wrong|clear|different) "
+            r"(?:(?:here|now) )?(?:is|was)\b", cleft):
+        return False
     # "Do it" takes an object in an imperative; it is not auxiliary-subject
     # inversion. Keep an explicitly marked echo question as a question.
     if re.match(r"do it\b", value) and not any(mark in text for mark in '?؟？'):
@@ -574,6 +588,146 @@ def internal_attribution_changed(source, output):
     return False
 
 
+def scoped_correction_tokens(source, output):
+    """Only a locally deleted, explicitly superseded span can waive content loss.
+
+    Alignment must remove the old wording and its correction marker together.
+    Sentence boundaries and coordinated points cannot borrow that permission.
+    Return superseded and correction-marker token positions, not edited text.
+    """
+    src, out = words(source), words(output)
+    deletions = [(a, b) for kind, a, b, _, _ in
+                 difflib.SequenceMatcher(a=src, b=out, autojunk=False).get_opcodes()
+                 if kind == 'delete']
+    allowed, markers = set(), set()
+    # An utterance-opening explicit contrast can correct the previous turn.
+    # Only its marker is optional; neither branch gets a deletion exemption.
+    if re.match(r'^\s*sorry[, ]+not\b[^.!?]+\bbut\b', source, re.I):
+        markers.add(0)
+    for match in re.finditer(r"\b(?:sorry(?:[, ]+i mean)?|i mean)\b", source, re.I):
+        start, end = len(words(source[:match.start()])), len(words(source[:match.end()]))
+        tail = source[match.end():].lstrip(' ,')
+        if not tail or tail[0] in '.!?؟？' or re.match(r'(?:for|about|that)\b', tail, re.I):
+            continue
+        for a, b in deletions:
+            prefix = src[a:start]
+            if not (a < start and end <= b and len(prefix) <= 8):
+                continue
+            if not any(w not in FUNCTION_WORDS | FILLER_WORDS for w in prefix):
+                continue
+            selectors = {'and', 'or', 'but', 'if', 'unless', 'otherwise'} - set(words(tail)[:1])
+            if set(prefix) & selectors:
+                continue
+            # Map punctuation boundaries into normalized token offsets; expanded
+            # contractions count the same way as the alignment above.
+            boundaries = [m for m in re.finditer(r'[.!?؟？]', source[:match.start()])
+                          if a < len(words(source[:m.end()])) <= start]
+            local_question_correction = (len(boundaries) == 1 and boundaries[0][0] in '?؟？'
+                                         and 'i mean' in match[0].casefold()
+                                         and starts_question(tail))
+            if boundaries and not local_question_correction:
+                continue
+            allowed.update(range(a, start)); markers.update(range(start, end))
+    allowed.update(markers)
+    return allowed, markers
+
+
+def removed_literal_clause(source, output):
+    """A knowledge predicate with an object is not the discourse filler 'you know'."""
+    target = words(output)
+    for match in re.finditer(r"\byou\s+know\s+(?:my|your|our|his|her|their)\s+\w+", source, re.I):
+        phrase = words(match[0])
+        if not any(target[i:i + len(phrase)] == phrase for i in range(len(target))):
+            return True
+    return False
+
+
+def listified_numeric_reference(source, output):
+    """Reject newly detached numeric references, while leaving actual lists alone."""
+    bare_items = re.findall(r'^\s*(?:\d+[.)]|[-*])\s+\d+[.,]?\s*$', output, re.M)
+    return bool(len(bare_items) >= 2
+                and re.search(r'\b(?:references?|citations?|sections?|pages?)\b', source, re.I)
+                and not re.search(r'^\s*(?:\d+[.)]|[-*])\s+', source, re.M)
+                and not re.search(r'\b(?:list|enumerate|numbered|bullets?|first.+then)\b', source, re.I))
+
+
+def aligned_known_additions(source_words, output_words, known_terms):
+    """Vocabulary licenses local substitutions, never additions paid for by filler."""
+    known = {x.casefold() for x in known_terms}
+    permitted = set()
+    source_roots, output_roots = {root(w) for w in source_words}, {root(w) for w in output_words}
+    for kind, a, b, c, d in difflib.SequenceMatcher(a=source_words, b=output_words, autojunk=False).get_opcodes():
+        if kind != 'replace':
+            continue
+        replaced = [w for w in source_words[a:b]
+                    if w not in FUNCTION_WORDS | FILLER_WORDS and root(w) not in output_roots]
+        additions = [(i, w) for i, w in enumerate(output_words[c:d], c)
+                     if w not in FUNCTION_WORDS | FILLER_WORDS and root(w) not in source_roots]
+        if replaced and len(additions) <= len(replaced):
+            permitted.update(i for i, w in additions if w in known)
+    return permitted
+
+
+def restore_related_coordination(source, output):
+    """Keep an explicit related-category separator from becoming attachment."""
+    pattern = r"[^\W_]+(?:['’][^\W_]+)*"
+    a, b = list(re.finditer(pattern, source)), list(re.finditer(pattern, output))
+    norm = lambda matches: [m[0].casefold().replace('’', "'") for m in matches]
+    ops = difflib.SequenceMatcher(a=norm(a), b=norm(b), autojunk=False).get_opcodes()
+    mapping = {i: c + i - first for kind, first, end, c, _ in ops if kind == 'equal' for i in range(first, end)}
+    inserts = []
+    for match in re.finditer(r"\b\w+[ -]+related\s+(?P<link>and\s+(?:(?:the|a|an|my|our|your)\s+)?)(?P<item>\w+)", source, re.I):
+        start = next((i for i, t in enumerate(a) if t.start() == match.start('link')), None)
+        end = next((i for i, t in enumerate(a) if t.start() == match.start('item')), None)
+        if start is None or end is None: continue
+        j = mapping.get(start - 1)
+        if j is None or mapping.get(end) != j + 1: continue
+        if not re.fullmatch(r'\s+', output[b[j].end():b[j + 1].start()]): continue
+        if any(kind == 'delete' and first == start and last == end for kind, first, last, _, _ in ops):
+            inserts.append((b[j + 1].start(), match['link']))
+    for position, text in reversed(inserts): output = output[:position] + text + output[position:]
+    return output
+
+
+def free_choice_span(source):
+    """A bounded imperative manner clause; abstain on unmarked contrast elsewhere."""
+    if not re.match(r'^\s*(?:please\s+)?(?:update|format|arrange|organize|organise|handle|do)\b', source, re.I):
+        return None
+    match = re.search(r'\bhowever\s+you\s+want\s+to\s+do\s+it\b', source, re.I)
+    if match and not re.search(r'[.!?؟？\n\"“”]', source[:match.start()]): return match
+    return None
+
+
+def qualified_restart_match(source):
+    """Retain the qualified final verb in a single-event conditional restart.
+
+    This is a proposal repair, never preprocessing. No negated auxiliary,
+    activity enumeration, verb substitution or unanchored replacement qualifies.
+    The original source still validates the entire result afterwards.
+    """
+    subject = r"(?:i['’]m|we['’]re|they['’]re|you['’]re|i am|we are|they are|you are|he is|she is|it is)"
+    pattern = (r'\b(?P<prefix>(?:when|while)\s+' + subject + r'\s+)'
+               r'(?P<old>\w+ing),\s*(?P<final>trying\s+to\s+(?P<verb>\w+))'
+               r'(?=\s+(?:a|an|the|my|our|this|that)\s+\w+)')
+    matches = list(re.finditer(pattern, source, re.I))
+    if len(matches) != 1: return None
+    match = matches[0]
+    if re.search(r'\b(?:and|or|versus|both|either|respectively|activities|distinguish)\b', source[match.end():], re.I):
+        return None
+    if root(match['old']) != root(match['verb']): return None
+    return match
+
+
+def restore_qualified_restart(source, proposal):
+    match = qualified_restart_match(source)
+    if match is None: return proposal
+    anchor = re.escape(match['prefix']) + re.escape(match['old']) + r'\b'
+    targets = list(re.finditer(anchor, proposal, re.I))
+    if len(targets) != 1: return proposal
+    target = targets[0]
+    return proposal[:target.end() - len(match['old'])] + match['final'] + proposal[target.end():]
+
+
 def rejection_reason(source, output, known_terms=()):
     if not output.strip(): return 'empty'
     prose = re.sub(r'^\s*\d+[.)]\s+', '', output, flags=re.M)
@@ -597,6 +751,24 @@ def rejection_reason(source, output, known_terms=()):
     src, out = words(source), words(output)
     if deleted_finite_clause(source, output): return 'deleted_finite_clause'
     if deleted_tag_ending_question(source, output): return 'deleted_question'
+    if removed_literal_clause(source, output): return 'literal_clause_removed'
+    if listified_numeric_reference(source, output): return 'numeric_reference_list'
+    if restore_related_coordination(source, output) != output: return 'related_coordination'
+    if free_choice_span(source) and re.search(r'\bhowever\s*[,;:]\s*you\s+want\s+to\s+do\s+it\b', output, re.I):
+        return 'free_choice_attachment'
+    correction_tokens, correction_markers = scoped_correction_tokens(source, output)
+    restart = qualified_restart_match(source)
+    if restart:
+        index = len(words(source[:restart.start('old')]))
+        final_phrase = words(restart['prefix'] + restart['final'])
+        survives = any(out[i:i + len(final_phrase)] == final_phrase for i in range(len(out)))
+        if survives and any(kind == 'delete' and a == index and b == index + 1
+                            for kind, a, b, _, _ in difflib.SequenceMatcher(a=src, b=out, autojunk=False).get_opcodes()):
+            correction_tokens.add(index)
+    # Keep independent apologies; a correction in another sentence is not a
+    # global permission to remove them. Exact repeated apologies may collapse.
+    apologies = sum(w == 'sorry' and i not in correction_markers for i, w in enumerate(src))
+    if apologies and 'sorry' not in out: return 'apology_removed'
     # These cues select an exception or alternative branch. The ordinary
     # content-loss budget must not license deleting them in a long dictation.
     # Presence (not count) lets repeated cues and explicitly corrected clauses
@@ -620,6 +792,10 @@ def rejection_reason(source, output, known_terms=()):
     source_roots = {root(w) for w in src}
     added = [w for w in out if w not in FUNCTION_WORDS | set(_UNITS) | set(_SCALES) and root(w) not in source_roots
              and not w.isdigit()]
+    known = {w.casefold() for w in known_terms}
+    aligned = aligned_known_additions(src, out, known_terms)
+    if any(w in added and w in known and i not in aligned for i, w in enumerate(out)):
+        return 'new_content'
     # Only words the output dropped can have been re-heard as something else.
     output_roots = {root(w) for w in out}
     replaced = [w for w in src if root(w) not in output_roots]
@@ -633,7 +809,7 @@ def rejection_reason(source, output, known_terms=()):
             text = re.sub(r"\bfirst\b", "", text, flags=re.I)
         return list(dict.fromkeys(root(w) for w in words(text)
                                   if w not in FUNCTION_WORDS | FILLER_WORDS | NUMBER_WORDS and not w.isdigit()))
-    content = content_words(source)
+    content = content_words(' '.join(w for i, w in enumerate(src) if i not in correction_tokens))
     kept = content_words(output)
     # Order matters: bag-of-words alone accepted changed ownership/attribution.
     matched = sum(m.size for m in difflib.SequenceMatcher(a=content,b=kept,autojunk=False).get_matching_blocks())
@@ -649,14 +825,28 @@ def rejection_reason(source, output, known_terms=()):
         lost = {r for r in lost
                 if not any(rehearing(candidate, source_by_root.get(r, []), known_terms)
                            for candidate in output_words)}
+    if root('please') in lost:
+        lost.remove(root('please')); matched += 1
+    if aligned:
+        for kind, a, b, c, d in difflib.SequenceMatcher(a=src, b=out, autojunk=False).get_opcodes():
+            if kind == 'replace' and any(i in aligned for i in range(c, d)):
+                matched += len({root(w) for w in src[a:b]} & set(content) - set(kept) - lost)
     # The reference trims one idea from a rambling sentence and the speaker keeps
     # it: 74 of its rejected outputs dropped exactly one content root, 25 dropped
     # two. Forbidding every drop is what kept polishing at punctuation only. A
     # budget that scales with length allows a trim without allowing a rewrite,
     # and the order check below still catches a reversal.
     budget = 0 if len(content) < 8 else 1 if len(content) < 40 else 2
-    if content and (len(lost) > budget or matched/len(content) < 0.90) \
-            and not re.search(r'\b(?:sorry|i mean)\b',source,re.I): return 'content_or_order'
+    # The explicit whole-utterance correction "Sorry, not A, but B" also
+    # permits "B, but not A". Compare exact spans; no unrelated clause, new
+    # content, missing alternative or broad apology exemption is allowed.
+    contrast = False
+    if src[:2] == ['sorry', 'not'] and src.count('but') == src.count('not') == 1:
+        pivot = src.index('but'); old, final = src[2:pivot], src[pivot + 1:]
+        if old and final and not (set(old + final) & {'and', 'or', 'then', 'if', 'unless', 'otherwise'}):
+            contrast = out == final + ['but', 'not'] + old
+    if content and (len(lost) > budget or matched/len(content) < 0.90) and not contrast:
+        return 'content_or_order'
     for pronoun in ('i','you','we','he','she','they'):
         if src and src[0]==pronoun and (not out or out[0]!=pronoun): return 'attribution'
     if internal_attribution_changed(source, output): return 'internal_attribution'
@@ -671,7 +861,7 @@ def punctuation_is_faithful(source, output):
     return words(source,expand=False)==words(output,expand=False) and not rejection_reason(source,output)
 
 
-def project_punctuation(source, proposal):
+def project_punctuation(source, proposal, *, infer_restart_question=False):
     """Transfer punctuation only across locally aligned, unchanged word pairs.
 
     A recovery model can still drop a word. Alignment salvages its sentence
@@ -686,20 +876,34 @@ def project_punctuation(source, proposal):
         for offset in range(block.size):mapping[block.a+offset]=block.b+offset
     if not a or len(mapping)/len(a)<0.8:return source
     protected=list(re.finditer(r'\b[\w.+-]+@[\w.-]+\.[A-Za-z]+\b|\bhttps?://\S+|\b\d+(?:[.,]\d+)+\b',source))
+    manner_bounds = None
+    manner = free_choice_span(source)
+    if manner:
+        previous = [m for m in a if m.end() <= manner.start()]
+        if previous:
+            # Keep the source attachment and no comma after 'however'. Other
+            # punctuation remains available for normal aligned projection.
+            manner_bounds = (previous[-1].end() - 1, manner.start() + len('however') + 1)
     # A punctuation recovery may fix grammar as well as the question mark.
     # Keep the original words, but let an aligned terminal question mark replace
     # a period in one clearly inverted question. Do not infer boundaries across
     # sentences, abbreviations, identifiers, quotes or emphatic punctuation.
-    question_start = " ".join(words(source))
-    question_start = re.sub(r"^(?:(?:so|and|but|okay|ok|well|by the way) )+", "", question_start)
-    inverted = re.match(
-        r"(?:(?:what|where|when|why|how|which) )?"
-        r"(?:can|could|would|will|should|do|does|did|is|are|have|has|was|were)"
-        r"(?: not)? (?:you|we|i|he|she|they|it|this|that|these|those)\b", question_start)
-    question_period = bool(inverted and starts_question(source)
-                           and re.fullmatch(r"[^.!?؟？:;\n\"“”()\[\]]+\.\s*", source)
-                           and re.fullmatch(r"[^.!?؟？:;\n\"“”()\[\]]+[?؟？]\s*", proposal)
-                           and starts_question(proposal))
+    first = re.match(r"[^.!?؟？:;\n\"“”()\[\]]+\.", source)
+    first_question_end = None
+    if first:
+        question_start = " ".join(words(first[0]))
+        question_start = re.sub(r"^(?:(?:so|and|but|also|okay|ok|well|by the way) )+", "", question_start)
+        inverted = re.match(r"(?:(?:what|where|when|why|how|which) )?"
+                            r"(?:can|could|would|will|should|do|does|did|is|are|have|has|was|were)"
+                            r"(?: not)? (?:you|we|i|he|she|they|it|this|that|these|those)\b", question_start)
+        proposal_first = re.match(r"[^.!?؟？:;\n\"“”()\[\]]+[?؟؟]", proposal)
+        if infer_restart_question and first.end() < len(source) and source[first.end()].isspace():
+            tail = source[first.end():].strip()
+            last_word = words(first[0])[-1]
+            if len(last_word) > 1 and not starts_question(tail):
+                proposal_first = re.match(r"[^.!?؟？:;\n\"“”()\[\]]+[.?؟؟]", proposal)
+        if inverted and starts_question(first[0]) and proposal_first and starts_question(proposal_first[0]):
+            first_question_end = first.end() - 1
     result=[];cursor=0;sentence_start=True
     for i,token in enumerate(a):
         result.append(source[cursor:token.start()])
@@ -712,9 +916,14 @@ def project_punctuation(source, proposal):
         gap=source[token.end():end]
         j=mapping.get(i)
         adjacent=j is not None and ((i+1<len(a) and mapping.get(i+1)==j+1) or (i==len(a)-1 and j==len(b)-1))
-        protected_boundary=any(m.start()<token.end()<m.end() for m in protected)
-        replace_question_period = (question_period and i == len(a) - 1
+        protected_boundary=any(m.start()<token.end()<m.end() for m in protected) or (manner_bounds is not None and manner_bounds[0] < token.end() < manner_bounds[1])
+        replace_question_period = (first_question_end is not None and token.end() <= first_question_end < end
                                    and re.fullmatch(r"\.\s*", gap))
+        if (infer_restart_question and replace_question_period and j is not None
+                and proposal_first and b[j].end() == proposal_first.end() - 1):
+            # The following discourse word may have been omitted by the model.
+            # Both first clauses still end at this exact aligned word.
+            adjacent = True
         if adjacent and not protected_boundary and (replace_question_period or not re.search(r"[.!?؟？:;]",gap)):
             target_end=b[j+1].start() if j+1<len(b) else len(proposal)
             proposed_gap=proposal[b[j].end():target_end]
@@ -722,9 +931,52 @@ def project_punctuation(source, proposal):
             # separators. Only plain sentence boundaries and commas qualify.
             mark=re.fullmatch(r"\s*([,.;:!?؟？])\s*",proposed_gap)
             if mark and not (token.group().isdigit() and i+1<len(a) and a[i+1].group().isdigit()):
-                gap=mark.group(1)+(' ' if i+1<len(a) else '')
+                gap=('?' if replace_question_period else mark.group(1))+(' ' if i+1<len(a) else '')
         result.append(gap);sentence_start=bool(re.search(r'[.!?؟？]\s+$',gap));cursor=end
     return ''.join(result)
+
+
+def restore_protected_words(source, proposal, reason):
+    """Restore only source words whose deletion triggered a bounded guard.
+
+    Exact surviving words anchor placement. This proposes an edit; the full
+    rejection guard must approve it before use. No guessed words or grammar.
+    """
+    pattern = r"[^\W_]+(?:['’][^\W_]+)*"
+    a, b = list(re.finditer(pattern, source)), list(re.finditer(pattern, proposal))
+    norm = lambda matches: [m[0].casefold().replace('’', "'") for m in matches]
+    ops = difflib.SequenceMatcher(a=norm(a), b=norm(b), autojunk=False).get_opcodes()
+    if reason == 'apology_removed' and a and b and a[0][0].casefold() == 'sorry':
+        kind, first, end, target, _ = ops[0]
+        if kind == 'delete' and first == target == 0 and end < len(a):
+            # The candidate begins at an unchanged source word. Retain the
+            # entire omitted prefix, including any independent apology clause.
+            prefix = source[:a[end].start()]
+            if not re.search(r'[.!?؟？]\s*$', prefix):
+                proposal = a[end][0] + proposal[b[0].end():]
+            return prefix + proposal
+    if reason == 'literal_clause_removed':
+        mapping = {}
+        for kind, first, end, target, _ in ops:
+            if kind == 'equal':
+                mapping.update((i, target + i - first) for i in range(first, end))
+        inserts = []
+        for match in re.finditer(r"\byou\s+know\s+(?:my|your|our|his|her|their)\s+\w+", source, re.I):
+            index = next((i for i, token in enumerate(a) if token.start() == match.start()), None)
+            if index is None or index + 3 >= len(a): continue
+            j = mapping.get(index + 2)
+            # Require the possessive and its object to survive together and
+            # precisely the predicate to be missing, not a rewritten clause.
+            if j is None or mapping.get(index + 3) != j + 1: continue
+            if not any(kind == 'delete' and first == index and end == index + 2
+                       for kind, first, end, _, _ in ops): continue
+            prefix = source[a[index].start():a[index + 2].start()]
+            if j == 0 or re.search(r'[.!?؟？]\s*$', proposal[:b[j].start()]):
+                prefix = prefix[0].upper() + prefix[1:]
+            inserts.append((b[j].start(), b[j].end(), prefix + a[index + 2][0]))
+        for start, end, replacement in reversed(inserts):
+            proposal = proposal[:start] + replacement + proposal[end:]
+    return proposal
 
 
 def copyedit(text, generate, examples=(), known_terms=()):
@@ -744,6 +996,37 @@ def copyedit(text, generate, examples=(), known_terms=()):
     reason = rejection_reason(source,candidate, known_terms)
     if reason is None:
         return candidate, {'status':'edited' if candidate!=text else 'unchanged','rejection':None,'recovery':False,'examples':len(examples)}
+    if reason == 'related_coordination':
+        restored = restore_related_coordination(source, candidate)
+        if rejection_reason(source, restored, known_terms) is None:
+            return restored, {'status':'edited', 'rejection':reason, 'recovery':True,
+                              'examples':len(examples), 'reused_candidate':True, 'restored_source_words':True}
+    if reason == 'content_or_order':
+        restored = restore_qualified_restart(source, candidate)
+        if restored != candidate and rejection_reason(source, restored, known_terms) is None:
+            return restored, {'status':'edited', 'rejection':reason, 'recovery':True,
+                              'examples':len(examples), 'reused_candidate':True, 'restored_source_words':True}
+    if reason in {'apology_removed', 'literal_clause_removed'}:
+        restored = restore_protected_words(source, candidate, reason)
+        if restored != candidate and rejection_reason(source, restored, known_terms) is None:
+            return restored, {'status':'edited', 'rejection':reason, 'recovery':True,
+                              'examples':len(examples), 'reused_candidate':True,
+                              'restored_source_words':True}
+    # A model-confirmed qualified restart can be salvaged locally even when
+    # unrelated edits in its proposal fail. Keep every other source word, then
+    # project punctuation and validate the whole result against the original.
+    restart = qualified_restart_match(source)
+    if restart:
+        final = words(restart['prefix'] + restart['final'])
+        proposed = words(candidate)
+        confirmed = any(proposed[i:i + len(final)] == final for i in range(len(proposed)))
+        if confirmed:
+            local = source[:restart.start('old')] + source[restart.start('final'):]
+            local = project_punctuation(local, candidate, infer_restart_question=True)
+            if rejection_reason(source, local, known_terms) is None:
+                return local, {'status':'edited', 'rejection':reason, 'recovery':True,
+                               'examples':len(examples), 'reused_candidate':True,
+                               'restored_source_words':True}
     # The rejected candidate already contains sentence boundaries and question
     # marks for this exact utterance. Projecting those onto the original words
     # accepts none of its word edits, and costs no inference at all.
@@ -759,7 +1042,7 @@ def copyedit(text, generate, examples=(), known_terms=()):
                           'examples':len(examples),'reused_candidate':True}
     try:
         recovery_system = PUNCTUATION_SYSTEM
-        if reason == 'question_punctuation':
+        if reason in {'question_punctuation', 'question_intent'}:
             recovery_system += (
                 '\nThe opening sentence is a direct question, even if it begins '
                 'with a discourse phrase. Punctuate that question with a question '

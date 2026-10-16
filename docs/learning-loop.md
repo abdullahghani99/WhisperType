@@ -23,6 +23,14 @@ Meeting details have separate **Teach correction** actions for notes and transcr
 5. Retain the existing model unless the candidate demonstrates an improvement without meaning regressions. Record the decision and exact evidence. Training scripts never activate a model. A future adapter release must isolate dictation weights from the shared prompt/meeting model, pass the semantic gate and normal release checks, and retain rollback.
 6. Repeat when useful feedback or new failure patterns arrive. Skip retraining unchanged data. Notify only for meaningful improvements, failures or decisions requiring input.
 
+## Daily repair work
+
+The daily cycle maintains a private repair backlog and a polishing completion matrix. Each run reviews up to 50 unreviewed observations, then advances an actionable repair through reproduction, a general hypothesis, legitimate-cleanup counterexamples, implementation and complete baseline/candidate comparisons. Existing unresolved evidence is sufficient for engineering; unchanged correction counts block neither policy work nor regression investigation.
+
+Track questions and boundaries, self-corrections and repeats, apologies and uncertainty, literal knowledge versus filler, numeric references, dictionary alignment and distinct clauses/categories separately. A verified bounded fix closes only its stated scope. Keep broader failures open with exact evidence and a next step, rotate to independent work when one item is ambiguous, and resume saved candidates rather than repeating rejected unchanged experiments.
+
+Promotion requires meaning, readability and latency gates, normal release checks, rollback and no-insertion verification while capture and meeting work are idle. New evidence is never permission to interrupt a recording. Keep the existing model unless the separate training and model-release gates pass; observation text and generated suggestions are never automatically correct targets. Report deployed, rejected, continuing and blocked work distinctly.
+
 Prepare a private dataset on the inference host:
 
 ```sh

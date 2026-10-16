@@ -192,6 +192,43 @@ class CopyeditingTests(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertEqual(project_punctuation(source, proposal), source)
 
+    def test_deleted_question_cannot_be_discounted_as_a_tag(self):
+        source = ('Should we renew the draft? Do we make it right? '
+                  'What do we do next? We need a draft, right?')
+        output = 'Should we renew the draft? What do we do next? We need a draft, right?'
+        self.assertEqual(rejection_reason(source, output), 'deleted_question')
+        from polish import deleted_tag_ending_question
+        for predicate in ('right', 'correct', 'okay'):
+            with self.subTest(predicate=predicate):
+                self.assertTrue(deleted_tag_ending_question(
+                    f'We need a draft. Is it {predicate}? Please send it.',
+                    'We need a draft. Please send it.'))
+
+    def test_deleted_question_allows_repetition_tags_and_local_correction(self):
+        from polish import deleted_tag_ending_question
+        pairs = [
+            ('We need a draft, right?', 'We need a draft.'),
+            ('We need a draft. Right?', 'We need a draft.'),
+            ('Do we make it right? Do we make it right?', 'Do we make it right?'),
+            ('Do we make it right? Sorry, I mean do we leave it alone?',
+             'Do we leave it alone?'),
+            ('Do we make it right? No, I mean do we leave it alone?',
+             'Do we leave it alone?'),
+            ('Can we check it, right?', 'Can we check it?'),
+            ('We discussed whether we make it right.', 'We discussed whether we make it right.'),
+        ]
+        for source, output in pairs:
+            with self.subTest(source=source):
+                self.assertFalse(deleted_tag_ending_question(source, output))
+                # The existing polarity check still rejects removing an
+                # explicit No. This repair must not weaken that separate guard.
+                expected = 'numbers_or_negation' if 'No, I mean' in source else None
+                self.assertEqual(rejection_reason(source, output), expected)
+        # Apologizing for confusion does not withdraw the preceding question.
+        self.assertTrue(deleted_tag_ending_question(
+            'We need a draft. Do we make it right? Sorry for the confusion. Please send it.',
+            'We need a draft. Sorry for the confusion. Please send it.'))
+
     def test_missing_question_mark_recovery_receives_specific_context(self):
         source = 'By the way, have you checked the draft.'
         calls = []

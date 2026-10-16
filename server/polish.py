@@ -979,7 +979,106 @@ def restore_protected_words(source, proposal, reason):
     return proposal
 
 
+def collapse_copular_fragments(text):
+    """Collapse a repeated positive copula around modifiers, retaining modifiers.
+
+    Do not guess an abandoned predicate, change subjects, remove negation or
+    touch quotations. The exact repeated opening is the only deleted content.
+    """
+    if any(mark in text for mark in ('"', '“', '”', '`')): return text
+    copula = r"(?:it['’]s|he['’]s|she['’]s|i['’]m|we['’]re|you['’]re|they['’]re|it is|he is|she is|i am|we are|you are|they are)"
+    pattern = (r"\b(?P<copula>" + copula + r")\s+"
+               r"(?P<modifiers>(?:(?:suddenly|actually|just)\s+){1,3})"
+               r"(?P<repeat>(?P=copula))\s+(?=\w)")
+    def replace(match):
+        tail = text[match.end():]
+        # Avoid quoted language, terminal/incomplete starts and changed polarity.
+        if re.match(r"(?:not|never|no|only|either|neither|what|who|where|when|why|how)\b", tail, re.I):
+            return match[0]
+        if not re.match(r"\w+(?:[ -]+\w+){1,}", tail): return match[0]
+        return match['copula'] + ' ' + match['modifiers']
+    return re.sub(pattern, replace, text, flags=re.I)
+
+
+def local_question_kind(text):
+    """Recognize bounded independent questions, not headings or embedded clauses."""
+    if any(c in text for c in ('"', '“', '”', '`', ':', ';', '\n')): return None
+    value = ' '.join(words(text))
+    value = re.sub(r'^(?:(?:so|and|but|also|okay|ok|well) )+', '', value)
+    # Nominal clauses such as 'How is that done is unclear' are statements.
+    if re.search(r'\b(?:is|was|remains|seems) (?:unclear|unknown|irrelevant|the question|the issue|important)\b', value):
+        return None
+    # An unquoted question can itself be the subject of a reporting clause.
+    # Without a parser, abstain when that reading is explicitly signalled.
+    if re.search(r'\b(?:depends|matters|remains|means)\b|'
+                 r'\b(?:is|was|are|were) (?:not )?(?:all|the|a|an)\b', value):
+        return None
+    if not starts_question(text): return None
+    inverted = re.match(r'(?:(?:what|where|when|why|how|which) )?'
+                        r'(?:can|could|would|will|should|do|does|did|is|are|have|has|was|were)'
+                        r'(?: not)? (?:you|we|i|he|she|they|it|this|that|these|those)\b', value)
+    elliptical = re.match(r'^\s*and\s+how\s+to\s+(?:now\s+)?(?:use|do|make|connect|set up|resolve)\b', text, re.I)
+    if inverted or elliptical: return value.split()[:5]
+    return None
+
+
+def repair_local_question_boundaries(source, output):
+    """Punctuate aligned independent questions, including a later sentence.
+
+    Only existing sentence boundaries or a bounded 'right but obviously' pivot
+    qualify. Never infer punctuation within identifiers, quotes or headings.
+    """
+    if re.search(r'\b(?:chapter|heading|title|tutorial)\b', source, re.I): return output
+    pattern = r'[^.!?؟？\n]+(?:[.!?؟？]|$)'
+    originals = [local_question_kind(m[0]) for m in re.finditer(pattern, source)]
+    originals = [x for x in originals if x]
+    edits = []
+    for m in re.finditer(pattern, output):
+        text = m[0]; kind = local_question_kind(text)
+        if not kind or kind not in originals: continue
+        pivot = re.search(r'\bright\s+but\s+obviously\b', text, re.I)
+        if pivot and len(words(text[:pivot.start()])) >= 8:
+            # Retain the spoken tag; make its question boundary explicit.
+            right_end = m.start() + pivot.start() + len('right')
+            edits.append((right_end, right_end, '?'))
+            but = m.start() + pivot.start() + len('right ')
+            # Preserve unusual whitespace by anchoring the actual word.
+            b = re.search(r'\bbut\b', text[pivot.start():], re.I)
+            but = m.start() + pivot.start() + b.start()
+            edits.append((but, but + 1, 'B'))
+            continue
+        if text[-1:] != '.': continue
+        end = m.end() - 1
+        # Dots within a domain, decimal or abbreviation are not sentence ends.
+        if end + 1 < len(output) and not output[end + 1].isspace(): continue
+        last = re.search(r'(\w+)\.$', text)
+        if not last or len(last[1]) < 2: continue
+        if re.search(r'\b(?:Mr|Mrs|Ms|Dr|Prof|etc|vs)\.$', text, re.I): continue
+        edits.append((end, end + 1, '?'))
+    for start, end, replacement in sorted(edits, reverse=True):
+        output = output[:start] + replacement + output[end:]
+    return output
+
+
 def copyedit(text, generate, examples=(), known_terms=()):
+    output, diagnostics = _copyedit(text, generate, examples, known_terms)
+    source = clean_stutters(text)
+    changes = []
+    # Source-local normalization: require the same repeated fragment to survive
+    # in the accepted output, and validate all meaning against the original.
+    if collapse_copular_fragments(source) != source:
+        candidate = collapse_copular_fragments(output)
+        if candidate != output and rejection_reason(source, candidate, known_terms) is None:
+            output = candidate; changes.append('copular_fragment')
+    candidate = repair_local_question_boundaries(source, output)
+    if candidate != output and rejection_reason(source, candidate, known_terms) is None:
+        output = candidate; changes.append('question_boundary')
+    if changes:
+        diagnostics = dict(diagnostics, status='edited', recovery=True, local_repairs=changes)
+    return output, diagnostics
+
+
+def _copyedit(text, generate, examples=(), known_terms=()):
     """Return text plus non-sensitive diagnostics; generate(system, input)."""
     source = clean_stutters(text)
     system = SYSTEM

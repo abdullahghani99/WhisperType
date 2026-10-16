@@ -4,6 +4,77 @@ from polish import (copyedit,rejection_reason,rehearing,clean_stutters,spoken_sy
                     project_punctuation,words,starts_question,SYSTEM,EXAMPLES)
 
 class CopyeditingTests(unittest.TestCase):
+    def test_copular_fragment_retains_modifiers_and_other_clauses(self):
+        from polish import collapse_copular_fragments
+        source = "It's suddenly just it's very abrupt when you open it. I think we can improve it."
+        expected = "It's suddenly just very abrupt when you open it. I think we can improve it."
+        self.assertEqual(collapse_copular_fragments(source), expected)
+        out, diag = copyedit(source, lambda *_: source)
+        self.assertEqual(out, expected)
+        self.assertIn('copular_fragment', diag['local_repairs'])
+        self.assertIsNone(rejection_reason(source, out))
+
+    def test_copular_fragment_abstains_on_predicates_quotes_polarity_and_subjects(self):
+        from polish import collapse_copular_fragments
+        cases = ["It's ready, it's very abrupt when you open it.",
+                 "It's just she's very abrupt when speaking.",
+                 "It's just it's not ready for release.",
+                 "It's not it's ready for release.",
+                 "It's just. It's very abrupt when you open it.",
+                 'The title is "it is just it is very abrupt".',
+                 "It's very, it's very good today.",
+                 "It's actually it's", "It's just it's only a draft."]
+        for value in cases:
+            with self.subTest(value=value):self.assertEqual(collapse_copular_fragments(value), value)
+
+    def test_each_question_boundary_is_independently_recovered(self):
+        from polish import repair_local_question_boundaries
+        source = "The draft is ready. Can you send it. Where do we put the original?"
+        expected = "The draft is ready. Can you send it? Where do we put the original?"
+        self.assertEqual(repair_local_question_boundaries(source, source), expected)
+        out, diag = copyedit(source, lambda *_: source)
+        self.assertEqual(out, expected)
+        self.assertEqual(diag['local_repairs'], ['question_boundary'])
+
+    def test_question_pivot_preserves_following_statement(self):
+        from polish import repair_local_question_boundaries
+        source = ("We need a test account. What is that best way so we give them access "
+                  "to the sandbox right but obviously I do not want production changes.")
+        expected = source.replace('right but', 'right? But')
+        self.assertEqual(repair_local_question_boundaries(source, source), expected)
+        self.assertTrue(expected.endswith('production changes.'))
+        self.assertIsNone(rejection_reason(source, expected))
+
+    def test_discourse_infinitive_question_and_plain_heading_are_distinct(self):
+        from polish import repair_local_question_boundaries
+        source = 'And how to now connect this account. Also, the draft is ready.'
+        self.assertEqual(repair_local_question_boundaries(source, source), source.replace('account.', 'account?'))
+        for source in ('How to connect this account.', 'Chapter one. And how to connect this account.',
+                       'The heading is: And how to connect this account.'):
+            self.assertEqual(repair_local_question_boundaries(source, source), source)
+
+    def test_local_question_boundary_abstains_on_nonquestions_and_identifiers(self):
+        from polish import repair_local_question_boundaries
+        cases = ['What is important is that we keep the original.',
+                 'How is that done is unclear.', 'I know how we connect it.',
+                 'How do we connect it depends on the account.',
+                 'Can you help me is all she said.', 'How do we finish it remains to be seen.',
+                 'The label says "Can you send it."', 'Can you check example.org. The draft is ready.',
+                 'Can you check the U.S. report.', 'Can you check version 2.5. It is ready.',
+                 'What is right but obviously incomplete?', 'Do it. The draft is ready.',
+                 'Can you send it? But obviously retain the original.']
+        for source in cases:
+            with self.subTest(source=source):self.assertEqual(repair_local_question_boundaries(source, source), source)
+
+    def test_local_cleanup_adds_no_inference_and_preserves_rejection_safety(self):
+        source = "It's actually it's very slow today. Can you check it."
+        calls = []
+        def generate(*_):calls.append(True);return source
+        out, diag = copyedit(source, generate)
+        self.assertEqual(out, "It's actually very slow today. Can you check it?")
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(rejection_reason(source, out))
+
     def test_qualified_restart_survives_an_unrelated_question_failure(self):
         source = ("So can you finish the task. And also I cannot see the headings right now "
                   "when I'm generating, trying to generate a document.")

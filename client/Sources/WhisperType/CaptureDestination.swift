@@ -108,7 +108,7 @@ struct CaptureDestination {
         let window = winValue as! AXUIElement
         let field = fieldValue.flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? ($0 as! AXUIElement) : nil }
         let remote = (app.bundleIdentifier ?? "").contains("ScreenSharing")
-        guard !IsSecureEventInputEnabled() else { diagnose("secure-input-active"); return nil }
+        guard !IsSecureEventInputEnabled() else { diagnose("secure-input-active holder=\(Self.secureInputHolder ?? "unknown")"); return nil }
         if let field {
             let role = attribute(field, kAXRoleAttribute) as? String ?? ""
             let subrole = attribute(field, kAXSubroleAttribute) as? String ?? ""

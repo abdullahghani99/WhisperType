@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "7ded9c540ff6500386a3f47cdd7a992c476adff0c127e167e651fefcba187b95",
+    "VERSION": "2d7df264db9cbcf2eed4bb7b2f9e67f5a9200bb2fc670d6af87b2994cd77c49f",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/AudioUploadTests.swift": "1bd8f3580878381507e4d23ede7f5ff16b90d7fc1ff05f1adf068b7c5298328e",
@@ -24,7 +24,7 @@
     "client/Sources/WhisperType/AudioDevices.swift": "adbc79c526a3a400d6c22dfe559bb1e6f8b9ffc28f813c1659939fb7b61789c9",
     "client/Sources/WhisperType/AudioRecorder.swift": "2bd00635908c38d69e68ff22ef02b86cadb30dad7aaadc7eae3d27124592ded5",
     "client/Sources/WhisperType/CallWatcher.swift": "e6a887df5291cc966e4423c9112ff95d463527aae68069c73d9c8f7be3be3c03",
-    "client/Sources/WhisperType/CaptureDestination.swift": "e96ab3a2950f9f3d915af3135f241b9448307ca808b036de7ef10b03645122ab",
+    "client/Sources/WhisperType/CaptureDestination.swift": "93f432f8c9a644eb7f7542ca74b22f8df5b5d85b8c695abf69f0b65bf03f1596",
     "client/Sources/WhisperType/CaptureHome.swift": "2f201567b44b73338d76a47f51bf4118da63dc7551dbcd5b4ff836da667dba64",
     "client/Sources/WhisperType/CorrectionPrompt.swift": "ca5d595e84060a6e0de39fb7a306d8eb49dc74ced043f66a106ae71ed3990a87",
     "client/Sources/WhisperType/DockController.swift": "c044d83de1141fc5dbfca3bc0107933cd1163edcb162f9672ba74e64c1ae3129",

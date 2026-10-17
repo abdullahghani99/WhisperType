@@ -458,7 +458,7 @@ final class AudioRecorder {
             }
             guard owns(gen) else { e.stop(); return nil }
             guard inFormat.channelCount > 0, inFormat.sampleRate > 0,
-                  let conv = AVAudioConverter(from: inFormat, to: outFormat) else {
+                  let conv = AVAudioConverter.toMono(from: inFormat, to: outFormat) else {
                 logError("skip \(dev.name): invalid format (\(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch)")
                 e.stop()          // never abandon an engine un-stopped (see teardown)
                 continue
@@ -611,6 +611,7 @@ final class AudioRecorder {
         }
         statistics.converted(frames: Int(outBuf.frameLength), status: Int(status.rawValue), error: err?.code)
         guard err == nil, let ch = outBuf.int16ChannelData else { return }
+        converter.restoreArrayGain(outBuf)
         let count = Int(outBuf.frameLength)
         guard count > 0 else { return }
         let d = Data(bytes: ch[0], count: count * MemoryLayout<Int16>.size)
@@ -706,4 +707,35 @@ private final class CaptureTapToken {
     }
     var epoch: Int? { lock.lock(); defer { lock.unlock() }; return value }
     func publish(_ epoch: Int) { lock.lock(); value = epoch; lock.unlock() }
+}
+
+extension AVAudioConverter {
+    /// A converter to mono that does not silently produce zeros.
+    ///
+    /// The built-in microphone sometimes opens as a 3-channel array with no
+    /// channel layout. AVAudioConverter cannot downmix that to mono and outputs
+    /// exact digital silence -- no error, a full-length recording of zeros. It
+    /// happened on 2026-10-14 and again from 2026-10-16 22:29: every 3-channel
+    /// capture was refused as "no usable audio", every 1-channel one worked.
+    /// Taking channel 0 of the array keeps the speech. Stereo devices keep the
+    /// normal downmix, which works.
+    static func toMono(from input: AVAudioFormat, to output: AVAudioFormat) -> AVAudioConverter? {
+        let converter = AVAudioConverter(from: input, to: output)
+        if input.channelCount > 2 && output.channelCount == 1 { converter?.channelMap = [0] }
+        return converter
+    }
+
+    /// One raw capsule of the array, unlike the processed 1-channel mic, gets no
+    /// gain from macOS: measured ~33x quieter (RMS 17 vs 561 on comparable
+    /// dictations). Speech still transcribed, barely, and the waveform sat flat.
+    /// 30x (~+30 dB) restores the normal level; clamped, so loud speech clips
+    /// rather than wrapping. Call on every converted 16-bit buffer.
+    func restoreArrayGain(_ buffer: AVAudioPCMBuffer) {
+        // ponytail: fixed gain from one measurement; an AGC if levels vary by room.
+        guard channelMap == [0], inputFormat.channelCount > 2,
+              let samples = buffer.int16ChannelData?[0] else { return }
+        for i in 0..<Int(buffer.frameLength) {
+            samples[i] = Int16(clamping: Int32(samples[i]) * 30)
+        }
+    }
 }

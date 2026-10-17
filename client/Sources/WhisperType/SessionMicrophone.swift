@@ -91,7 +91,7 @@ final class MicrophonePCMConverter {
         let copied = CMSampleBufferCopyPCMDataIntoAudioBufferList(sample, at: 0, frameCount: Int32(frames), into: input.mutableAudioBufferList)
         guard copied == noErr else { throw failure("Could not read microphone samples (\(copied)).") }
         if converter?.inputFormat != format {
-            converter = AVAudioConverter(from: format, to: output)
+            converter = AVAudioConverter.toMono(from: format, to: output)
         }
         guard let converter = converter else { throw failure("Could not convert microphone audio.") }
         let capacity = AVAudioFrameCount(ceil(Double(frames) * output.sampleRate / format.sampleRate)) + 1024
@@ -104,6 +104,7 @@ final class MicrophonePCMConverter {
         if let error = error { throw error }
         guard status != .error else { throw failure("Microphone audio conversion failed.") }
         guard let channel = converted.int16ChannelData else { return Data() }
+        converter.restoreArrayGain(converted)
         return Data(bytes: channel[0], count: Int(converted.frameLength) * 2)
     }
 

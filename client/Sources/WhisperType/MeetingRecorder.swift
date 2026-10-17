@@ -382,7 +382,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             let inFormat = input.inputFormat(forBus: 0)
             guard inFormat.channelCount > 0, inFormat.sampleRate > 0,
-                  let conv = AVAudioConverter(from: inFormat, to: out16k) else {
+                  let conv = AVAudioConverter.toMono(from: inFormat, to: out16k) else {
                 log("mic: skip \(dev.name) (invalid format)"); continue
             }
             guard life.isCurrentAttempt(myToken) else { e.stop(); return }
@@ -573,6 +573,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             fed = true; status.pointee = .haveData; return buffer
         }
         guard err == nil, let ch = outBuf.int16ChannelData else { return }
+        conv.restoreArrayGain(outBuf)
         let n = Int(outBuf.frameLength)
         // Does this buffer carry SIGNAL, or is it zero-filled? A live mic in a
         // quiet room still has a noise floor, so all-zero means nothing is

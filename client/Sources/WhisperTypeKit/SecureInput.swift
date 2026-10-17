@@ -15,6 +15,12 @@ public enum SecureInput {
     /// ("often on the shared screen") and sent them to the wrong machine while
     /// a local terminal held the lock.
     public static func message(holder: String?) -> String {
+        // macOS's own login process keeps the lock after a lock/unlock -- held
+        // 10+ hours on 2026-10-17. Quitting it logs the speaker out.
+        if holder?.lowercased() == "loginwindow" {
+            return "macOS is stuck in secure input after the screen lock, so nothing can type right now. "
+                 + "Lock the screen (Ctrl+Cmd+Q) and unlock to release it, then use Review result."
+        }
         let who = holder.map { "\($0) has" } ?? "An app has"
         return "\(who) macOS secure input on, so nothing can type right now — "
              + "usually a password prompt still open in it. Clear or quit it, "

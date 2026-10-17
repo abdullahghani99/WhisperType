@@ -291,6 +291,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return String(data: data, encoding: .utf8)
     }
 
+    /// While secure input is on, no destination can be captured at all, so
+    /// "choose a destination app" sent the speaker clicking into apps that could
+    /// never be accepted (2026-10-17: loginwindow held the lock for 10+ hours).
+    private static var noDestinationAdvice: String {
+        CaptureDestination.secureInputActive
+            ? SecureInput.message(holder: CaptureDestination.secureInputHolder)
+            : "Choose a destination app, then return to Inbox"
+    }
+
     private func setupClient() {
         let (urlStr, route) = ServerRoute.resolve()
         activeRoute = route
@@ -1460,7 +1469,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do { try RecordingStore.save(edited) }
             catch { self.mainWC.settings.status = "Could not save edit: \(error.localizedDescription)"; return }
             guard let target = target else {
-                self.mainWC.settings.status = "Choose a destination app, then return to Inbox. Your edited result is saved."
+                self.mainWC.settings.status = Self.noDestinationAdvice + " Your edited result is saved."
                 self.recordingsChanged(); return
             }
             target.app.activate(options: [])
@@ -1483,7 +1492,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.recordingsChanged()
             }
         }
-        let destination = target.map { "\($0.name) · \($0.title)" } ?? "Choose a destination app, then return to Inbox"
+        let destination = target.map { "\($0.name) · \($0.title)" } ?? Self.noDestinationAdvice
         let saveDraft: ([String: String], String) throws -> Void = { [weak self] variants, text in
             guard var draft = try RecordingStore.entries().first(where: { $0.id == id }) else { throw CocoaError(.fileNoSuchFile) }
             if draft.text != text || draft.variants != variants {

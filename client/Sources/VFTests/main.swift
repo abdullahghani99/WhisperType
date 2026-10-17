@@ -166,6 +166,7 @@ func run(_ name: String, _ body: () -> Void) {
         run("SecureInputTests.testItStillReadsAsASentenceWhenTheHolderIsUnknown") { t.testItStillReadsAsASentenceWhenTheHolderIsUnknown() }
         run("SecureInputTests.testItNoLongerGuessesAtTheCause") { t.testItNoLongerGuessesAtTheCause() }
         run("SecureInputTests.testItPointsAtTheRemedy") { t.testItPointsAtTheRemedy() }
+        run("SecureInputTests.testLoginwindowGetsLockAdviceNotQuit") { t.testLoginwindowGetsLockAdviceNotQuit() }
     }
     suite("ServerRouteTests") {
         let t = ServerRouteTests()
@@ -208,7 +209,7 @@ if let files = try? fm.contentsOfDirectory(atPath: "Sources/VFTests") {
         }
     }
 }
-let registered = 128
+let registered = 129
 print("")
 if declared > 0 && declared != registered {
     print("  ✘ DRIFT: \(declared) test functions on disk, \(registered) registered.")

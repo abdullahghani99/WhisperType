@@ -28,4 +28,11 @@ final class SecureInputTests: XCTestCase {
     func testItPointsAtTheRemedy() {
         XCTAssertTrue(SecureInput.message(holder: "Terminal").contains("Review result"))
     }
+
+    func testLoginwindowGetsLockAdviceNotQuit() {
+        // Quitting loginwindow logs the speaker out; locking and unlocking releases it.
+        let message = SecureInput.message(holder: "loginwindow")
+        XCTAssertTrue(message.contains("Ctrl+Cmd+Q"), message)
+        XCTAssertFalse(message.contains("quit"), message)
+    }
 }

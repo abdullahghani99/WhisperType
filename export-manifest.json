@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "9c0d5d34c06e0fa610dceaa515619f8998225d4908a76c22213753cb7c1af922",
+    "VERSION": "0f66946b8aeb11322d90cda7f6774a9dfbc18f6cab0b9a1263735654d40cb207",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/AudioUploadTests.swift": "1bd8f3580878381507e4d23ede7f5ff16b90d7fc1ff05f1adf068b7c5298328e",
@@ -29,7 +29,7 @@
     "client/Sources/WhisperType/CorrectionPrompt.swift": "ca5d595e84060a6e0de39fb7a306d8eb49dc74ced043f66a106ae71ed3990a87",
     "client/Sources/WhisperType/DockController.swift": "c044d83de1141fc5dbfca3bc0107933cd1163edcb162f9672ba74e64c1ae3129",
     "client/Sources/WhisperType/DockDragSurface.swift": "c5ac74035f93714f3deade7272e49b0013a0185fe7f07705baab818aa3823b2b",
-    "client/Sources/WhisperType/DockView.swift": "378655244f200ff832c3a5a88978debb8fe5ac8cd093edf717b2293c0758b80a",
+    "client/Sources/WhisperType/DockView.swift": "0d001fb6b5ff14828d4a7922aac52caeed3be5872453149ab785ce14f7ccf04d",
     "client/Sources/WhisperType/MainWindow.swift": "c565c4a3a9cc6c64974a0dccf04076e92541855371cf6c64535d1838e4b27748",
     "client/Sources/WhisperType/MeetingCapture.swift": "b4ff6278c3bee8c0074de74a40f5cbad63d2d37ad5bbfe30c5247417e76d5900",
     "client/Sources/WhisperType/MeetingRecorder.swift": "b6618f512ab316495364d9bd3d6087d17036d9b84e6cfb4150d25b20416fcd8c",

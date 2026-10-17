@@ -265,7 +265,7 @@ public struct DockView: View {
     }
     private func textAction(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(VF.Font.caption).padding(.horizontal, 10).frame(height: 28)
+            Text(title).font(VF.Font.caption).lineLimit(1).fixedSize().padding(.horizontal, 10).frame(height: 28)
                 .background(ink.opacity(0.12), in: Capsule()).contentShape(Capsule())
         }.buttonStyle(.plain)
     }

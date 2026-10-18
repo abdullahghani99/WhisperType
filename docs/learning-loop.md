@@ -29,6 +29,8 @@ The daily cycle maintains a private repair backlog and a polishing completion ma
 
 Track questions and boundaries, self-corrections and repeats, apologies and uncertainty, literal knowledge versus filler, numeric references, dictionary alignment and distinct clauses/categories separately. A verified bounded fix closes only its stated scope. Keep broader failures open with exact evidence and a next step, rotate to independent work when one item is ambiguous, and resume saved candidates rather than repeating rejected unchanged experiments.
 
+Keep literal source preservation distinct from cleanup quality: preserving an unfinished fragment does not complete its missing meaning. When a phrase could be either a question plus answer or a nominal statement, record the exact unresolved interpretation and the audio or correction evidence needed. A synthetic safety fix can accompany a verified package, but must not be reported as a real dictation-quality gain.
+
 Promotion requires meaning, readability and latency gates, normal release checks, rollback and no-insertion verification while capture and meeting work are idle. New evidence is never permission to interrupt a recording. Keep the existing model unless the separate training and model-release gates pass; observation text and generated suggestions are never automatically correct targets. Report deployed, rejected, continuing and blocked work distinctly.
 
 Prepare a private dataset on the inference host:

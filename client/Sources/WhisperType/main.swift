@@ -291,9 +291,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return String(data: data, encoding: .utf8)
     }
 
-    /// While secure input is on, no destination can be captured at all, so
-    /// "choose a destination app" sent the speaker clicking into apps that could
-    /// never be accepted (2026-10-17: loginwindow held the lock for 10+ hours).
+    /// Explain why an unknown or protected destination was declined. Verified
+    /// ordinary local text fields can still receive native paste during Secure Input.
     private static var noDestinationAdvice: String {
         CaptureDestination.secureInputActive
             ? SecureInput.message(holder: CaptureDestination.secureInputHolder)
@@ -1531,7 +1530,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let before = target.readableValue()
             let expected = target.expectedValue(afterInserting: text)
             let typingAt = ProcessInfo.processInfo.systemUptime
-            let complete = await NativePasteInserter.paste(text, targetPID: target.app.processIdentifier, isCurrent: { target.isCurrent() })
+            let complete = await NativePasteInserter.paste(text, targetPID: target.app.processIdentifier,
+                isCurrent: { target.isCurrent() }, verifiedSecureInputDestination: { target.permitsSecureInputPaste() })
             guard complete else { throw insertionError("Paste was not sent. Check the destination; your result is retained.") }
             vlog("pipeline timing: id=\(id) typingMs=\(Int((ProcessInfo.processInfo.systemUptime - typingAt) * 1000)) utf16=\(text.utf16.count)")
             // Without a readable baseline/selection an exact receipt cannot
@@ -1554,13 +1554,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSError(domain: "whispertype.insertion", code: code, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
-    /// macOS Secure Event Input blocks every synthetic keystroke, system-wide,
-    /// while any password field has focus — including one on the far side of a
-    /// Screen Sharing window. `isCurrent()` refuses in that state, which is
-    /// correct, but it is indistinguishable from the window having changed, and
-    /// the message said the destination changed. It had not. Over three days it
-    /// blocked 23 dictations and sent the speaker looking at the wrong thing
-    /// twice.
+    /// Unknown or protected destinations need a specific recovery explanation.
     private func destinationUnavailable(_ whenChanged: String) -> NSError {
         guard CaptureDestination.secureInputActive else { return insertionError(whenChanged) }
         return insertionError(SecureInput.message(holder: CaptureDestination.secureInputHolder))

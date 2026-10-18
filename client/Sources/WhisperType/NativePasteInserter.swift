@@ -32,8 +32,12 @@ enum NativePasteInserter {
     @MainActor static func paste(_ text: String, targetPID: pid_t,
                                  board: NSPasteboard = .general,
                                  isCurrent: () -> Bool,
+                                 verifiedSecureInputDestination: (() -> Bool)? = nil,
                                  send: ((pid_t) -> Bool)? = nil) async -> Bool {
-        guard !text.isEmpty, isCurrent(), !IsSecureEventInputEnabled(),
+        func permitsPaste() -> Bool {
+            isCurrent() && (!IsSecureEventInputEnabled() || verifiedSecureInputDestination?() == true)
+        }
+        guard !text.isEmpty, permitsPaste(),
               let saved = ClipboardSnapshot(board) else { return false }
         let clearedChange = board.clearContents()
         guard board.setString(text, forType: .string) else {
@@ -45,7 +49,7 @@ enum NativePasteInserter {
             // A new user/app copy owns the clipboard now. Never overwrite it.
             if board.changeCount == ownedChange { saved.restore(board) }
         }
-        guard isCurrent(), !IsSecureEventInputEnabled() else { return false }
+        guard permitsPaste() else { return false }
         guard (send ?? postPaste)(targetPID) else { return false }
         // Give the target event loop time to consume the clipboard. This is not
         // a receipt wait; an unreadable field does not incur further polling.

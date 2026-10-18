@@ -108,24 +108,26 @@ struct CaptureDestination {
         let window = winValue as! AXUIElement
         let field = fieldValue.flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? ($0 as! AXUIElement) : nil }
         let remote = (app.bundleIdentifier ?? "").contains("ScreenSharing")
-        guard !IsSecureEventInputEnabled() else { diagnose("secure-input-active holder=\(Self.secureInputHolder ?? "unknown")"); return nil }
+        let secureInput = IsSecureEventInputEnabled()
+        let destination = CaptureDestination(app: app, window: window, field: field,
+                                             title: attribute(window, kAXTitleAttribute) as? String ?? "")
         if let field {
-            let role = attribute(field, kAXRoleAttribute) as? String ?? ""
-            let subrole = attribute(field, kAXSubroleAttribute) as? String ?? ""
+            let role = attribute(field, kAXRoleAttribute) as? String
+            let subrole = attribute(field, kAXSubroleAttribute) as? String
             guard subrole != kAXSecureTextFieldSubrole else { diagnose("secure-field"); return nil }
-            if !remote && Self.isNonEditingControl(role) { diagnose("non-editing-control role=\(role)"); return nil }
-            diagnose("captured \(identity) role=\(role) remote=\(remote)")
+            if secureInput && !Self.acceptsField(role: role, subrole: subrole, remote: destination.isRemote, secureInput: true) {
+                diagnose("secure-input-unverified-field holder=\(Self.secureInputHolder ?? "unknown")"); return nil
+            }
+            if !remote && Self.isNonEditingControl(role ?? "") { diagnose("non-editing-control role=\(role ?? "unknown")"); return nil }
+            diagnose("captured \(identity) role=\(role ?? "unknown") remote=\(remote) secureInput=\(secureInput)")
         } else {
-            guard Self.acceptsField(role: nil, subrole: nil, remote: remote, secureInput: IsSecureEventInputEnabled()) else { diagnose("remote-field-unavailable"); return nil }
+            guard Self.acceptsField(role: nil, subrole: nil, remote: remote, secureInput: secureInput) else { diagnose("field-unavailable secureInput=\(secureInput)"); return nil }
             diagnose("captured \(identity) window-only; text receipt unavailable")
         }
-        return CaptureDestination(app: app, window: window, field: field,
-                                  title: attribute(window, kAXTitleAttribute) as? String ?? "")
+        return destination
     }
-    /// macOS blocks every synthetic keystroke system-wide while this is on.
-    /// Exposed so the insertion path can tell "secure input" apart from "the
-    /// window changed" — they look identical to `isCurrent()` and have entirely
-    /// different remedies.
+    /// Secure Input protects keyboard interception. It does not by itself
+    /// prove that native paste into a verified ordinary text field is blocked.
     static var secureInputActive: Bool { IsSecureEventInputEnabled() }
 
     /// The app holding the secure-input lock, when macOS names it.
@@ -155,7 +157,10 @@ struct CaptureDestination {
     }
 
     static func acceptsField(role: String?, subrole: String?, remote: Bool, secureInput: Bool) -> Bool {
-        guard !secureInput, subrole != kAXSecureTextFieldSubrole else { return false }
+        guard subrole != kAXSecureTextFieldSubrole else { return false }
+        if secureInput {
+            return !remote && [kAXTextAreaRole, kAXTextFieldRole].contains(role ?? "")
+        }
         guard let role else { return !remote }
         return remote || ![kAXButtonRole, kAXMenuItemRole, kAXCheckBoxRole, kAXRadioButtonRole].contains(role)
     }
@@ -232,20 +237,36 @@ struct CaptureDestination {
         guard let currentWindow = attribute(application, kAXFocusedWindowAttribute), CFEqual(window, currentWindow) else {
             diagnose("window-changed-or-unavailable"); return false
         }
-        guard !IsSecureEventInputEnabled() else { diagnose("secure-input-active"); return false }
+        let secureInput = IsSecureEventInputEnabled()
+        if secureInput && (field == nil || isRemote) { diagnose("secure-input-unverified-destination"); return false }
         if let value = attribute(application, kAXFocusedUIElementAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() {
             let current = value as! AXUIElement
             let subrole = attribute(current, kAXSubroleAttribute) as? String ?? ""
             let role = attribute(current, kAXRoleAttribute) as? String ?? ""
             guard subrole != kAXSecureTextFieldSubrole else { diagnose("secure-field"); return false }
+            if secureInput && !Self.acceptsField(role: role, subrole: subrole, remote: isRemote, secureInput: true) {
+                diagnose("secure-input-unverified-field"); return false
+            }
             guard isRemote || !Self.isNonEditingControl(role) else { diagnose("non-editing-control"); return false }
             if let field, !CFEqual(field, current) { diagnose("field-changed"); return false }
-        } else if isRemote { diagnose("remote-field-unavailable"); return false }
+        } else if isRemote || secureInput { diagnose("field-unavailable"); return false }
         if isRemote && !isRemoteByBundle
             && (attribute(window, kAXTitleAttribute) as? String ?? "") != title {
             diagnose("remote-window-title-changed"); return false
         }
         return true
+    }
+    /// Opt in only with an identified local ordinary field, checked again just
+    /// before the paste. Unknown fields and paired transport keep their guards.
+    func permitsSecureInputPaste() -> Bool {
+        guard !isRemote, let field, isCurrent() else { return false }
+        func string(_ key: String) -> String? {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(field, key as CFString, &value) == .success else { return nil }
+            return value as? String
+        }
+        return Self.acceptsField(role: string(kAXRoleAttribute), subrole: string(kAXSubroleAttribute),
+                                 remote: false, secureInput: true)
     }
     func isCurrentByRecapturing(diagnose: (String) -> Void = { _ in }) -> Bool {
         guard let current = Self.capture(diagnose: diagnose) else { return false }

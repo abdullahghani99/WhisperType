@@ -1430,9 +1430,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         mainWC.settings.captureStatus = "Sent to \(target.name)"; SoundFeedback.done()
                     }
                 } else {
-                    entry.error = "Result ready. Review it in Inbox to choose placement."
+                    let secureInput = CaptureDestination.secureInputActive
+                    entry.error = secureInput
+                        ? SecureInput.message(holder: CaptureDestination.secureInputHolder)
+                        : "Result ready. Review it in Inbox to choose placement."
                     try RecordingStore.save(entry)
-                    if presentationID == id && !isRecording { dockController.state.ready(); mainWC.settings.captureStatus = "Result ready in Inbox" }
+                    if presentationID == id && !isRecording {
+                        dockController.state.ready()
+                        mainWC.settings.captureStatus = secureInput
+                            ? "Automatic insertion paused by secure input · result saved in Inbox"
+                            : "Result ready in Inbox"
+                    }
                 }
             }
         } catch {

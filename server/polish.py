@@ -1319,6 +1319,27 @@ def rewritten_independent_question(source, output):
 
 
 
+def conditional_restart_basis(source, output):
+    """Normalize only a uniquely aligned explicit restart for the full guard.
+
+    Removing the abandoned 'since' and repeated pronoun must not spend the
+    short-utterance content budget. Every other meaning check still runs.
+    """
+    if re.search(r'["“”`]', source + output) or re.search(r'\b(?:sorry|correction|rather)\b', source, re.I): return source
+    pattern = (r'\b[Ss]ince (?P<actor>[A-Z][\w-]*(?: (?:and )?[A-Z][\w-]*){0,3})'
+               r',?\s+if (?P<pronoun>they|he|she) (?P<predicate>[a-z]+(?: [a-z]+){1,3})(?=[,?!.]| why\b)')
+    edits = []
+    for match in re.finditer(pattern, source):
+        if any(len(re.findall(r'\b' + re.escape(match['actor']) + r'\b', value, re.I)) != 1
+               for value in (source, output)): continue
+        target = r'\bif\s+' + re.escape(match['actor']) + r'\s+' + re.escape(match['predicate']) + r'(?=[,?!.]| why\b)'
+        if len(list(re.finditer(target, output, re.I))) != 1: continue
+        prefix = 'If' if match[0][0].isupper() else 'if'
+        edits.append((match.start(), match.end(), prefix + ' ' + match['actor'] + ' ' + match['predicate']))
+    for start, end, value in reversed(edits):source = source[:start] + value + source[end:]
+    return source
+
+
 def repair_conditional_restart(source, output):
     """Retain an explicit conditional restart after a named actor.
 
@@ -1391,13 +1412,97 @@ def repair_confirmation_manner_boundary(source, output):
                r'right (?P<aside>how (?:we|you|they) (?:actually|normally|usually) [^.!?;:\n]{3,100})[.?]?$')
     match = re.search(pattern, aligned, re.I)
     if not match or len(words(match['aside'])) > 18: return output
-    if re.search(r'\b(?:but|because|if|unless|or|and|depends|matters|remains|means|is|was)\b', match['aside'], re.I): return output
-    target = re.escape(match['head']) + r',?\s+right,?\s+' + re.escape(match['aside'].rstrip()) + r'[.?]?$'
+    aside = match['aside'].rstrip()
+    nominal = bool(re.search(r'\bdepends on (?:the|this|that|our|your) \w+(?: \w+){0,2}$', aside, re.I))
+    if re.search(r'\b(?:but|because|or|and|matters|remains|means)\b', aside, re.I): return output
+    principal = re.split(r'\b(?:if|unless)\b', aside, maxsplit=1, flags=re.I)[0]
+    if re.search(r'\b(?:is|was)\b', principal, re.I): return output
+    if 'depends' in words(aside) and not nominal: return output
+    # Compare all words while permitting only the model's boundary punctuation.
+    phrase = lambda value: re.escape(value).replace(r'\ ', r'[\s,]+')
+    target = phrase(match['head']) + r',?\s+right[,.?]?\s+' + phrase(aside) + r'[.?]?$'
     hits = list(re.finditer(target, output, re.I))
     if len(hits) != 1: return output
     hit = hits[0]
-    replacement = match['head'] + '—' + match['aside'].rstrip() + ', right?'
+    if nominal:
+        replacement = match['head'] + ', right? ' + aside[0].upper() + aside[1:] + '.'
+    else:
+        replacement = match['head'] + '—' + aside + ', right?'
     return output[:hit.start()] + replacement + output[hit.end():]
+
+
+def repair_framed_request(source, output):
+    """Punctuate a uniquely aligned request after an explicit temporal frame."""
+    if re.search(r'["“”`]', source + output): return output
+    pattern = (r'\bwhile (?:you|we|they|I) (?:do|check|review|finish) (?:this|that|it),?\s+'
+               r'(?P<question>(?:can|could|would|will) you [^.!?;:\n]{3,160})[.?]?(?=\s|$)')
+    for match in re.finditer(pattern, source, re.I):
+        question = match['question'].strip()
+        if not local_question_kind(question + '?'): continue
+        frame = match[0][:match.start('question') - match.start()].strip().rstrip(',')
+        target = re.escape(frame) + r',?\s+' + re.escape(question) + r'\.'
+        hits = list(re.finditer(target, output, re.I))
+        if len(hits) != 1 or len(re.findall(re.escape(question), source, re.I)) != 1: continue
+        hit = hits[0]
+        output = output[:hit.end()-1] + '?' + output[hit.end():]
+    return output
+
+
+def restore_descriptive_attachment(source, output):
+    """Repair an invented coordinated subject from an explicit subject restart."""
+    if re.search(r'["“”`]|\b(?:emphasis|verbatim|exactly|repeat|twice|instead|rather|sorry|mean)\b', source, re.I): return output
+    source_pattern = (r'\b(?P<head>the (?P<noun>image|photo|picture|diagram|chart|page|document|report|form|screen|label|box|parcel|package|bottle|container|panel|button|card|file|map|table|wall|door|board))\s*,\s*'
+                      r'(?P<detail>the [a-z][a-z -]{0,45}?) on (?P=head)\s*,\s*for this\s*,?\s*(?P=head)\s+'
+                      r'(?P<aux>does|did|is|was|seems|looks|might|may|could)\b')
+    for match in re.finditer(source_pattern, source, re.I):
+        detail = words(match['detail'])
+        if any(w in detail for w in ['or','but','not','no','only','both','neither','either','is','was','are','were','does','did','has','had','which','that','who']): continue
+        if detail.count('and') > 1: continue
+        if re.search(r'\b(?:not|neither|either|both|versus)\s*$', source[:match.start()], re.I): continue
+        if len(re.findall(re.escape(match['head']), source, re.I)) != 3: continue
+        aux = {'does':'do','is':'are','was':'were','seems':'seem','looks':'look'}.get(match['aux'].lower(), match['aux'])
+        target = (re.escape(match['head']) + r'(?:,\s*(?:and\s+)?|\s+and\s+)(?P<detail>[^.!?;:\n]{3,65}?) on '
+                  + re.escape(match['head']) + r'\s+' + aux + r'\b')
+        hits = list(re.finditer(target, output, re.I))
+        if len(hits) != 1: continue
+        hit = hits[0]
+        if [w for w in words(hit['detail']) if w!='the'] != [w for w in detail if w!='the']: continue
+        if len(re.findall(re.escape(match['head']), output, re.I)) != 2: continue
+        if words(source[:match.start()])[-3:] != words(output[:hit.start()])[-3:]: continue
+        if words(source[match.end():])[:4] != words(output[hit.end():])[:4]: continue
+        replacement = match['head'] + ', with ' + match['detail'] + ' on it, ' + match['aux']
+        output = output[:hit.start()] + replacement + output[hit.end():]
+    return output
+
+
+def restore_excluded_group(source, output):
+    """Restore a dropped exception without guessing a different group or action.
+
+    Retain the speaker's actual 'instead of' wording where it is ambiguous.
+    A separate assertion or already present exception never gets overwritten.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|rather)\b', source, re.I): return output
+    if re.search(r'\b(?:except|apart from|other than|instead of)\b', output, re.I): return output
+    subject = r'(?P<subject>everyone|everybody)'
+    group = r'(?P<group>(?:(?:these|those|the) (?:people|users|accounts|members|reviewers)|[A-Z][a-z]+(?: and [A-Z][a-z]+)?))'
+    exception = r'(?P<exception>(?:except(?: for)?|apart from|other than|instead of) ' + group + ')'
+    predicate = r'(?P<predicate>got access|received access|received approval|received the email|received a copy|was notified|can sign in)'
+    for pattern in [subject + ' ' + exception + ' ' + predicate,
+                    subject + ' ' + predicate + ' ' + exception + r'(?=[,.!?;:]|$|\s+(?:because|when|since|although|if|so|but)\b)']:
+        for match in re.finditer(r'\b' + pattern + r'\b', source, re.I):
+            if not re.match(r'(?:these|those|the) ', match['group'], re.I):
+                if not all(w=='and' or w[0].isupper() for w in match['group'].split()): continue
+            if any(len(re.findall(r'\b' + match['subject'] + r'\b', v, re.I)) != 1 for v in [source,output]): continue
+            target = r'\b' + re.escape(match['subject'] + ' ' + match['predicate']) + r'\b'
+            hits = list(re.finditer(target, output, re.I))
+            if len(hits) != 1: continue
+            hit = hits[0];start=hit.start()
+            # A stranded 'Instead,' can be the residue of the dropped phrase.
+            if match['exception'].lower().startswith('instead of'):
+                residue = re.search(r'(?<!\w)Instead,\s*$', output[:start], re.I)
+                if residue and len(re.findall(r'\binstead\b',source,re.I))==1:start=residue.start()
+            output = output[:start] + match[0] + output[hit.end():]
+    return output
 
 def copyedit(text, generate, examples=(), known_terms=()):
     output, diagnostics = _copyedit(text, generate, examples, known_terms)
@@ -1425,9 +1530,16 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (repair_conditional_restart, 'conditional_restart'),
                          (repair_embedded_question, 'embedded_question'),
                          (restore_confirmation_tense, 'confirmation_tense'),
-                         (repair_confirmation_manner_boundary, 'confirmation_manner')]:
+                         (repair_confirmation_manner_boundary, 'confirmation_manner'),
+                         (repair_framed_request, 'framed_request'),
+                         (restore_descriptive_attachment, 'descriptive_attachment'),
+                         (restore_excluded_group, 'excluded_group')]:
         candidate = repair(source, output)
-        if candidate != output and rejection_reason(source, candidate, known_terms) is None:
+        reason = rejection_reason(source, candidate, known_terms) if candidate != output else None
+        if candidate != output and reason == 'content_or_order' and repair is repair_conditional_restart:
+            basis = conditional_restart_basis(source, candidate)
+            if basis != source: reason = rejection_reason(basis, candidate, known_terms)
+        if candidate != output and reason is None:
             output = candidate; changes.append(name)
     if changes:
         diagnostics = dict(diagnostics, status='edited', recovery=True, local_repairs=changes)

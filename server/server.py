@@ -748,7 +748,7 @@ def _meeting_notes(transcript: str) -> str:
     tok = _prompt_tok if _prompt_model is not None else _tok
     source = meeting_quality.passages(transcript)
     msgs = [{"role": "system", "content": MEETING_SYS},
-            {"role": "user", "content": json.dumps({"passages": source}, ensure_ascii=False)}]
+            {"role": "user", "content": "<<<TRANSCRIPT>>>\n" + transcript + "\n<<<END>>>"}]
     prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
     out = generate(model, tok, prompt=prompt, max_tokens=1800, verbose=False).strip()
     return meeting_quality.selected_notes(source, out)

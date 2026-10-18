@@ -1318,6 +1318,87 @@ def rewritten_independent_question(source, output):
     return bool(independent_question_rewrites(source, output))
 
 
+
+def repair_conditional_restart(source, output):
+    """Retain an explicit conditional restart after a named actor.
+
+    'Since Orion and Vega if they approved it' cannot license an assertion that
+    they approved it. Only the same unique actor and predicate may be repaired.
+    """
+    if re.search(r'["“”`]', source + output) or re.search(r'\b(?:sorry|correction|rather)\b', source, re.I): return output
+    pattern = (r'\b[Ss]ince (?P<actor>[A-Z][\w-]*(?: (?:and )?[A-Z][\w-]*){0,3})'
+               r',?\s+if (?P<pronoun>they|he|she) (?P<predicate>[a-z]+(?: [a-z]+){1,3})(?=[,?!.]| why\b)')
+    for match in re.finditer(pattern, source):
+        if any(len(re.findall(r'\b' + re.escape(match['actor']) + r'\b', value, re.I)) != 1
+               for value in (source, output)): continue
+        target = r'\bsince\s+' + re.escape(match['actor']) + r'\s+' + re.escape(match['predicate']) + r'(?=[,?!.]| why\b)'
+        hits = list(re.finditer(target, output, re.I))
+        if len(hits) != 1: continue
+        hit = hits[0]
+        replacement = ('If' if hit[0][0].isupper() else 'if') + hit[0][len('since'):]
+        output = output[:hit.start()] + replacement + output[hit.end():]
+    return output
+
+
+def repair_embedded_question(source, output):
+    """Restore a question lost after an exactly aligned reporting frame."""
+    if re.search(r'["“”`]', source + output) or re.search(r'\b(?:sorry|correction|rather)\b', source, re.I): return output
+    for match in re.finditer(r'(?P<frame>[^.!?\n:;]+?)\s+that\s+(?P<wh>what|where|when|why|how|which)\s+'
+                             r'(?P<aux>should|could|would|can|will|do|did)\s+'
+                             r'(?P<subject>we|you|I|they|he|she|it)\s+(?P<tail>[^.!?\n:;]{3,100})\?', source, re.I):
+        frame = match['frame'].strip()
+        if any(len(re.findall(re.escape(frame), value, re.I)) != 1 for value in (source, output)): continue
+        if not re.search(r'\b(?:discussed|asked|wondered|considered)\b', frame, re.I): continue
+        if len(words(frame)) < 3 or len(words(match['tail'])) < 2: continue
+        target = (re.escape(frame) + r'\s+that\s+' + re.escape(match['subject']) + r'\s+'
+                  + re.escape(match['aux']) + r'\s+' + re.escape(match['tail']) + r'\.')
+        target = '(?:' + target + '|' + re.escape(frame + ' that ' + ' '.join(match[g] for g in ('wh', 'aux', 'subject', 'tail')) + '?') + ')'
+        hits = list(re.finditer(target, output, re.I))
+        if len(hits) != 1: continue
+        hit = hits[0]
+        replacement = frame + ': ' + ' '.join(match[g] for g in ('wh', 'aux', 'subject', 'tail')) + '?'
+        output = output[:hit.start()] + replacement + output[hit.end():]
+    return output
+
+
+def restore_confirmation_tense(source, output):
+    """Preserve a source tag's time reference without changing its main clause."""
+    if re.search(r'["“”`]', source + output) or re.search(r'\b(?:sorry|correction|rather)\b', source, re.I): return output
+    families = [('isn', 'wasn'), ('aren', 'weren'), ('doesn', 'didn'),
+                ('hasn', 'hadn'), ('can', 'couldn'), ('won', 'wouldn')]
+    for match in re.finditer(r'(?P<anchor>\b\w+ \w+ \w+),\s*(?P<aux>\w+)[’\']t (?P<subject>it|you|we|they|he|she)\?', source, re.I):
+        if any(len(re.findall(re.escape(match['anchor']), value, re.I)) != 1 for value in (source, output)): continue
+        family = next((f for f in families if match['aux'].lower() in f), None)
+        if family is None: continue
+        other = next(v for v in family if v != match['aux'].lower())
+        target = re.escape(match['anchor']) + r',\s*' + other + r"[’']t " + match['subject'] + r'\?'
+        hits = list(re.finditer(target, output, re.I))
+        if len(hits) != 1: continue
+        hit = hits[0]
+        output = output[:hit.start()] + match[0] + output[hit.end():]
+    return output
+
+
+def repair_confirmation_manner_boundary(source, output):
+    """Attach a declarative manner aside to its proposal and final tag.
+
+    An explicitly separate question or inverted 'how do we' never qualifies.
+    No words are added: the existing confirmation tag follows the aside.
+    """
+    if re.search(r'["“”`]', source + output) or re.search(r'\b(?:sorry|correction|rather)\b', source, re.I): return output
+    aligned = collapse_adjacent_other(source, source)
+    pattern = (r'(?P<head>\b(?:it|this|that) should be [^.!?;:\n]{3,120} or something) '
+               r'right (?P<aside>how (?:we|you|they) (?:actually|normally|usually) [^.!?;:\n]{3,100})[.?]?$')
+    match = re.search(pattern, aligned, re.I)
+    if not match or len(words(match['aside'])) > 18: return output
+    if re.search(r'\b(?:but|because|if|unless|or|and|depends|matters|remains|means|is|was)\b', match['aside'], re.I): return output
+    target = re.escape(match['head']) + r',?\s+right,?\s+' + re.escape(match['aside'].rstrip()) + r'[.?]?$'
+    hits = list(re.finditer(target, output, re.I))
+    if len(hits) != 1: return output
+    hit = hits[0]
+    replacement = match['head'] + '—' + match['aside'].rstrip() + ', right?'
+    return output[:hit.start()] + replacement + output[hit.end():]
+
 def copyedit(text, generate, examples=(), known_terms=()):
     output, diagnostics = _copyedit(text, generate, examples, known_terms)
     source = clean_stutters(text)
@@ -1340,7 +1421,11 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (restore_literal_fragments, 'literal_fragment'),
                          (preserve_explicit_command_repetition, 'explicit_command_repetition'),
                          (collapse_adjacent_other, 'adjacent_other_restart'),
-                         (collapse_descriptive_restart, 'descriptive_restart')]:
+                         (collapse_descriptive_restart, 'descriptive_restart'),
+                         (repair_conditional_restart, 'conditional_restart'),
+                         (repair_embedded_question, 'embedded_question'),
+                         (restore_confirmation_tense, 'confirmation_tense'),
+                         (repair_confirmation_manner_boundary, 'confirmation_manner')]:
         candidate = repair(source, output)
         if candidate != output and rejection_reason(source, candidate, known_terms) is None:
             output = candidate; changes.append(name)

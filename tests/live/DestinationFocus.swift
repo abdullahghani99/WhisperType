@@ -24,11 +24,22 @@ let fieldCases: [(String?, String?, Bool, Bool, Bool)] = [
     ("AXGroup", nil, false, false, true),
     ("AXButton", nil, false, false, false),
     ("AXTextField", "AXSecureTextField", false, false, false),
-    (nil, nil, false, true, false)
+    (nil, nil, false, true, false),
+    ("AXTextArea", nil, false, true, true),
+    ("AXTextField", nil, false, true, true),
+    ("AXTextField", "AXSearchField", false, true, true),
+    ("AXTextField", "AXSecureTextField", false, true, false),
+    ("AXTextArea", "AXSecureTextField", false, true, false),
+    ("AXWebArea", nil, false, true, false),
+    ("AXGroup", nil, false, true, false),
+    ("AXButton", nil, false, true, false),
+    ("", nil, false, true, false),
+    ("AXTextArea", nil, true, true, false),
+    ("AXTextField", nil, true, true, false)
 ]
 for (role, subrole, remote, secure, expected) in fieldCases {
     guard CaptureDestination.acceptsField(role: role, subrole: subrole, remote: remote, secureInput: secure) == expected else {
         print("FAIL: paste capability policy"); exit(1)
     }
 }
-print("8 field capability cases PASS; missing local AX metadata allowed, secure/known controls rejected, remote field retained")
+print("\(fieldCases.count) field capability cases PASS; Secure Input permits verified local text roles only, password/unknown/remote fields declined")

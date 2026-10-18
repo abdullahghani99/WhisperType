@@ -18,12 +18,12 @@ public enum SecureInput {
         // macOS's own login process keeps the lock after a lock/unlock -- held
         // 10+ hours on 2026-10-17. Quitting it logs the speaker out.
         if holder?.lowercased() == "loginwindow" {
-            return "macOS loginwindow has secure input on, so WhisperType has paused automatic insertion. "
+            return "macOS loginwindow has secure input on, and WhisperType could not verify an ordinary destination text field. "
                  + "Try locking the screen (Ctrl+Cmd+Q) and unlocking, then use Review result. "
                  + "Your dictation is saved. You can also use Copy result in the recording’s options menu and paste it yourself."
         }
         let who = holder.map { "\($0) has" } ?? "An app has"
-        return "\(who) macOS secure input on, so WhisperType has paused automatic insertion. "
+        return "\(who) macOS secure input on, and WhisperType could not verify an ordinary destination text field. "
              + "Finish any password entry in that app, then use Review result. "
              + "Your dictation is saved. You can also use Copy result in the recording’s options menu and paste it yourself."
     }

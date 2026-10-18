@@ -14,8 +14,41 @@ then cached offline.
 """
 import sys
 import json
+import math
 
 MODEL = "pyannote/speaker-diarization-3.1"
+
+
+def usable_embedding(vector):
+    return bool(len(vector)) and all(math.isfinite(float(v)) for v in vector) and sum(float(v)*float(v) for v in vector) > 1e-8
+
+
+def unpack(output):
+    if isinstance(output, tuple) and len(output) == 2:
+        return output
+    return getattr(output, "speaker_diarization", output), getattr(output, "speaker_embeddings", None)
+
+
+def needs_short_recovery(output, seconds):
+    # A zero centroid is not a second voice. On short calls, reassigning every
+    # small cluster to the dominant cluster can produce exactly this result.
+    diar, matrix = unpack(output)
+    if seconds > 300 or matrix is None or len(diar.labels()) < 2:
+        return False
+    return any(not usable_embedding(v) for v in matrix)
+
+
+def recovery_is_distinct(output):
+    diar, matrix = unpack(output)
+    if matrix is None or not 2 <= len(diar.labels()) <= 4 or len(matrix) != len(diar.labels()):
+        return False
+    if not all(usable_embedding(v) for v in matrix):
+        return False
+    for i,a in enumerate(matrix):
+        for b in matrix[i+1:]:
+            cosine=sum(float(x)*float(y) for x,y in zip(a,b))/(sum(float(x)**2 for x in a)*sum(float(x)**2 for x in b))**.5
+            if cosine >= 0.5: return False
+    return all(diar.label_timeline(label).duration() >= 1.0 for label in diar.labels())
 
 
 def main():
@@ -25,6 +58,8 @@ def main():
     try:
         import os
         import torch
+        torch.set_num_threads(4)
+        torch.set_num_interop_threads(2)
         from pyannote.audio import Pipeline
         # pyannote 4.x wants the HF token passed explicitly. Read it from env or
         # the standard cached location. This is the local open pipeline — NOT the
@@ -67,6 +102,20 @@ def main():
         except TypeError:
             out = pipe({"waveform": wf, "sample_rate": sr})
 
+        recovered = False
+        if needs_short_recovery(out, len(arr) / sr):
+            try:
+                params = pipe.parameters(instantiated=True)
+                params["clustering"].update(method="average", min_cluster_size=3)
+                pipe.instantiate(params)
+                candidate = pipe({"waveform": wf, "sample_rate": sr})
+                if recovery_is_distinct(candidate):
+                    out = candidate
+                    recovered = True
+            except Exception as error:
+                # Recovery must not discard a usable baseline transcript.
+                print("short speaker recovery failed: " + str(error), file=sys.stderr)
+
         emb_matrix = None
         if isinstance(out, tuple) and len(out) == 2:
             diar, emb_matrix = out                       # pyannote 3.x
@@ -85,14 +134,14 @@ def main():
                         vec = emb_matrix[i]
                         vec = vec.tolist() if hasattr(vec, "tolist") else list(vec)
                         # Drop non-finite vectors; a NaN embedding would poison matching.
-                        if all(v == v for v in vec):
+                        if usable_embedding(vec):
                             embeddings[spk] = [float(v) for v in vec]
             except Exception as e:  # noqa: BLE001
                 print(json.dumps({"turns": turns, "embeddings": {},
                                   "warn": f"embeddings unavailable: {e}"}))
                 return
 
-        print(json.dumps({"turns": turns, "embeddings": embeddings}))
+        print(json.dumps({"turns": turns, "embeddings": embeddings, "short_cluster_recovery": recovered}))
     except Exception as e:  # noqa: BLE001
         print(json.dumps({"turns": [], "error": str(e)}))
 

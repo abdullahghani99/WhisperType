@@ -62,3 +62,19 @@ After a deployment made through another route, run
 `python3 scripts/sync_learning_toolchain.py --host <server>` from the matching
 verified source checkout, then run the private checked entry point. Do not bypass
 the policy check or retrain a rejected unchanged candidate merely to clear drift.
+
+## Meeting repair validation
+
+Keep meeting quality work separate from dictation training. Compare actual audio,
+speaker turns, complete transcripts and notes, including short interruptions,
+one-speaker controls, multiple speakers, real commitments, hypothetical advice
+and negation. Invalid voice vectors must not establish a new speaker identity;
+uncertain or overlapping segments must not acquire a confident person's name.
+Source-backed task excerpts reduce invented actions but do not establish perfect
+summary accuracy, complete recall, or universal speaker separation.
+
+A repair of a specific short-call failure does not close long-call diarization,
+source-channel preservation, or simultaneous-speech alignment. Preserve original
+recordings and old outputs before repairing an existing meeting. Keep unresolved
+mechanisms as separate actionable backlog entries with actual evidence and exact
+next steps, and carry verified repairs through the normal idle release gates.

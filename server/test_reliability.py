@@ -49,6 +49,21 @@ class ReliabilityTests(unittest.TestCase):
         Path(self.m._spool_path(n)).write_bytes(b'original audio')
         return n
 
+    def test_mixed_speaker_segment_is_not_falsely_attributed(self):
+        turns=[{'start':0,'end':2,'speaker':'A'}, {'start':2,'end':4,'speaker':'B'}]
+        text,order=self.m._label_transcript([(0,4,'A reply and an interruption.')],turns)
+        self.assertEqual(text,'**Uncertain speaker:** A reply and an interruption.')
+        self.assertEqual(order,{})
+    def test_clear_turns_keep_distinct_labels_and_words(self):
+        turns=[{'start':0,'end':2,'speaker':'A'}, {'start':2,'end':4,'speaker':'B'}]
+        text,order=self.m._label_transcript([(0,2,'Hello.'),(2,4,'Please explain.')],turns)
+        self.assertEqual(text,'**Speaker 1:** Hello.\n\n**Speaker 2:** Please explain.')
+        self.assertEqual(order,{'A':'Speaker 1','B':'Speaker 2'})
+    def test_small_boundary_bleed_does_not_hide_a_clear_speaker(self):
+        turns=[{'start':0,'end':2,'speaker':'A'}, {'start':1.9,'end':4,'speaker':'B'}]
+        text,order=self.m._label_transcript([(0,2,'Hello.')],turns)
+        self.assertEqual(text,'**Speaker 1:** Hello.')
+
     def test_auth_is_default_for_all_sensitive_routes(self):
         self.m.API_KEY = 'test-key'
         for path in ['/history','/meetings','/meeting/1','/vocab','/voiceprints','/suggestions','/learning/status']:

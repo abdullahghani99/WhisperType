@@ -44,6 +44,7 @@ import tempfile
 import hashlib
 import polish as copyediting
 import learning
+import meeting_quality
 from pathlib import Path
 _POLISH_POLICY_SHA256 = hashlib.sha256(Path(copyediting.__file__).read_bytes()).hexdigest()
 from contextvars import ContextVar
@@ -146,25 +147,8 @@ PROMPT_LEVEL = {
 }
 
 # --- Meeting mode: turn a meeting/call transcript into structured notes.
-# Grounded-generative — organizes what was said; must not invent facts.
-MEETING_SYS = (
-    "You write meeting notes for one busy person who was in the room. Write the "
-    "way a sharp colleague would brief them afterwards: specific, concrete, and "
-    "short.\n\n"
-    "Produce Markdown with ONLY the sections that apply:\n"
-    "**Summary** - at most 3 sentences. Lead with what happened and what it "
-    "means. Carry the actual numbers, names and outcomes.\n"
-    "**Decisions** - bulleted, only explicit decisions.\n"
-    "**Action items** - bulleted, owner first (e.g. '- Alex: send the "
-    "reconciliation sheet'). Include a due date ONLY if one was stated.\n"
-    "**Open questions** - bulleted, genuinely unresolved items.\n\n"
-    "Never begin with 'The meeting discussed', 'The primary concern was', 'It "
-    "was agreed that', 'This meeting', or 'Additionally'. Never use the words "
-    "'delve' or 'leverage'. Do not restate the agenda. Do not pad.\n"
-    "Base everything ONLY on the transcript. Do NOT invent decisions, owners, "
-    "dates, numbers, or facts that aren't there. Omit any section with nothing "
-    "to put in it. Output ONLY the Markdown notes - no preamble."
-)
+# Source-backed commitments and concise summaries, without prompt example tasks.
+MEETING_SYS = meeting_quality.NOTES_SYSTEM
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("whispertype")
@@ -485,29 +469,40 @@ def _label_transcript(segments, turns) -> tuple[str, dict]:
     if not segments:
         return "", {}
 
+    uncertain = "__uncertain_speaker__"
     def speaker_for(start, end):
-        best, best_ov = None, 0.0
-        for t in turns:
-            ov = max(0.0, min(end, t["end"]) - max(start, t["start"]))
-            if ov > best_ov:
-                best_ov, best = ov, t["speaker"]
-        return best
+        overlaps = {}
+        for turn in turns:
+            overlap = max(0.0, min(end, turn["end"]) - max(start, turn["start"]))
+            if overlap:
+                key = turn["speaker"]
+                overlaps[key] = overlaps.get(key, 0.0) + overlap
+        ranked = sorted(overlaps.items(), key=lambda item: item[1], reverse=True)
+        if not ranked:
+            return None
+        # ASR segments can span a speaker change or simultaneous speech. Do
+        # not give all those words confidently to whichever voice wins a tie.
+        if len(ranked) > 1 and ranked[1][1] >= 0.5 and ranked[1][1] / sum(overlaps.values()) >= 0.25:
+            return uncertain
+        return ranked[0][0]
 
-    # Stable, friendly names: SPEAKER_00 -> "Speaker 1" in first-appearance order.
     lines, order, cur_spk, buf = [], {}, None, []
-    for (s, e, text) in segments:
+    def flush():
+        label = "Uncertain speaker" if cur_spk == uncertain else order[cur_spk]
+        lines.append(f"**{label}:** " + " ".join(buf))
+    for (start, end, text) in segments:
         if not text:
             continue
-        spk = speaker_for(s, e) or cur_spk or "SPEAKER_00"
-        if spk not in order:
-            order[spk] = f"Speaker {len(order) + 1}"
-        if spk != cur_spk and buf:
-            lines.append(f"**{order[cur_spk]}:** " + " ".join(buf))
+        speaker = speaker_for(start, end) or cur_spk or "SPEAKER_00"
+        if speaker != uncertain and speaker not in order:
+            order[speaker] = f"Speaker {len(order) + 1}"
+        if speaker != cur_spk and buf:
+            flush()
             buf = []
-        cur_spk = spk
+        cur_spk = speaker
         buf.append(text)
     if buf and cur_spk is not None:
-        lines.append(f"**{order[cur_spk]}:** " + " ".join(buf))
+        flush()
     return "\n\n".join(lines), order
 
 
@@ -748,16 +743,15 @@ def _engineer(transcript: str, level: str) -> str:
 
 def _meeting_notes(transcript: str) -> str:
     """Meeting mode: structured notes from a transcript. Uses the stronger model
-    (prompt model) when available. Grounded — instructed not to invent facts."""
+    (prompt model) when available. Render source excerpts for commitments and concise summary prose."""
     model = _prompt_model if _prompt_model is not None else _model
     tok = _prompt_tok if _prompt_model is not None else _tok
+    source = meeting_quality.passages(transcript)
     msgs = [{"role": "system", "content": MEETING_SYS},
-            {"role": "user", "content": f"<<<TRANSCRIPT>>>\n{transcript}\n<<<END>>>"}]
+            {"role": "user", "content": json.dumps({"passages": source}, ensure_ascii=False)}]
     prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
-    # Notes are a fraction of the transcript; cap generously but bounded.
-    max_toks = min(1600, max(400, len(transcript.split())))
-    out = generate(model, tok, prompt=prompt, max_tokens=max_toks, verbose=False).strip()
-    return out.replace("<<<TRANSCRIPT>>>", "").replace("<<<END>>>", "").strip()
+    out = generate(model, tok, prompt=prompt, max_tokens=1800, verbose=False).strip()
+    return meeting_quality.selected_notes(source, out)
 
 
 def _sentence_case(s: str) -> str:
@@ -869,6 +863,9 @@ def _name_speakers(labeled: str, taken: set | None = None) -> tuple[str, dict]:
             continue
         nm = name.strip()[:40]
         key = nm.casefold()
+        if not meeting_quality.self_introduced(labeled, lbl, nm):
+            log.info("speaker naming: %s rejected (no self-introduction evidence)", lbl)
+            continue
         if key in used:
             # Already this meeting's other speaker. An anonymous "Speaker 2" is
             # visibly unknown and can be renamed by hand; a confident wrong name

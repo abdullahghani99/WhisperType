@@ -1060,10 +1060,40 @@ def repair_local_question_boundaries(source, output):
     return output
 
 
+def collapse_repeated_named_command(text):
+    """Collapse an additive repeat of the same idempotent named-target command.
+
+    Require a standalone command, the explicit additive repeat, and a proper
+    name rather than a generic object. Keep "as well" and all other clauses.
+    Quotation, emphasis, negative and differently qualified commands abstain.
+    """
+    if any(mark in text for mark in ('"', '“', '”', '`')): return text
+    if re.search(r'\b(?:emphasis|verbatim|exactly|repeat|twice|again)\b', text, re.I): return text
+    pattern = (r"(?P<boundary>^|(?<=[.\n]))(?P<space>\s*)"
+               r"(?P<command>(?:remove|disable) (?P<target>[A-Za-z][\w-]*(?: [A-Za-z][\w-]*){0,3}))"
+               r"(?:\.\s+And\s+|\s+and\s+)(?P=command)\s+as well(?=\.|$)")
+    def replace(match):
+        target = match['target'].split()
+        # Generic noun phrases can denote different unnamed objects. Repetition
+        # of an instruction can also be deliberate; do not infer through cues.
+        if not all(word[0].isupper() for word in target): return match[0]
+        if any(word.casefold() in {'the','a','an','this','that','these','those',
+                                  'again','twice','once','only','first','second',
+                                  'not','never','please','one','another','other','it','them',
+                                  'item','thing','duplicate','copy','app','application',
+                                  'file','folder','row','entry','record','cache','task','job'} for word in target): return match[0]
+        return match['boundary'] + match['space'] + match['command'] + ' as well'
+    return re.sub(pattern, replace, text, flags=re.I)
+
+
 def copyedit(text, generate, examples=(), known_terms=()):
     output, diagnostics = _copyedit(text, generate, examples, known_terms)
     source = clean_stutters(text)
     changes = []
+    if collapse_repeated_named_command(source) != source:
+        candidate = collapse_repeated_named_command(output)
+        if candidate != output and rejection_reason(source, candidate, known_terms) is None:
+            output = candidate; changes.append('repeated_named_command')
     # Source-local normalization: require the same repeated fragment to survive
     # in the accepted output, and validate all meaning against the original.
     if collapse_copular_fragments(source) != source:

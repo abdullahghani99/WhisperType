@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.9.27] - 2026-10-18
+
+### Fixed
+- A local Secure Input lock no longer blocks authenticated paired remote insertion before the remote agent can validate its own destination. Remote app, window, canvas and session identity checks remain; remote password fields and changed focus are still refused by the agent. Local native paste behavior is unchanged.
+
 ## [0.9.26] - 2026-10-18
 
 ### Fixed

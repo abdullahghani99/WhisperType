@@ -107,10 +107,10 @@ struct CaptureDestination {
         }
         let window = winValue as! AXUIElement
         let field = fieldValue.flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? ($0 as! AXUIElement) : nil }
-        let remote = (app.bundleIdentifier ?? "").contains("ScreenSharing")
         let secureInput = IsSecureEventInputEnabled()
         let destination = CaptureDestination(app: app, window: window, field: field,
                                              title: attribute(window, kAXTitleAttribute) as? String ?? "")
+        let remote = destination.isRemote
         if let field {
             let role = attribute(field, kAXRoleAttribute) as? String
             let subrole = attribute(field, kAXSubroleAttribute) as? String
@@ -158,8 +158,12 @@ struct CaptureDestination {
 
     static func acceptsField(role: String?, subrole: String?, remote: Bool, secureInput: Bool) -> Bool {
         guard subrole != kAXSecureTextFieldSubrole else { return false }
+        // A remote canvas never receives local paste. It uses the paired agent,
+        // which independently validates the remote editable field and session.
+        // A secure-input lock on THIS Mac must not block that authenticated path.
+        if remote { return role != nil && !(role?.isEmpty ?? true) }
         if secureInput {
-            return !remote && [kAXTextAreaRole, kAXTextFieldRole].contains(role ?? "")
+            return [kAXTextAreaRole, kAXTextFieldRole].contains(role ?? "")
         }
         guard let role else { return !remote }
         return remote || ![kAXButtonRole, kAXMenuItemRole, kAXCheckBoxRole, kAXRadioButtonRole].contains(role)
@@ -238,7 +242,7 @@ struct CaptureDestination {
             diagnose("window-changed-or-unavailable"); return false
         }
         let secureInput = IsSecureEventInputEnabled()
-        if secureInput && (field == nil || isRemote) { diagnose("secure-input-unverified-destination"); return false }
+        if secureInput && field == nil { diagnose("secure-input-unverified-destination"); return false }
         if let value = attribute(application, kAXFocusedUIElementAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() {
             let current = value as! AXUIElement
             let subrole = attribute(current, kAXSubroleAttribute) as? String ?? ""
@@ -257,7 +261,7 @@ struct CaptureDestination {
         return true
     }
     /// Opt in only with an identified local ordinary field, checked again just
-    /// before the paste. Unknown fields and paired transport keep their guards.
+    /// before local paste. Paired transport never uses this local-paste opt-in.
     func permitsSecureInputPaste() -> Bool {
         guard !isRemote, let field, isCurrent() else { return false }
         func string(_ key: String) -> String? {

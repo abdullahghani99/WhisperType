@@ -15,6 +15,9 @@ public enum RecordingStore {
         /// True only after the complete send path finishes. Optional for legacy
         /// recordings; an interrupted or partial send must remain actionable.
         public var sendCompleted: Bool?
+        /// Explicit filing only; never implies delivery or deletes saved audio.
+        public var archived: Bool?
+        public var isArchived: Bool { archived == true }
         public var hasResult: Bool {
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                 variants.values.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -25,15 +28,15 @@ public enum RecordingStore {
         public var belongsInSentHistory: Bool {
             hasResult && sentUnverified && (sendCompleted == true || (sendCompleted == nil && error.hasPrefix("Keys were sent;")))
         }
-        public var needsAttention: Bool { status != "inserted" && !belongsInSentHistory }
+        public var needsAttention: Bool { !isArchived && status != "inserted" && !belongsInSentHistory }
         public var inboxMessage: String {
             if sentUnverified { return "Typing was sent. Check the destination before inserting again." }
 
             if status == "ready" && !hasResult { return "No transcript was returned. Your audio is saved." }
             return error.isEmpty ? (hasResult ? "Ready for review" : "Audio saved") : error
         }
-        public init(id: UUID = UUID(), kind: String) {
-            self.id = id; created = Date(); self.kind = kind; status = "pending"
+        public init(id: UUID = UUID(), kind: String, created: Date = Date()) {
+            self.id = id; self.created = created; self.kind = kind; status = "pending"
             text = ""; raw = ""; error = ""; variants = [:]
         }
     }
@@ -93,6 +96,54 @@ public enum RecordingStore {
     public static func removeAudio(_ id: UUID, directory: URL = pendingDirectory()) throws {
         let url = audioURL(id, directory: directory)
         if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+    }
+    public static func setArchived(_ id: UUID, _ archived: Bool, directory: URL = pendingDirectory()) throws {
+        guard var entry = try entries(directory: directory).first(where: { $0.id == id }),
+              entry.status != "processing" else { throw CocoaError(.fileWriteNoPermission) }
+        entry.archived = archived
+        try save(entry, directory: directory)
+    }
+    /// Recover once into local History. Originals remain in a separate folder;
+    /// a retry reuses the same identity instead of generating duplicate WAVs.
+    @discardableResult public static func recoverMeetingToHistory(_ journal: URL, root: URL = recordingsDirectory()) throws -> Entry? {
+        guard journal.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL,
+              journal.lastPathComponent.hasPrefix("capture-"),
+              let id = UUID(uuidString: String(journal.lastPathComponent.dropFirst(8))) else { throw CocoaError(.fileReadInvalidFileName) }
+        let manager = FileManager.default
+        let sizes = try ["system.pcm", "microphone.pcm"].map {
+            (try manager.attributesOfItem(atPath: journal.appendingPathComponent($0).path)[.size] as? NSNumber)?.intValue ?? 0
+        }
+        let archive = root.appendingPathComponent("RecoveredFragments", isDirectory: true)
+        try manager.createDirectory(at: archive, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let archivedJournal = archive.appendingPathComponent(journal.lastPathComponent)
+        guard !manager.fileExists(atPath: archivedJournal.path) else { throw CocoaError(.fileWriteFileExists) }
+        var result: Entry?
+        let bytes = (sizes.max() ?? 0) / 2 * 2
+        if bytes > 0 {
+            let directory = root.appendingPathComponent("pending", isDirectory: true)
+            try manager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let metadata = directory.appendingPathComponent(id.uuidString).appendingPathExtension("json")
+            let existing = manager.fileExists(atPath: metadata.path)
+                ? try JSONDecoder().decode(Entry.self, from: Data(contentsOf: metadata)) : nil
+            if let existing {
+                guard existing.kind == "meeting", existing.isArchived else { throw CocoaError(.fileWriteFileExists) }
+            }
+            let audio = audioURL(id, directory: directory)
+            if !manager.fileExists(atPath: audio.path) { try MeetingAudioJournal.recover(directory: journal, to: audio) }
+            let file = try FileHandle(forReadingFrom: audio); defer { try? file.close() }
+            guard try file.read(upToCount: 44) == MeetingAudioJournal.wavHeader(bytes: bytes),
+                  (try manager.attributesOfItem(atPath: audio.path)[.size] as? NSNumber)?.intValue == bytes + 44 else { throw CocoaError(.fileReadCorruptFile) }
+            if let existing {
+                result = existing
+            } else {
+                let created = (try manager.attributesOfItem(atPath: journal.path)[.creationDate] as? Date) ?? Date()
+                var entry = Entry(id: id, kind: "meeting", created: created)
+                entry.archived = true
+                try save(entry, directory: directory); result = entry
+            }
+        }
+        try manager.moveItem(at: journal, to: archivedJournal)
+        return result
     }
     /// Call once at launch, before starting work. Never silently replay a request
     /// whose response may have been lost when the previous process exited.

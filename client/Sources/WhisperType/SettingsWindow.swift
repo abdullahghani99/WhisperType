@@ -50,6 +50,7 @@ final class SettingsState: ObservableObject {
     @Published var historyItems: [ServerClient.HistoryItem] = []
     @Published var recoveryEntries: [RecordingStore.Entry] = []
     @Published var sentEntries: [RecordingStore.Entry] = []
+    @Published var archivedEntries: [RecordingStore.Entry] = []
     @Published var interruptedMeetings: [URL] = []
     @Published var undoSuggestionID: Int?
     @Published var removedVocab: (kind: String, key: String, value: String)?
@@ -84,19 +85,38 @@ final class SettingsState: ObservableObject {
             let saved = try RecordingStore.entries()
             let unsavedIDs = Set(unsavedRecordings.map(\.id))
             recoveryEntries = (unsavedRecordings + saved.filter { $0.needsAttention && !unsavedIDs.contains($0.id) }).sorted { $0.created > $1.created }
-            sentEntries = saved.filter { $0.belongsInSentHistory && !unsavedIDs.contains($0.id) }
+            sentEntries = saved.filter { $0.belongsInSentHistory && !$0.isArchived && !unsavedIDs.contains($0.id) }
+            archivedEntries = saved.filter { $0.isArchived && !unsavedIDs.contains($0.id) }
             let root = RecordingStore.recordingsDirectory()
             interruptedMeetings = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil))?
                 .filter { $0.lastPathComponent.hasPrefix("capture-") && $0 != activeJournal } ?? []
         } catch { status = error.localizedDescription }
     }
     func recoverMeeting(_ directory: URL) {
+        guard directory != activeJournal else { return }
         do {
-            let destination = RecordingStore.recordingsDirectory().appendingPathComponent("recovered-\(UUID().uuidString).wav")
-            try MeetingAudioJournal.recover(directory: directory, to: destination)
-            status = "Recovered recording. Use Summarize a recording to process it."
-            NSWorkspace.shared.activateFileViewerSelecting([destination])
+            let entry = try RecordingStore.recoverMeetingToHistory(directory)
+            status = entry == nil ? "This interrupted capture contained no audio. Its session files were archived."
+                : "Recovered recording saved in History. Original audio fragments are preserved."
+            reloadRecovery()
         } catch { status = "Recovery failed: \(error.localizedDescription)" }
+    }
+    func archiveRecording(_ id: UUID, archived: Bool = true) {
+        guard !unsavedRecordings.contains(where: { $0.id == id }) else { return }
+        do {
+            try RecordingStore.setArchived(id, archived)
+            status = archived ? "Moved to History. Saved audio and text are retained." : "Moved to Inbox."
+            reloadRecovery()
+        } catch { status = "Could not move recording: \(error.localizedDescription)" }
+    }
+    func archiveInbox() {
+        do {
+            let unsaved = Set(unsavedRecordings.map(\.id))
+            let entries = try RecordingStore.entries().filter { $0.needsAttention && $0.status != "processing" && !unsaved.contains($0.id) }
+            for entry in entries { try RecordingStore.setArchived(entry.id, true) }
+            status = "Moved \(entries.count) recordings to History. Saved audio and text are retained."
+            reloadRecovery()
+        } catch { status = "Could not finish moving recordings: \(error.localizedDescription)"; reloadRecovery() }
     }
     func removeVocab(kind: String, key: String, value: String) {
         guard let client = client else { return }
@@ -533,22 +553,24 @@ struct HistoryTab: View {
     @Environment(\.colorScheme) private var scheme
     private var dark: Bool { scheme == .dark }
     private var sent: [RecordingStore.Entry] { state.sentEntries.filter { search.isEmpty || $0.text.localizedCaseInsensitiveContains(search) } }
+    private var archived: [RecordingStore.Entry] { state.archivedEntries.filter { search.isEmpty || $0.text.localizedCaseInsensitiveContains(search) || $0.kind.localizedCaseInsensitiveContains(search) } }
     private var history: [ServerClient.HistoryItem] {
-        let sentIDs = Set(state.sentEntries.compactMap(\.historyID))
+        let sentIDs = Set((state.sentEntries + state.archivedEntries).compactMap(\.historyID))
         return state.historyItems.filter { !sentIDs.contains($0.id) && (search.isEmpty || $0.text.localizedCaseInsensitiveContains(search)) }
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: VF.Space.sm) {
-                    Text(onlyRecovery ? "Inbox" : "Dictation history").font(VF.Font.display).tracking(VF.Tracking.display)
-                    Text(onlyRecovery ? "Review a result or pick up where a recording stopped." : "Find something you said, including sent text kept safely on this Mac.")
+                    Text(onlyRecovery ? "Inbox" : "History").font(VF.Font.display).tracking(VF.Tracking.display)
+                    Text(onlyRecovery ? "Review a result or pick up where a recording stopped." : "Find past dictations and recordings you saved for later.")
                         .font(VF.Font.callout).foregroundStyle(VF.Color.muted(dark: dark))
                 }
                 Spacer()
                 Button { state.reload() } label: { Image(systemName: "arrow.clockwise").frame(width: 28, height: 28) }
                     .buttonStyle(.plain).help("Refresh").accessibilityLabel("Refresh recordings")
                 Menu {
+                    if onlyRecovery { Button("Move Inbox recordings to History") { state.archiveInbox() }.disabled(state.recoveryEntries.isEmpty) }
                     Button("Open recordings folder") { NSWorkspace.shared.open(RecordingStore.recordingsDirectory()) }
                 } label: { Image(systemName: "ellipsis.circle").frame(width: 28, height: 28) }.menuStyle(.borderlessButton).fixedSize()
                     .accessibilityLabel("Recording options")
@@ -571,7 +593,7 @@ struct HistoryTab: View {
                                 Label("Interrupted meeting", systemImage: "waveform.badge.exclamationmark").font(VF.Font.heading)
                                 Text("Audio fragments are saved on this Mac. Recover them into a recording you can open or import.")
                                     .font(VF.Font.callout).foregroundStyle(VF.Color.muted(dark: dark))
-                                Button("Recover recording") { state.recoverMeeting(directory) }.buttonStyle(VFActionStyle())
+                                Button("Recover to History") { state.recoverMeeting(directory) }.buttonStyle(VFActionStyle())
                             }.padding(.vertical, VF.Space.xl)
                             Divider()
                         }
@@ -580,11 +602,15 @@ struct HistoryTab: View {
                             Divider()
                         }
                     } else {
+                        ForEach(archived) { entry in
+                            archivedRow(entry).padding(.vertical, VF.Space.xl)
+                            Divider()
+                        }
                         ForEach(sent) { entry in
                             sentRow(entry).padding(.vertical, VF.Space.xl)
                             Divider()
                         }
-                        if history.isEmpty && sent.isEmpty { empty(search.isEmpty ? "Your dictations will be here." : "No matching dictations.", detail: search.isEmpty ? "Completed dictations are stored on your configured server." : "Try a different word or phrase.", symbol: "text.magnifyingglass") }
+                        if history.isEmpty && sent.isEmpty && archived.isEmpty { empty(search.isEmpty ? "Your dictations will be here." : "No matching dictations.", detail: search.isEmpty ? "Completed dictations are stored on your configured server." : "Try a different word or phrase.", symbol: "text.magnifyingglass") }
                         ForEach(history) { item in
                             VStack(alignment: .leading, spacing: VF.Space.md) {
                                 HStack {
@@ -646,6 +672,27 @@ struct HistoryTab: View {
                 .help("Typing finished, but the app did not provide an exact receipt. Audio and text are kept here; no action is required.")
         }
     }
+    private func archivedRow(_ entry: RecordingStore.Entry) -> some View {
+        VStack(alignment: .leading, spacing: VF.Space.md) {
+            HStack {
+                Text(entry.kind == "meeting" ? "Recovered meeting recording" : entry.kind.capitalized).font(VF.Font.heading)
+                Text(entry.created.formatted(date: .abbreviated, time: .shortened)).font(VF.Font.caption)
+                Spacer()
+                if !entry.text.isEmpty { Button("Copy") { copy(entry.text) }.buttonStyle(.plain) }
+                Menu {
+                    Button("Open saved audio") { NSWorkspace.shared.open(RecordingStore.audioURL(entry.id)) }
+                        .disabled(!FileManager.default.fileExists(atPath: RecordingStore.audioURL(entry.id).path))
+                    if entry.kind != "meeting" { Button("Move to Inbox") { state.archiveRecording(entry.id, archived: false) }.disabled(entry.status == "processing") }
+                    if entry.kind == "meeting" { Button("Process as meeting") { state.onProcessAsMeeting?(entry.id) }.disabled(entry.status == "processing") }
+                    Button("Remove local recording…", role: .destructive) { discard = entry }.disabled(entry.status == "processing")
+                } label: { Image(systemName: "ellipsis").frame(width: 24, height: 24) }
+                    .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("Archived recording options")
+            }
+            if !entry.text.isEmpty { Text(entry.text).font(VF.Font.body).lineSpacing(5).textSelection(.enabled) }
+            Label(entry.hasResult ? "Archived · not marked as sent" : "Archived · audio only", systemImage: "archivebox")
+                .font(VF.Font.caption).foregroundStyle(VF.Color.muted(dark: dark))
+        }
+    }
     private func recoveryRow(_ entry: RecordingStore.Entry) -> some View {
         VStack(alignment: .leading, spacing: VF.Space.md) {
             HStack(spacing: VF.Space.sm) {
@@ -654,6 +701,7 @@ struct HistoryTab: View {
                 Spacer()
                 Text(entry.created.formatted(date: .abbreviated, time: .shortened)).font(VF.Font.caption).foregroundStyle(VF.Color.muted(dark: dark))
                 Menu {
+                    Button("Move to History") { state.archiveRecording(entry.id) }.disabled(entry.status == "processing")
                     Button("Open audio") { NSWorkspace.shared.open(RecordingStore.audioURL(entry.id)) }
                         .disabled(!FileManager.default.fileExists(atPath: RecordingStore.audioURL(entry.id).path))
                     if !entry.text.isEmpty { Button("Copy result") { copy(entry.text) } }

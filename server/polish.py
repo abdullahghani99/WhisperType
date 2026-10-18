@@ -1147,6 +1147,51 @@ def restore_repeated_emphasis(source, output):
     return output
 
 
+def collapse_descriptive_restart(source, output):
+    """Join an explicitly resumed subject around its on-object description.
+
+    Require the same three noun references and the explicit 'for this' restart
+    in source and accepted output. Keep the location relation as 'on it', all
+    predicate wording and surrounding qualifiers. Never infer a second failure.
+    """
+    if re.search(r'["“”`]|\b(?:emphasis|verbatim|exactly|repeat|twice|instead|rather|sorry|mean)\b', source, re.I):
+        return output
+    pattern = (r'\b(?P<head>the (?P<noun>[a-z]{3,}))\s*,\s*'
+               r'(?P<detail>the (?:[a-z][a-z-]* ){0,2}[a-z][a-z-]*) on (?P=head)'
+               r'\s*,\s*for this\s*,?\s*(?P=head)'
+               r'(?=\s+(?:does|did|is|was|seems|looks|might|may|could)\b)')
+    originals = list(re.finditer(pattern, source, re.I))
+    edits = []
+    for match in re.finditer(pattern, output, re.I):
+        aligned = [m for m in originals if words(m[0]) == words(match[0])]
+        if len(aligned) != 1: continue
+        original = aligned[0]
+        # 'On it' is safe only for known inanimate heads. Unknown nouns and
+        # people/animals must not acquire an inferred impersonal pronoun.
+        if original['noun'].casefold() not in {
+            'image','photo','picture','diagram','chart','page','document','report',
+            'form','screen','label','box','parcel','package','bottle','container',
+            'panel','button','card','file','map','table','wall','door','board',
+        }: continue
+        # Do not interpret contrast, a negative subject, or coordinated objects
+        # as an abandoned duplicate. Restrict the middle to a simple noun group.
+        if set(words(match['detail'])) & {'and','or','but','not','no','only','both','neither','either',
+                                          'is','was','are','were','does','did','has','had','which','that','who'}:
+            continue
+        prefix = source[:original.start()]
+        if re.search(r'\b(?:not|neither|either|both|versus)\s*$', prefix, re.I): continue
+        if sum(words(m[0]) == words(match[0]) for m in re.finditer(pattern, output, re.I)) != 1:
+            continue
+        # Unique word anchors prevent applying a matching fragment to another
+        # clause when the earlier model reordered or changed surrounding text.
+        if words(prefix)[-3:] != words(output[:match.start()])[-3:]: continue
+        if words(source[original.end():])[:3] != words(output[match.end():])[:3]: continue
+        edits.append((match.start(), match.end(), match['head'] + ', with ' + match['detail'] + ' on it,'))
+    for start, end, replacement in reversed(edits):
+        output = output[:start] + replacement + output[end:]
+    return output
+
+
 def collapse_adjacent_other(source, output):
     """Remove a contiguous determiner restart before a plural noun.
 
@@ -1294,7 +1339,8 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (restore_repeated_emphasis, 'repeated_emphasis'),
                          (restore_literal_fragments, 'literal_fragment'),
                          (preserve_explicit_command_repetition, 'explicit_command_repetition'),
-                         (collapse_adjacent_other, 'adjacent_other_restart')]:
+                         (collapse_adjacent_other, 'adjacent_other_restart'),
+                         (collapse_descriptive_restart, 'descriptive_restart')]:
         candidate = repair(source, output)
         if candidate != output and rejection_reason(source, candidate, known_terms) is None:
             output = candidate; changes.append(name)

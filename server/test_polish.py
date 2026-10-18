@@ -989,3 +989,70 @@ class PolishingCompletionTests(unittest.TestCase):
         self.assertIn('right? But obviously I do not want production changes.',output)
 
 if __name__=='__main__':unittest.main()
+
+
+class DescriptiveRestartTests(unittest.TestCase):
+    def test_resumed_subject_keeps_description_relation_and_predicate(self):
+        source = 'The issue is that the parcel, the address label on the parcel, for this the parcel does not arrive correctly.'
+        expected = 'The issue is that the parcel, with the address label on it, does not arrive correctly.'
+        calls = []
+        def generate(*_): calls.append(True); return source
+        output, diag = copyedit(source, generate)
+        self.assertEqual(output, expected)
+        self.assertEqual(len(calls), 1)
+        self.assertIn('descriptive_restart', diag['local_repairs'])
+        self.assertIsNone(rejection_reason(source, output))
+
+    def test_qualifiers_and_other_clauses_survive(self):
+        source = 'I think the diagram, the small label on the diagram, for this, the diagram might not print clearly. Please keep the original.'
+        expected = 'I think the diagram, with the small label on it, might not print clearly. Please keep the original.'
+        output, _ = copyedit(source, lambda *_: source)
+        self.assertEqual(output, expected)
+
+    def test_changed_subject_contrast_correction_and_quotes_abstain(self):
+        from polish import collapse_descriptive_restart
+        cases = [
+            'The parcel, the label on the parcel, for this the label does not print.',
+            'The parcel, the label on the box, for this the parcel does not arrive.',
+            'The parcel, the label is on the parcel, for this the parcel does not arrive.',
+            'Not the parcel, the label on the parcel, for this the parcel does not arrive.',
+            'For emphasis, the parcel, the label on the parcel, for this the parcel does not arrive.',
+            'The parcel, I mean the label on the parcel, for this the parcel does not arrive.',
+            'The parcel, the label and seal on the parcel, for this the parcel does not arrive.',
+            'The parcel, the label on the parcel, and the parcel does not arrive.',
+            'The parcel, the label on the parcel. For this the parcel does not arrive.',
+            'The title is "the parcel, the label on the parcel, for this the parcel does not arrive."',
+            'The parcel arrives, but the label does not print.',
+            'Neither the parcel nor the label is correct.',
+        ]
+        for source in cases:
+            with self.subTest(source=source):self.assertEqual(collapse_descriptive_restart(source, source), source)
+
+    def test_unaligned_or_repeated_spans_abstain(self):
+        from polish import collapse_descriptive_restart
+        source = 'The parcel, the label on the parcel, for this the parcel does not arrive.'
+        self.assertEqual(collapse_descriptive_restart('The parcel does not arrive.', source), source)
+        twice = source + ' ' + source
+        self.assertEqual(collapse_descriptive_restart(twice, twice), twice)
+        proposal = source.replace('does not arrive', 'might not arrive')
+        self.assertEqual(collapse_descriptive_restart(source, proposal), proposal)
+
+    def test_already_clean_output_is_preserved(self):
+        from polish import collapse_descriptive_restart
+        source = 'The parcel, the label on the parcel, for this the parcel does not arrive.'
+        proposal = 'The parcel with the label on it does not arrive.'
+        self.assertEqual(collapse_descriptive_restart(source, proposal), proposal)
+
+    def test_entire_result_still_passes_meaning_guard(self):
+        source = 'The parcel, the label on the parcel, for this the parcel does not arrive. Keep both copies.'
+        proposal = source.replace('does not arrive', 'does arrive')
+        output, _ = copyedit(source, lambda *_: proposal)
+        self.assertIn('does not arrive', output)
+        self.assertIn('Keep both copies.', output)
+        self.assertIsNone(rejection_reason(source, output))
+
+    def test_people_animals_and_unknown_heads_keep_their_nouns(self):
+        from polish import collapse_descriptive_restart
+        for noun in ['woman','child','dog','horse','teacher','patient','robot','device']:
+            source = f'The {noun}, the tag on the {noun}, for this the {noun} looks different.'
+            self.assertEqual(collapse_descriptive_restart(source, source), source)

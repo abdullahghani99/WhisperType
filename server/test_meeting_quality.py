@@ -35,6 +35,19 @@ class MeetingEvidenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):q.selected_notes(source,json.dumps(selected))
         selected['action_items']=[source[0]['text']]
         self.assertIn('if the review passes',q.selected_notes(source,json.dumps(selected)))
+    def test_omitted_explicit_commitment_is_recovered_from_source(self):
+        text="**Alex:** We'll set the repository up and publish the code."
+        selected={k:[] for k in q.HEADINGS}
+        self.assertIn("Alex: We'll set the repository up",q.selected_notes(q.passages(text),json.dumps(selected)))
+    def test_curly_contractions_keep_real_commitments(self):
+        text="**Alex:** We’ll review the draft tomorrow."
+        self.assertIn('We’ll review',q.selected_notes(q.passages(text),json.dumps({k:[] for k in q.HEADINGS})))
+    def test_predictions_and_hypothetical_quotes_are_not_auto_tasks(self):
+        for text in ["**Alex:** We will be late.","**Alex:** For example. I will send the report.","**Alex:** Suppose we migrate. I will send the report."]:
+            with self.assertRaises(ValueError):q.selected_notes(q.passages(text),json.dumps({k:[] for k in q.HEADINGS}))
+    def test_auto_task_retains_its_condition(self):
+        text='**Alex:** I will send the report if the review passes.'
+        self.assertIn('if the review passes',q.selected_notes(q.passages(text),json.dumps({k:[] for k in q.HEADINGS})))
     def test_summary_speaker_number_is_valid_but_new_amount_is_not(self):
         source=q.passages('**Speaker 1:** The budget is 100 dollars.')
         selected={k:[] for k in q.HEADINGS};selected['summary']=['Speaker 1 described a budget of 100 dollars.']

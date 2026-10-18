@@ -44,6 +44,21 @@ def selected_notes(source, response):
         raise ValueError('Notes selection returned invalid JSON') from None
     if not isinstance(selected, dict) or set(selected) != set(HEADINGS):
         raise ValueError('Notes selection returned invalid sections')
+    # Do not trade invented-task prevention for losing explicit commitments.
+    # Recover only full, attributed first-person action sentences; predictions,
+    # suggestions, quoted examples and hypothetical context do not qualify.
+    if not all(isinstance(selected[k],list) and all(isinstance(x,str) for x in selected[k]) for k in HEADINGS):
+        raise ValueError('Notes selection returned invalid excerpts')
+    commitment=re.compile(r"^(?:I(?:['’]ll| will)|[Ww]e(?:['’]ll| will)|I(?:['’]m| am) going to)\s+(?:send|set|review|check|prepare|finish|publish|build|share|schedule|create|contact|draft|deliver|submit|test|provide|update|upload|confirm|arrange|organize|write|open|make|follow up)\b")
+    for index,row in enumerate(source):
+        text=row['text']
+        previous=source[index-1] if index else None
+        context=text
+        if previous and previous['speaker']==row['speaker']:context=previous['text']+' '+context
+        contextual_hypothesis=bool(previous and previous['speaker']==row['speaker'] and re.search(r'\b(?:if|unless|said|quoted|suppose|imagine)\b',previous['text'],re.I))
+        if not contextual_hypothesis and row['speaker'] and len(text.split())<=90 and commitment.search(text) and not re.search(r'\b(?:example|hypothetical|imagine|suppose|quoted|maybe|probably|might)\b',context,re.I):
+            selected['action_items']=[item for item in selected['action_items'] if item not in text]
+            selected['action_items'].append(text)
     def norm(text): return re.sub(r'\s+', ' ', text).strip()
     output=[]; seen=set()
     dedicated={norm(text) for key in ('action_items',) for text in selected[key] if isinstance(text,str)} if all(isinstance(selected[k],list) for k in HEADINGS) else set()
@@ -77,7 +92,7 @@ def selected_notes(source, response):
                 owner=match['speaker']
                 if owner not in shortest or len(match['text'])<len(shortest[owner]['text']):shortest[owner]=match
             matches=list(shortest.values())
-            if key=='action_items' and not re.search(r"\b(?:I(?:'ll| will)|[Ww]e(?:'ll| will)|(?:I|[Ww]e) (?:commit|agree|promise)|I(?:'m| am) going to|[A-Z][a-z]+ will)\b",text):continue
+            if key=='action_items' and not re.search(r"\b(?:I(?:['’]ll| will)|[Ww]e(?:['’]ll| will)|(?:I|[Ww]e) (?:commit|agree|promise)|I(?:['’]m| am) going to|[A-Z][a-z]+ will)\b",text):continue
             # Check the surrounding source sentence as well as the excerpt:
             # selecting 'I will' out of a hypothetical cannot make it a task.
             context=' '.join(row['text'] for row in matches)

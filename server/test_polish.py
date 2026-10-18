@@ -5,6 +5,89 @@ from polish import (copyedit,rejection_reason,rehearing,clean_stutters,spoken_sy
                     project_punctuation,words,starts_question,SYSTEM,EXAMPLES)
 
 class CopyeditingTests(unittest.TestCase):
+    def test_conditional_restart_restores_uncertainty_and_keeps_cleanup(self):
+        prefix = 'Please retain the original draft, approval records, contract terms, delivery dates and supporting documents for our independent review. '
+        source = prefix + 'Since Orion and Vega if they approved it why is the draft actually still pending?'
+        proposal = prefix + 'Since Orion and Vega approved it, why is the draft actually still pending?'
+        out, diag = copyedit(source, lambda *_: proposal)
+        self.assertEqual(out, proposal.replace('Since', 'If'))
+        self.assertIn('conditional_restart', diag['local_repairs'])
+
+    def test_repeated_actors_cannot_transfer_a_condition_to_an_assertion(self):
+        from polish import repair_conditional_restart, repair_embedded_question
+        source = 'Since Orion if he approved it why is the draft pending? Since Orion approved it, send the copy.'
+        proposal = 'If Orion approved it, why is the draft pending? Since Orion approved it, send the copy.'
+        self.assertEqual(repair_conditional_restart(source, proposal), proposal)
+        source = 'I discussed with you that what should we publish today? I discussed with you that we should publish today.'
+        proposal = 'I discussed with you what we should publish today. I discussed with you that we should publish today.'
+        self.assertEqual(repair_embedded_question(source, proposal), proposal)
+
+    def test_conditional_restart_abstains_on_assertions_corrections_and_quotes(self):
+        from polish import repair_conditional_restart
+        for source in ['Since Orion and Vega approved it, why is it pending?',
+                       'Since Orion and Vega if they approved it, sorry, they did approve it.',
+                       'The title is "Since Orion if he approved it why is it pending?"',
+                       'Since Orion approved it, I wonder if Vega approved it.',
+                       'Since Orion if he did not approve it why is it pending?']:
+            proposal = 'Since Orion and Vega approved it, why is it pending?'
+            self.assertEqual(repair_conditional_restart(source, proposal), proposal)
+
+    def test_embedded_question_restores_choice_without_losing_other_questions(self):
+        source = 'Which draft is ready? I discussed with you that what should we actually publish? Keep both copies.'
+        proposal = 'Which draft is ready? I discussed with you that we should actually publish. Keep both copies.'
+        out, diag = copyedit(source, lambda *_: proposal)
+        self.assertEqual(out, 'Which draft is ready? I discussed with you: what should we actually publish? Keep both copies.')
+        self.assertIn('embedded_question', diag['local_repairs'])
+
+    def test_embedded_question_accepts_faithful_indirect_and_statement_forms(self):
+        from polish import repair_embedded_question
+        pairs = [('I discussed with you that what should we actually publish?',
+                  'I discussed with you what we should actually publish.'),
+                 ('I discussed with you that we should actually publish.',
+                  'I discussed with you that we should actually publish.'),
+                 ('What matters is that we should publish the draft.',
+                  'What matters is that we should publish the draft.'),
+                 ('I asked you: what should we publish today?', 'I asked you what we should publish today.'),
+                 ('The title is "I discussed with you that what should we publish today?"',
+                  'The title is "I discussed with you that we should publish today."')]
+        for source, output in pairs:self.assertEqual(repair_embedded_question(source, output), output)
+
+    def test_confirmation_retains_source_time_reference_without_extra_inference(self):
+        source = "That was the main point of it, isn't it? Keep the original."
+        proposal = source.replace("isn't", "wasn't")
+        calls = []
+        def generate(*_):calls.append(1);return proposal
+        out, diag = copyedit(source, generate)
+        self.assertEqual(out, source)
+        self.assertEqual(len(calls), 1)
+        self.assertIn('confirmation_tense', diag['local_repairs'])
+
+    def test_confirmation_abstains_on_changed_anchor_correction_and_quote(self):
+        from polish import restore_confirmation_tense
+        for source, proposal in [
+            ("It is the point of it, isn't it?", "It was a different subject, wasn't it?"),
+            ("It is the point of it, isn't it? Sorry, wasn't it?", "It is the point of it, wasn't it?"),
+            ('''The label is "the point of it, isn't it?"''', '''The label is "the point of it, wasn't it?"'''),
+            ("That was the point of it, wasn't it?", "That was the point of it, wasn't it?")]:
+            self.assertEqual(restore_confirmation_tense(source, proposal), proposal)
+
+    def test_confirmation_manner_attaches_aside_and_keeps_uncertainty(self):
+        source = 'I think it should be sign in with Atlas or something right how we actually do it with the other other platforms'
+        proposal = source.replace('other other', 'other').replace('right how', 'right, how') + '?'
+        out, diag = copyedit(source, lambda *_: proposal)
+        self.assertEqual(out, 'I think it should be sign in with Atlas or something—how we actually do it with the other platforms, right?')
+        self.assertIn('confirmation_manner', diag['local_repairs'])
+
+    def test_confirmation_manner_preserves_separate_questions_and_literal_directions(self):
+        from polish import repair_confirmation_manner_boundary
+        cases = ['It should be Atlas or something, right? How do we actually do it elsewhere?',
+                 'It should be Atlas or something right how do we actually do it elsewhere?',
+                 'It should be Atlas or something right how we actually do it depends on the account.',
+                 'It should be on the right where we normally place the button.',
+                 'It should be Atlas or something right how we usually do it if the account is ready.',
+                 'The label is "it should be Atlas or something right how we normally do it".']
+        for source in cases:self.assertEqual(repair_confirmation_manner_boundary(source, source), source)
+
     def test_copular_fragment_retains_modifiers_and_other_clauses(self):
         from polish import collapse_copular_fragments
         source = "It's suddenly just it's very abrupt when you open it. I think we can improve it."

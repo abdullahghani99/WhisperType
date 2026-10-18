@@ -1,3 +1,4 @@
+from polish import collapse_repeated_named_command
 import re
 import unittest
 from polish import (copyedit,rejection_reason,rehearing,clean_stutters,spoken_symbols,looped_transcription,punctuation_is_faithful,
@@ -854,5 +855,35 @@ class GeneratedAngleWrappers(unittest.TestCase):
         self.assertEqual(rejection_reason('Send <customer> the report.',
                                           '<Send <customer> the report.>'),
                          'generated_wrapper')
+
+class RepeatedCommandTests(unittest.TestCase):
+ def test_additive_same_named_target_keeps_scope_and_other_cleanup(self):
+  source='Please remove ToolBox. We have ToolBox and ToolBox Chat. Remove Atlas. And remove Atlas as well.'
+  proposal='Please remove ToolBox. We have ToolBox and ToolBox Chat. Remove Atlas and remove Atlas as well.'
+  calls=[]
+  def gen(*_):calls.append(True);return proposal
+  out,diag=copyedit(source,gen)
+  self.assertEqual(out, 'Please remove ToolBox. We have ToolBox and ToolBox Chat. Remove Atlas as well.')
+  self.assertEqual(len(calls),1);self.assertIn('repeated_named_command',diag['local_repairs']);self.assertIsNone(rejection_reason(source,out))
+ def test_idempotent_named_variations(self):
+  for source,expected in [('Disable Sync Helper. And disable Sync Helper as well.','Disable Sync Helper as well.'),('Remove Atlas and remove Atlas as well.','Remove Atlas as well.')]:
+   self.assertEqual(collapse_repeated_named_command(source),expected)
+ def test_distinct_actions_polarity_emphasis_quotes_and_generic_targets_survive(self):
+  for text in ['Remove Atlas. And remove Orion as well.','Remove Atlas. And disable Atlas as well.',
+    'Remove Atlas from the list. And remove Atlas from the folder as well.',
+    'Do not remove Atlas. And remove Atlas as well.', 'Remove Atlas. And do not remove Atlas as well.',
+    'Remove Atlas! And remove Atlas as well.', 'Remove Atlas, remove Atlas as well.',
+    'Remove Atlas again. And remove Atlas again as well.',
+    'Remove the duplicate. And remove the duplicate as well.',
+    'Remove This Item. And remove This Item as well.',
+    'Remove Another Copy. And remove Another Copy as well.',
+    'For emphasis. Remove Atlas. And remove Atlas as well.',
+    'Repeat exactly. Remove Atlas. And remove Atlas as well.',
+    'Send Payment. And send Payment as well.',
+    'The label says "Remove Atlas. And remove Atlas as well."',
+    'Remove Atlas. And remove Atlas as well?',
+    'Remove Atlas. And remove Atlas as well as Orion.',
+    'Remove Atlas. After the test, remove Atlas as well.']:
+   with self.subTest(text=text):self.assertEqual(collapse_repeated_named_command(text),text)
 
 if __name__=='__main__':unittest.main()

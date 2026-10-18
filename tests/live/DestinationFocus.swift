@@ -34,12 +34,18 @@ let fieldCases: [(String?, String?, Bool, Bool, Bool)] = [
     ("AXGroup", nil, false, true, false),
     ("AXButton", nil, false, true, false),
     ("", nil, false, true, false),
-    ("AXTextArea", nil, true, true, false),
-    ("AXTextField", nil, true, true, false)
+    ("AXTextArea", nil, true, true, true),
+    ("AXTextField", nil, true, true, true),
+    ("AXScrollArea", nil, true, true, true),
+    ("AXScrollArea", nil, true, false, true),
+    ("AXTextField", "AXSecureTextField", true, true, false),
+    ("AXTextField", "AXSecureTextField", true, false, false),
+    (nil, nil, true, true, false),
+    ("", nil, true, true, false)
 ]
 for (role, subrole, remote, secure, expected) in fieldCases {
     guard CaptureDestination.acceptsField(role: role, subrole: subrole, remote: remote, secureInput: secure) == expected else {
         print("FAIL: paste capability policy"); exit(1)
     }
 }
-print("\(fieldCases.count) field capability cases PASS; Secure Input permits verified local text roles only, password/unknown/remote fields declined")
+print("\(fieldCases.count) field capability cases PASS; Secure Input permits verified local text roles only, password/unknown local fields declined; remote canvases require paired-agent validation")

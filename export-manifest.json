@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "64534544e1af45ce11c26d08fe3e2f1be45bb68f8261431e2d59d85101f3df35",
+    "VERSION": "0c6471922aa464ba1899df40ecd6439107fb1de1f68de459840c19f1ead51a71",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/AudioUploadTests.swift": "1bd8f3580878381507e4d23ede7f5ff16b90d7fc1ff05f1adf068b7c5298328e",
@@ -24,7 +24,7 @@
     "client/Sources/WhisperType/AudioDevices.swift": "adbc79c526a3a400d6c22dfe559bb1e6f8b9ffc28f813c1659939fb7b61789c9",
     "client/Sources/WhisperType/AudioRecorder.swift": "2bd00635908c38d69e68ff22ef02b86cadb30dad7aaadc7eae3d27124592ded5",
     "client/Sources/WhisperType/CallWatcher.swift": "e6a887df5291cc966e4423c9112ff95d463527aae68069c73d9c8f7be3be3c03",
-    "client/Sources/WhisperType/CaptureDestination.swift": "bcdb964eb750994cec9428c6becfa8cecda7c935591c57b68bb72996c65f722e",
+    "client/Sources/WhisperType/CaptureDestination.swift": "9d9008100fdfce66a57fb9ed89797ad659343b5777444ad49d92f5e6aaf87cfc",
     "client/Sources/WhisperType/CaptureHome.swift": "2f201567b44b73338d76a47f51bf4118da63dc7551dbcd5b4ff836da667dba64",
     "client/Sources/WhisperType/CorrectionPrompt.swift": "ca5d595e84060a6e0de39fb7a306d8eb49dc74ced043f66a106ae71ed3990a87",
     "client/Sources/WhisperType/DockController.swift": "c044d83de1141fc5dbfca3bc0107933cd1163edcb162f9672ba74e64c1ae3129",
@@ -120,7 +120,7 @@
     "server/server.py": "10b9d2c802b5fe69a3b597741b74a9cb5ddc29d21c2a0a8362bf310de909e8ee",
     "tests/agent/AgentTests.swift": "0330465f4f0df8fb027f775b5d326ceb6e3f815a9a7d8f2d13f3fe1740c51d40",
     "tests/agent/test_agent_http.py": "a1167a745ff010c7335d43a97d400f23ac729dee5dbc43725d610d4180a5b84a",
-    "tests/live/DestinationFocus.swift": "e7a5ed7b8513511f56b6e50f1596320c7c168501fafd71104033a9dd488b9e23",
+    "tests/live/DestinationFocus.swift": "f50bddf2d1c4b067780fcbd5ef3ee7d4073b85800fa2bf342f518f5d282d6a23",
     "tests/live/EndToEndAcceptance.swift": "d214c3671a03da74d1f3348061dabbf2548fbd8b33d6ead708ba895c566b77cb",
     "tests/live/InsertionTarget.swift": "0c9340d68824213d6f775ea9c9b1b6fdfef8b01528ef0a6e1ce980815f85bc47",
     "tests/live/NativeMicrophonePCM.swift": "f9ea18ab98c96f0cd3a741ddf5abc6c19f4a32e6ac511954130dd8c7cc31ba41",

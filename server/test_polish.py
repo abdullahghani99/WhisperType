@@ -5,6 +5,109 @@ from polish import (copyedit,rejection_reason,rehearing,clean_stutters,spoken_sy
                     project_punctuation,words,starts_question,SYSTEM,EXAMPLES)
 
 class CopyeditingTests(unittest.TestCase):
+    def test_short_conditional_normalization_keeps_full_semantic_guard(self):
+        from polish import conditional_restart_basis
+        source = 'Since Orion and Vega if they approved it why is the draft still pending?'
+        proposal = 'Since Orion and Vega approved it, why is the draft still pending?'
+        expected = proposal.replace('Since', 'If')
+        output, diag = copyedit(source, lambda *_: proposal)
+        self.assertEqual(output, expected)
+        self.assertIsNone(rejection_reason(conditional_restart_basis(source, output), output))
+        self.assertIsNotNone(rejection_reason(conditional_restart_basis(source, output), expected.replace('pending', 'approved')))
+        for original in ['Since Orion and Vega approved it, why is it pending?',
+                         'Since Orion if he approved it why is it pending? Since Orion approved it, send it.',
+                         'Since Orion if he approved it, sorry, he did approve it, why is it pending?']:
+            self.assertEqual(conditional_restart_basis(original, 'If Orion approved it, why is it pending?'), original)
+
+    def test_manner_aside_repairs_only_introduced_sentence_break(self):
+        source = 'It should be Atlas or something right how we normally do it with our other platforms'
+        proposed = 'It should be Atlas or something right? How we normally do it with our other platforms.'
+        output, _ = copyedit(source, lambda *_: proposed)
+        self.assertEqual(output, 'It should be Atlas or something—how we normally do it with our other platforms, right?')
+        authored = 'It should be Atlas or something, right? How do we normally do it with our other platforms?'
+        self.assertEqual(copyedit(authored, lambda *_: authored)[0], authored)
+
+    def test_manner_conditional_and_nominal_have_different_boundaries(self):
+        cases = [
+            ('It should be Atlas or something right how we usually do it if the account is ready.',
+             'It should be Atlas, or something right? How we usually do it if the account is ready.',
+             'It should be Atlas or something—how we usually do it if the account is ready, right?'),
+            ('It should be Atlas or something right how we actually do it depends on the account.',
+             'It should be Atlas, or something right how we actually do it depends on the account.',
+             'It should be Atlas or something, right? How we actually do it depends on the account.')]
+        for source, proposal, expected in cases:
+            self.assertEqual(copyedit(source, lambda *_: proposal)[0], expected)
+            self.assertIsNone(rejection_reason(source, expected))
+
+    def test_temporal_frame_retains_explicit_later_request(self):
+        source = "You decide and go ahead and while you do that can you also include Morgan's changes."
+        proposal = "You decide and go ahead. While you do that, can you also include Morgan's changes."
+        output, diag = copyedit(source, lambda *_: proposal)
+        self.assertEqual(output, proposal[:-1] + '?')
+        self.assertIn('framed_request', diag['local_repairs'])
+
+    def test_temporal_frame_preserves_statements_quotes_and_reporting_predicates(self):
+        from polish import repair_framed_request
+        for text in ['While you do that, you can include the changes.',
+                     'While you do that, can you help me is all she said.',
+                     'The label is "while you do that can you help me."',
+                     'While you do that, can you also check example.org.',
+                     'While you do that, can you also check version 2.5.']:
+            self.assertEqual(repair_framed_request(text, text), text)
+
+    def test_descriptive_attachment_keeps_one_subject_and_coordinated_details(self):
+        cases = [
+            ('The parcel, the label and seal on the parcel, for this the parcel does not arrive.',
+             'The parcel, the label, and the seal on the parcel do not arrive.',
+             'The parcel, with the label and seal on it, does not arrive.'),
+            ('The parcel, the label on the parcel, for this the parcel does not arrive. Keep both copies.',
+             'The parcel and the label on the parcel do not arrive. Keep both copies.',
+             'The parcel, with the label on it, does not arrive. Keep both copies.'),
+            ('The image, the caption on the image, for this the image is unclear.',
+             'The image and the caption on the image are unclear.',
+             'The image, with the caption on it, is unclear.')]
+        for source, proposed, expected in cases:
+            self.assertEqual(copyedit(source, lambda *_: proposed)[0], expected)
+            self.assertIsNone(rejection_reason(source, expected))
+
+    def test_descriptive_attachment_preserves_distinct_subjects_and_animate_heads(self):
+        from polish import restore_descriptive_attachment
+        cases = ['The parcel and the label on the parcel do not arrive.',
+                 'The parcel, the label and the seal do not arrive.',
+                 'The woman, the label on the woman, for this the woman does not arrive.',
+                 'Not the parcel, the label on the parcel, for this the parcel does not arrive.',
+                 'The parcel, the label or seal on the parcel, for this the parcel does not arrive.',
+                 'The title is "the parcel, the label on the parcel, for this the parcel does not arrive."']
+        for source in cases:self.assertEqual(restore_descriptive_attachment(source, source), source)
+
+    def test_exception_repair_restores_group_and_retains_source_wording(self):
+        source = 'We tried access for ten people yesterday. Everyone got access instead of these people because I think their accounts differed. Can you check?'
+        proposal = 'We tried access for ten people yesterday. Instead, everyone got access because I think their accounts differed. Can you check?'
+        output, diag = copyedit(source, lambda *_: proposal)
+        self.assertEqual(output, source)
+        self.assertIn('excluded_group', diag['local_repairs'])
+
+    def test_explicit_exception_before_and_after_predicate(self):
+        from polish import restore_excluded_group
+        for source in ['Everyone except Maya got access.', 'Everyone got access except Maya.',
+                       'Everybody received the email apart from those reviewers.',
+                       'Everyone other than Luis got access.']:
+            proposal = re.sub(r'(?:except Maya |other than Luis )', '', source)
+            proposal = re.sub(r' (?:except Maya|apart from those reviewers)', '', proposal)
+            self.assertEqual(restore_excluded_group(source, proposal), source)
+            self.assertEqual(copyedit(source, lambda *_: proposal)[0], source)
+
+    def test_exception_abstains_on_alternative_actions_and_ambiguous_alignment(self):
+        from polish import restore_excluded_group
+        pairs = [('Everyone got access instead of a refund.', 'Everyone got access.'),
+                 ('Everyone got access instead of these people from Finance.', 'Everyone got access.'),
+                 ('Everyone got access except Maya Johnson.', 'Everyone got access.'),
+                 ('Everyone except Maya got access. Everyone got access later.', 'Everyone got access. Everyone got access later.'),
+                 ('Everyone except Maya got access.', 'Everyone except Luis got access.'),
+                 ('The label is "Everyone except Maya got access."', 'The label is "Everyone got access."'),
+                 ('Everyone got access instead of these people, sorry, those people.', 'Everyone got access.')]
+        for source, proposed in pairs:self.assertEqual(restore_excluded_group(source, proposed), proposed)
+
     def test_conditional_restart_restores_uncertainty_and_keeps_cleanup(self):
         prefix = 'Please retain the original draft, approval records, contract terms, delivery dates and supporting documents for our independent review. '
         source = prefix + 'Since Orion and Vega if they approved it why is the draft actually still pending?'
@@ -82,9 +185,7 @@ class CopyeditingTests(unittest.TestCase):
         from polish import repair_confirmation_manner_boundary
         cases = ['It should be Atlas or something, right? How do we actually do it elsewhere?',
                  'It should be Atlas or something right how do we actually do it elsewhere?',
-                 'It should be Atlas or something right how we actually do it depends on the account.',
                  'It should be on the right where we normally place the button.',
-                 'It should be Atlas or something right how we usually do it if the account is ready.',
                  'The label is "it should be Atlas or something right how we normally do it".']
         for source in cases:self.assertEqual(repair_confirmation_manner_boundary(source, source), source)
 

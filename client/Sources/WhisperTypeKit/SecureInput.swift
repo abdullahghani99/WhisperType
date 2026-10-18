@@ -18,12 +18,13 @@ public enum SecureInput {
         // macOS's own login process keeps the lock after a lock/unlock -- held
         // 10+ hours on 2026-10-17. Quitting it logs the speaker out.
         if holder?.lowercased() == "loginwindow" {
-            return "macOS is stuck in secure input after the screen lock, so nothing can type right now. "
-                 + "Lock the screen (Ctrl+Cmd+Q) and unlock to release it, then use Review result."
+            return "macOS loginwindow has secure input on, so WhisperType has paused automatic insertion. "
+                 + "Try locking the screen (Ctrl+Cmd+Q) and unlocking, then use Review result. "
+                 + "Your dictation is saved. You can also use Copy result in the recording’s options menu and paste it yourself."
         }
         let who = holder.map { "\($0) has" } ?? "An app has"
-        return "\(who) macOS secure input on, so nothing can type right now — "
-             + "usually a password prompt still open in it. Clear or quit it, "
-             + "then use Review result."
+        return "\(who) macOS secure input on, so WhisperType has paused automatic insertion. "
+             + "Finish any password entry in that app, then use Review result. "
+             + "Your dictation is saved. You can also use Copy result in the recording’s options menu and paste it yourself."
     }
 }

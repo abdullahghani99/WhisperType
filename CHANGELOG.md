@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.28] - 2026-10-18
+
+### Fixed
+- Recover brief voices in short meetings when the normal diarizer produces an invalid speaker vector. Recovery requires distinct valid voice vectors and leaves ordinary results unchanged; mixed or overlapping ASR segments are explicitly uncertain instead of falsely assigned.
+- Require a speaker's own self-introduction before automatic naming; addressing someone by name is not identity evidence.
+- Remove concrete task examples from the notes prompt. Decision, commitment and unresolved-issue items now require source excerpts with context checks; concise summaries remain generated and are not a guarantee of perfect factual accuracy.
+
+This is a server update. Desktop capture, microphone lifecycle, native paste and paired remote transport are unchanged. Existing recordings remain intact.
+
+
 ## [0.9.27] - 2026-10-18
 
 ### Fixed

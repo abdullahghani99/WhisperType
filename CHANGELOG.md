@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.9.26] - 2026-10-18
+
+### Fixed
+- File Inbox recordings in History without claiming delivery or removing audio,
+  with a reversible Move to Inbox action for archived dictations.
+- Recover interrupted meeting audio once into History, retaining original PCM
+  fragments; empty capture sessions no longer produce empty playable recordings.
+- Assemble app bundles in the build cache and keep rollback copies outside app
+  search, leaving one installed WhisperType app in Applications.
+
+
 ## 0.9.7 — 2026-10-13
 
 - Preserve complete clauses whose noun phrase starts with this, that, these or those.

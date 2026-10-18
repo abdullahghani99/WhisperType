@@ -16,6 +16,15 @@ agent = module(ROOT/'remote-agent/deploy_agent.py')
 client = module(ROOT/'client/install.py')
 
 class ReleaseAndTrainingTests(unittest.TestCase):
+    def test_build_and_rollback_apps_are_outside_source_and_applications(self):
+        home=Path('/Users/example')
+        scratch,app,backups=client.build_paths(home,{})
+        self.assertEqual(scratch,home/'Library/Caches/whispertype-build')
+        self.assertEqual(app,scratch/'AppBundle.noindex/WhisperType.app')
+        self.assertTrue(backups.name.endswith('.noindex'))
+        custom,app,_=client.build_paths(home,{'VF_SCRATCH':'/tmp/custom-build'})
+        self.assertEqual(app,Path('/tmp/custom-build/AppBundle.noindex/WhisperType.app').resolve())
+
     def test_failed_app_backup_never_deletes_original(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); old=root/'app'; staged=root/'staged'; backup=root/'backup'

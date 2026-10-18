@@ -71,6 +71,60 @@ final class RecoveryTests: XCTestCase {
         do { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true); try body(url) }
         catch { XCTFail("\(error)") }
     }
+    func testArchiveRoundTripPreservesUnsentTextAudioAndMetadata() {
+        temporary { directory in
+            var entry = try RecordingStore.create(wav: Data([1,2,3,4]), kind: "dictation", directory: directory)
+            entry.text = "Saved result"; entry.raw = "Raw result"; entry.error = "Old insertion failure"; entry.historyID = 42
+            try RecordingStore.save(entry, directory: directory)
+            try RecordingStore.setArchived(entry.id, true, directory: directory)
+            let archived = try RecordingStore.entries(directory: directory).first!
+            XCTAssertTrue(archived.isArchived); XCTAssertFalse(archived.needsAttention)
+            XCTAssertFalse(archived.belongsInSentHistory); XCTAssertEqual(archived.status, "pending")
+            XCTAssertEqual(archived.text, entry.text); XCTAssertEqual(archived.raw, entry.raw)
+            XCTAssertEqual(archived.error, entry.error); XCTAssertEqual(archived.created, entry.created)
+            XCTAssertEqual(archived.historyID, 42)
+            XCTAssertEqual(try Data(contentsOf: RecordingStore.audioURL(entry.id, directory: directory)), Data([1,2,3,4]))
+            try RecordingStore.setArchived(entry.id, false, directory: directory)
+            XCTAssertTrue(try RecordingStore.entries(directory: directory).first!.needsAttention)
+        }
+    }
+    func testArchiveRefusesProcessingAndKeepsAudioOnlyHistory() {
+        temporary { directory in
+            var entry = try RecordingStore.create(wav: Data([1,2]), kind: "dictation", directory: directory)
+            entry.status = "processing"; try RecordingStore.save(entry, directory: directory)
+            do { try RecordingStore.setArchived(entry.id, true, directory: directory); XCTFail("must refuse processing") } catch { XCTAssertTrue(true) }
+            XCTAssertFalse(try RecordingStore.entries(directory: directory).first!.isArchived)
+            entry.status = "pending"; try RecordingStore.save(entry, directory: directory)
+            try RecordingStore.setArchived(entry.id, true, directory: directory)
+            let archived = try RecordingStore.entries(directory: directory).first!
+            XCTAssertTrue(archived.isArchived); XCTAssertFalse(archived.hasResult); XCTAssertFalse(archived.needsAttention)
+        }
+    }
+    func testMeetingRecoveryFilesHistoryAndPreservesOriginalFragments() {
+        temporary { root in
+            let id = UUID(); let journal = root.appendingPathComponent("capture-" + id.uuidString)
+            try FileManager.default.createDirectory(at: journal, withIntermediateDirectories: true)
+            try Data([1,0,2,0]).write(to: journal.appendingPathComponent("system.pcm"))
+            try Data([3,0]).write(to: journal.appendingPathComponent("microphone.pcm"))
+            let entry = try RecordingStore.recoverMeetingToHistory(journal, root: root)!
+            XCTAssertEqual(entry.id, id); XCTAssertTrue(entry.isArchived); XCTAssertEqual(entry.kind, "meeting")
+            XCTAssertFalse(entry.hasResult); XCTAssertFalse(entry.needsAttention)
+            let audio = RecordingStore.audioURL(id, directory: root.appendingPathComponent("pending"))
+            XCTAssertEqual(Data(try Data(contentsOf: audio).suffix(4)), Data([4,0,2,0]))
+            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("RecoveredFragments/" + journal.lastPathComponent + "/system.pcm")), Data([1,0,2,0]))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: journal.path))
+        }
+    }
+    func testEmptyInterruptedCaptureArchivesMetadataWithoutInventingAudio() {
+        temporary { root in
+            let journal = root.appendingPathComponent("capture-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: journal, withIntermediateDirectories: true)
+            try Data().write(to: journal.appendingPathComponent("system.pcm")); try Data().write(to: journal.appendingPathComponent("microphone.pcm"))
+            XCTAssertNil(try RecordingStore.recoverMeetingToHistory(journal, root: root))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("pending").path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("RecoveredFragments/" + journal.lastPathComponent).path))
+        }
+    }
     func testRapidRecordingsHaveIndependentAudioAndResults() {
         temporary { directory in
             let a = try RecordingStore.create(wav: Data([1,2]), kind: "dictation", directory: directory)

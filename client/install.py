@@ -9,6 +9,10 @@ import subprocess
 import time
 import uuid
 
+def build_paths(home, environment):
+    scratch = Path(environment.get('VF_SCRATCH', str(home/'Library/Caches/whispertype-build'))).expanduser().resolve()
+    return scratch, scratch/'AppBundle.noindex/WhisperType.app', home/'Library/Application Support/WhisperType/AppBackups.noindex'
+
 def configuration(previous, binary, updates=None):
     config=dict(previous)
     env=dict(previous.get('EnvironmentVariables',{})); env.update(updates or {})
@@ -41,12 +45,14 @@ def main():
     binary=destination/'Contents/MacOS/WhisperType'
     plist=Path.home()/'Library/LaunchAgents/app.whispertype.client.plist'
     previous=plist.read_bytes() if plist.exists() else None
+    scratch, built_app, backups = build_paths(Path.home(), os.environ)
+    build_environment = dict(os.environ, VF_SCRATCH=str(scratch))
     updates=json.loads(args.environment.read_text()) if args.environment else {}
     if not isinstance(updates,dict) or not all(isinstance(k,str) and isinstance(v,str) for k,v in updates.items()):
         raise SystemExit('Environment overrides must contain string keys and values')
     if not args.uninstall:
-        subprocess.run(['bash',str(root/'build_app.sh')],check=True)
-        subprocess.run(['codesign','--verify','--strict',str(root/'WhisperType.app')],check=True)
+        subprocess.run(['bash',str(root/'build_app.sh')],env=build_environment,check=True)
+        subprocess.run(['codesign','--verify','--strict',str(built_app)],check=True)
     # A normal quit can preserve unsaved work or be canceled by the user. Never
     # force-kill an app merely because it has not finished saving a recording.
     subprocess.run(['osascript','-e','tell application id "app.whispertype.client" to quit'],capture_output=True)
@@ -65,8 +71,9 @@ def main():
         print('App and login item removed. Recovery recordings, preferences and server data are retained.'); return
     token=uuid.uuid4().hex[:10]
     staged=destination.with_name('.WhisperType-staged-'+token+'.app')
-    backup=destination.with_name('.WhisperType-previous-'+token+'.app')
-    shutil.copytree(root/'WhisperType.app',staged)
+    backups.mkdir(parents=True,exist_ok=True,mode=0o700)
+    backup=backups/('WhisperType-previous-'+token+'.app')
+    shutil.copytree(built_app,staged)
     had_app=destination.exists()
     subprocess.run(['launchctl','bootout',domain,str(plist)],capture_output=True)
     def activate():
@@ -88,5 +95,10 @@ def main():
         else: plist.unlink(missing_ok=True)
     replace_app(staged,destination,backup,activate,
                 lambda: subprocess.run(['launchctl','bootout',domain,str(plist)],capture_output=True),restore)
+    registry=Path('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister')
+    if registry.exists():
+        for copy in (backup, built_app):
+            subprocess.run([str(registry),'-u',str(copy)],capture_output=True)
+        subprocess.run([str(registry),'-f',str(destination)],check=True,capture_output=True)
 
 if __name__=='__main__': main()

@@ -148,6 +148,10 @@ func run(_ name: String, _ body: () -> Void) {
         run("RecoveryTests.testLegacyCompletedReceiptAndInterruptedSendRouteDifferently") { t.testLegacyCompletedReceiptAndInterruptedSendRouteDifferently() }
         run("RecoveryTests.testPendingFailedEmptyAndEditedResultsRemainActionable") { t.testPendingFailedEmptyAndEditedResultsRemainActionable() }
         run("RecoveryTests.testEmptySuccessfulResponseCannotBePresentedAsReady") { t.testEmptySuccessfulResponseCannotBePresentedAsReady() }
+        run("RecoveryTests.testArchiveRoundTripPreservesUnsentTextAudioAndMetadata") { t.testArchiveRoundTripPreservesUnsentTextAudioAndMetadata() }
+        run("RecoveryTests.testArchiveRefusesProcessingAndKeepsAudioOnlyHistory") { t.testArchiveRefusesProcessingAndKeepsAudioOnlyHistory() }
+        run("RecoveryTests.testMeetingRecoveryFilesHistoryAndPreservesOriginalFragments") { t.testMeetingRecoveryFilesHistoryAndPreservesOriginalFragments() }
+        run("RecoveryTests.testEmptyInterruptedCaptureArchivesMetadataWithoutInventingAudio") { t.testEmptyInterruptedCaptureArchivesMetadataWithoutInventingAudio() }
         run("RecoveryTests.testRapidRecordingsHaveIndependentAudioAndResults") { t.testRapidRecordingsHaveIndependentAudioAndResults() }
         run("RecoveryTests.testInterruptedMetadataDoesNotHideAudio") { t.testInterruptedMetadataDoesNotHideAudio() }
         run("RecoveryTests.testSaveFailureIsReported") { t.testSaveFailureIsReported() }
@@ -209,7 +213,7 @@ if let files = try? fm.contentsOfDirectory(atPath: "Sources/VFTests") {
         }
     }
 }
-let registered = 129
+let registered = 133
 print("")
 if declared > 0 && declared != registered {
     print("  ✘ DRIFT: \(declared) test functions on disk, \(registered) registered.")

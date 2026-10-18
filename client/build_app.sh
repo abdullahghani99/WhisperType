@@ -3,13 +3,12 @@
 # Microphone + Accessibility permissions by stable identity. Ad-hoc signed
 # (fine for personal / same-machine use). Run from the client/ directory.
 #
-#   ./build_app.sh          # build + assemble WhisperType.app
-#   open WhisperType.app      # launch it
+#   ./build_app.sh          # build + assemble in the build cache
+#   python3 install.py      # install the one user-facing app
 #
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP="WhisperType.app"
 BIN_NAME="WhisperType"
 
 # Keep the churny build output OUTSIDE the source tree (default: a Caches dir).
@@ -17,6 +16,10 @@ BIN_NAME="WhisperType"
 # what corrupted the checkout, so builds write here instead and never sync.
 SCRATCH="${VF_SCRATCH:-$HOME/Library/Caches/whispertype-build}"
 mkdir -p "$SCRATCH"
+SCRATCH="$(cd "$SCRATCH" && pwd)"
+# Custom scratch directories may be indexed. Keep every assembled build out of
+# Spotlight as well as the source tree; only the installed app is discoverable.
+APP="$SCRATCH/AppBundle.noindex/WhisperType.app"
 
 # A binary built elsewhere. macOS 27's Swift 6.4 command line tools dropped the
 # SwiftUI macro plugin -- a two-line `@State` file stops compiling, and no CLT
@@ -83,6 +86,6 @@ EOF
 codesign --force --deep --sign "$SIGN" --options runtime --entitlements "$ENTITLEMENTS" "$APP"
 codesign --verify --strict "$APP"
 
-echo "==> done: $(pwd)/$APP  (signed: ${IDENTITY:-ad-hoc})"
+echo "==> done: $APP  (signed: ${IDENTITY:-ad-hoc})"
 echo "First run: grant Microphone (prompted) and Accessibility"
 echo "(Microphone settings in the app), then return to WhisperType."

@@ -213,6 +213,7 @@ def starts_question(text):
     topic = re.match(r"(?:looking (?:at|into)|regarding|as for) [^,.!?;:\n\"“”]{1,180},\s*(.+)", topic_text, re.I)
     if topic and re.match(r"(?:(?:what|where|when|why|how|which) )?(?:can|could|would|will|should|do|does|did|is|are|have|has|was|were)(?: not)? (?:you|we|i|he|she|they|it|this|that|these|those)\b", " ".join(words(topic[1]))):
         return True
+    if nominal_reporting_clause(text): return False
     # Pseudo-clefts describe what matters; they do not ask what it is. A
     # marked echo question keeps its existing question interpretation.
     cleft = re.sub(r"^what's\b", "what is", value)
@@ -751,6 +752,7 @@ def rejection_reason(source, output, known_terms=()):
     src, out = words(source), words(output)
     if deleted_finite_clause(source, output): return 'deleted_finite_clause'
     if deleted_tag_ending_question(source, output): return 'deleted_question'
+    if rewritten_independent_question(source, output): return 'independent_question_intent'
     if removed_literal_clause(source, output): return 'literal_clause_removed'
     if listified_numeric_reference(source, output): return 'numeric_reference_list'
     if restore_related_coordination(source, output) != output: return 'related_coordination'
@@ -1060,6 +1062,149 @@ def repair_local_question_boundaries(source, output):
     return output
 
 
+def nominal_reporting_clause(text):
+    """Recognize a bounded nominal question-shaped subject plus predicate.
+
+    Existing question punctuation and cognitive/quoted/conditional embeddings
+    abstain: 'How do we know it is important?' remains a genuine question.
+    """
+    if re.search(r'[?؟？!;:"“”`\n]', text): return False
+    value = ' '.join(words(text)).strip()
+    value = re.sub(r'^(?:(?:and|so|but|also) )+', '', value)
+    if not re.match(r'(?:(?:how|what|where|when|why) )?(?:do|does|did|is|are|was|were|can|could|should|would|will) (?:we|you|i|it|this|that|they|he|she)\b', value):
+        return False
+    if re.search(r'\b(?:know|think|believe|wonder|ask|asks|asked|tell|tells|told|hear|heard|see|learn|prove|show|understand|remember|if|whether|because)\b', value):
+        return False
+    predicate = re.search(r'\b(?:(?:is|was) (?:very |really |particularly )?(?:important|unclear|unknown|irrelevant)|'
+                          r'(?:is|was) all (?:he|she|they|i|we|you) said|'
+                          r'remains to be seen|depends on (?:the|a|an|our|your) \w+(?: \w+){0,2})$', value)
+    if not predicate: return False
+    subject = value[:predicate.start()].strip().split()
+    # A second explicit subject belongs to an embedded proposition, not a
+    # missing-subject reporting fragment. Demonstrative 'that' in the initial
+    # inverted opening (How is that done) is outside this tail check.
+    if len(subject) < 4 or subject[-1] in {'it','this','that','he','she','they','we','you'}:
+        return False
+    return True
+
+
+def repair_nominal_boundaries(source, output):
+    """Undo introduced sentence breaks only inside a fully aligned nominal span."""
+    token = r"[^\W_]+(?:['’][^\W_]+)*"
+    edits = []
+    for m in re.finditer(r'[^.!?؟؟\n]+(?:[.!?؟؟]|$)', source):
+        if not nominal_reporting_clause(m[0]): continue
+        source_tokens = list(re.finditer(token, m[0]))
+        values = [t[0].casefold() for t in source_tokens]
+        out_tokens = list(re.finditer(token, output))
+        proposed = [t[0].casefold() for t in out_tokens]
+        positions = [i for i in range(len(proposed)-len(values)+1) if proposed[i:i+len(values)] == values]
+        if len(positions) != 1: continue
+        start = positions[0]
+        for i in range(len(values)-1):
+            left, right = out_tokens[start+i:start+i+2]
+            gap = output[left.end():right.start()]
+            original = m[0][source_tokens[i].end():source_tokens[i+1].start()]
+            if re.fullmatch(r'[.?]\s+', gap) and not re.search(r'[.!?؟؟]', original):
+                # Only the added boundary and its capitalization are changed.
+                word = right[0]
+                if word.casefold() in {'is','was','remains','depends'}:
+                    edits.append((left.end(), right.end(), original + word.lower()))
+    for a,b,value in sorted(set(edits), reverse=True):output=output[:a]+value+output[b:]
+    return output
+
+
+def restore_repeated_emphasis(source, output):
+    """Restore a lost repeated intensifier using unique unchanged word anchors."""
+    token = r"[^\W_]+(?:['’][^\W_]+)*"
+    src=list(re.finditer(token,source));out=list(re.finditer(token,output))
+    a=[m[0].casefold() for m in src];b=[m[0].casefold() for m in out];edits=[]
+    choices = 'very|really|other' if re.match(r'^For emphasis[,.: ]',source,re.I) else 'very|really'
+    for match in re.finditer(r'\b(?P<word>'+choices+r')(?:[, ]+(?P=word)){1,3}\b',source,re.I):
+        if len(re.findall(re.escape(match[0]),source,re.I)) != 1: continue
+        first=next((i for i,m in enumerate(src) if m.start()==match.start()),None)
+        if first is None:continue
+        end=first
+        while end<len(src) and src[end].end()<=match.end():end+=1
+        before=a[max(0,first-2):first];after=a[end:end+2]
+        # A following content anchor distinguishes an unfinished repeat.
+        if not after:continue
+        matches=[]
+        for j,value in enumerate(b):
+            if value!=match['word'].casefold():continue
+            k=j+1
+            while k<len(b) and b[k]==value:k+=1
+            if k-j>=end-first:continue
+            if (before and b[max(0,j-len(before)):j]!=before) or (not before and j!=0):continue
+            if b[k:k+len(after)]!=after:continue
+            if re.search(r'[.!?;:"“”`]',output[out[j].end():out[k].start()]):continue
+            matches.append((out[j].start(),out[k-1].end()))
+        if len(matches)==1:
+            start,finish=matches[0];replacement=match[0]
+            replacement=output[start:start+1]+replacement[1:]
+            edits.append((start,finish,replacement))
+    for a,b,value in sorted(edits,reverse=True):output=output[:a]+value+output[b:]
+    return output
+
+
+def collapse_adjacent_other(source, output):
+    """Remove a contiguous determiner restart before a plural noun.
+
+    Comma-separated emphasis, quotations and explicit verbatim instructions
+    abstain. This is validated against the original, never preprocessing.
+    """
+    if re.search(r'["“”`]|\b(?:emphasis|verbatim|exactly|repeat)\b',source,re.I):return output
+    pattern=r'\bthe other other (?P<noun>[A-Za-z][a-z]{2,}s)\b'
+    originals={m['noun'].casefold() for m in re.finditer(pattern,source,re.I)}
+    def replace(match):
+        if match['noun'].casefold() not in originals:return match[0]
+        return re.sub(r'\bother other\b','other',match[0],count=1,flags=re.I)
+    return re.sub(pattern,replace,output,flags=re.I)
+
+
+def preserve_explicit_command_repetition(source, output):
+    """Do not resolve an explicit emphasis or unmarked polarity conflict.
+
+    Only a whole short utterance with exact repeated command wording qualifies;
+    marked corrections and longer surrounding clauses remain outside this pass.
+    """
+    command=r"(?P<command>(?:remove|disable|send) [A-Za-z][\w-]*(?: [A-Za-z][\w-]*){0,2})"
+    emphasis=re.fullmatch(r"For emphasis[.,]\s+"+command+r"\.\s+And\s+(?P=command) as well\.",source,re.I)
+    conflict=re.fullmatch(r"Do not "+command+r"\.\s+And\s+(?P=command) as well\.",source,re.I)
+    if emphasis and words(output)==words('For emphasis '+emphasis['command']):return source
+    if conflict and words(output)==words('Do not '+conflict['command']):return source
+    return output
+
+
+def restore_literal_fragments(source, output):
+    """Keep explicitly quoted titles and exact unfinished copular fragments."""
+    pattern=r'"[^"\n]+"|“[^”\n]+”'
+    originals=list(re.finditer(pattern,source));proposed=list(re.finditer(pattern,output));edits=[]
+    if originals and len(originals)==len(proposed):
+        for original,proposal in zip(originals,proposed):
+            # Protect literal names/titles/quoted wording, not every reported
+            # utterance. Require the same surrounding source anchors.
+            prefix=source[:original.start()]
+            if not re.search(r'\b(?:title|label|text|wording|quote)\s+(?:is|says|reads)\s*$',prefix,re.I):continue
+            if words(prefix)[-3:]!=words(output[:proposal.start()])[-3:]:continue
+            if words(source[original.end():])[:2]!=words(output[proposal.end():])[:2]:continue
+            end=proposal.end();replacement=original[0]
+            source_gap=re.match(r'[.?!]\s*',source[original.end():])
+            output_gap=re.match(r'\s*',output[end:])[0]
+            if source_gap and not re.match(r'\s*[.?!]',output[end:]):
+                end+=len(output_gap);replacement+=source_gap[0]
+            edits.append((proposal.start(),end,replacement))
+    for a,b,value in reversed(edits):output=output[:a]+value+output[b:]
+    copula=r"(?:it['’]s|he['’]s|she['’]s|i['’]m|we['’]re|you['’]re|they['’]re|it is|he is|she is|i am|we are|you are|they are)"
+    fragment=re.search(r"(?:^|(?<=[.!?]))\s*(?P<head>"+copula+r")\s+(?P<mod>(?:(?:actually|just|suddenly)\s+){1,3})(?P=head)\s*[.…]*$",source,re.I)
+    if fragment and not any(mark in source for mark in ('"','“','”','`')):
+        tail=re.search(r'(?:^|(?<=[.!?]))\s*[^.!?]+[.]?$',output)
+        if tail and words(tail[0])==words(fragment['head']+' '+fragment['mod']):
+            if words(source[:fragment.start()])==words(output[:tail.start()]):
+                output=output[:tail.start()]+fragment[0].rstrip(' .…')+'...'
+    return output
+
+
 def collapse_repeated_named_command(text):
     """Collapse an additive repeat of the same idempotent named-target command.
 
@@ -1086,6 +1231,48 @@ def collapse_repeated_named_command(text):
     return re.sub(pattern, replace, text, flags=re.I)
 
 
+def independent_question_rewrites(source, output):
+    """Detect a lost interrogative opening in an aligned later assertion.
+
+    Require substantial surviving content and a unique sentence match. Quoted,
+    nominal and corrected questions are deliberately outside this bounded pass.
+    A surviving question (including a legitimate rephrasing) is not an assertion.
+    """
+    if any(mark in source + output for mark in ('"', '“', '”', '`')): return []
+    pattern = r'[^.!?؟？\n]+(?:[.!?؟？]|$)'
+    proposed = list(re.finditer(pattern, output))
+    repairs = []
+    for question in re.finditer(pattern, source):
+        # Opening questions already have their own recovery routing.
+        if not words(source[:question.start()]): continue
+        kind = local_question_kind(question[0])
+        if not kind: continue
+        if re.match(r'\s*(?:sorry\b|i mean\b)', source[question.end():], re.I): continue
+        original = [root(w) for w in words(question[0]) if w not in FUNCTION_WORDS | FILLER_WORDS]
+        if len(original) < 4: continue
+        matches = []
+        for sentence in proposed:
+            content = [root(w) for w in words(sentence[0]) if w not in FUNCTION_WORDS | FILLER_WORDS]
+            count = sum(b.size for b in difflib.SequenceMatcher(a=original, b=content, autojunk=False).get_matching_blocks())
+            if count >= 4 and count / len(original) >= .75:
+                matches.append(sentence)
+        if len(matches) != 1: continue
+        match = matches[0]; aligned = match[0]
+        if starts_question(aligned) or any(mark in aligned for mark in '?؟？'): continue
+        # Only an actually removed interrogative opening qualifies. This avoids
+        # treating sentence-merging around a surviving question as proof of loss.
+        head = kind[:2]; tokens = words(aligned)
+        if not any(tokens[i:i + len(head)] == head for i in range(len(tokens))):
+            repairs.append((match.start(), match.end(), question[0]))
+    # Multiple source questions mapping to one output sentence are ambiguous.
+    if len({(a, b) for a, b, _ in repairs}) != len(repairs): return []
+    return repairs
+
+
+def rewritten_independent_question(source, output):
+    return bool(independent_question_rewrites(source, output))
+
+
 def copyedit(text, generate, examples=(), known_terms=()):
     output, diagnostics = _copyedit(text, generate, examples, known_terms)
     source = clean_stutters(text)
@@ -1103,6 +1290,14 @@ def copyedit(text, generate, examples=(), known_terms=()):
     candidate = repair_local_question_boundaries(source, output)
     if candidate != output and rejection_reason(source, candidate, known_terms) is None:
         output = candidate; changes.append('question_boundary')
+    for repair, name in [(repair_nominal_boundaries, 'nominal_boundary'),
+                         (restore_repeated_emphasis, 'repeated_emphasis'),
+                         (restore_literal_fragments, 'literal_fragment'),
+                         (preserve_explicit_command_repetition, 'explicit_command_repetition'),
+                         (collapse_adjacent_other, 'adjacent_other_restart')]:
+        candidate = repair(source, output)
+        if candidate != output and rejection_reason(source, candidate, known_terms) is None:
+            output = candidate; changes.append(name)
     if changes:
         diagnostics = dict(diagnostics, status='edited', recovery=True, local_repairs=changes)
     return output, diagnostics
@@ -1125,6 +1320,18 @@ def _copyedit(text, generate, examples=(), known_terms=()):
     reason = rejection_reason(source,candidate, known_terms)
     if reason is None:
         return candidate, {'status':'edited' if candidate!=text else 'unchanged','rejection':None,'recovery':False,'examples':len(examples)}
+    if reason == 'independent_question_intent':
+        restored = candidate
+        for start, end, original in sorted(independent_question_rewrites(source, candidate), reverse=True):
+            # Restore only the aligned question, preserving validated cleanup
+            # elsewhere. Source-local punctuation does not guess a new answer.
+            repaired = repair_local_question_boundaries(original, original).strip()
+            leading = re.match(r'\s*', restored[start:end])[0]
+            restored = restored[:start] + leading + repaired + restored[end:]
+        if restored != candidate and rejection_reason(source, restored, known_terms) is None:
+            return restored, {'status':'edited', 'rejection':reason, 'recovery':True,
+                              'examples':len(examples), 'reused_candidate':True,
+                              'restored_question':True}
     if reason == 'related_coordination':
         restored = restore_related_coordination(source, candidate)
         if rejection_reason(source, restored, known_terms) is None:

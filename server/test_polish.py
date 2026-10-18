@@ -886,4 +886,106 @@ class RepeatedCommandTests(unittest.TestCase):
     'Remove Atlas. After the test, remove Atlas as well.']:
    with self.subTest(text=text):self.assertEqual(collapse_repeated_named_command(text),text)
 
+
+class PolishingCompletionTests(unittest.TestCase):
+    def test_reporting_predicate_boundary_keeps_other_questions(self):
+        source='Did you review the scoring? How do we measure this and how do we do it in a proper manner is very important. Have you created those forms?'
+        proposal=source.replace('manner is', 'manner? Is')
+        actual,diag=copyedit(source,lambda *_:proposal)
+        self.assertEqual(actual,source)
+        self.assertIn('nominal_boundary',diag['local_repairs'])
+
+    def test_nominal_reporting_does_not_force_question_retry(self):
+        for source,proposal in [('How is that done is unclear.','How that is done is unclear.'),
+                                ('Can you help me is all she said.','Can you help me, is all she said.')]:
+            calls=[]
+            def edit(*_):calls.append(True);return proposal
+            self.assertEqual(copyedit(source,edit)[0],proposal)
+            self.assertEqual(len(calls),1)
+
+    def test_real_questions_are_not_nominalized(self):
+        from polish import nominal_reporting_clause,repair_nominal_boundaries
+        for text in ['How do we know this is important.', 'How do we prove the issue is unclear.',
+                     'How is that done? Is it important?', 'How do we do it if timing is important.',
+                     'How do we know it depends on the account.', 'How do we handle it is the question?',
+                     'Why do they think the process is important.', 'What is that?',
+                     'The title is "How is that done is unclear."']:
+            self.assertFalse(nominal_reporting_clause(text),text)
+            self.assertEqual(repair_nominal_boundaries(text,text),text)
+
+    def test_intensifier_restoration_keeps_cleaned_stutters(self):
+        source="Sorry, man, I've been really, really occupied with the the audits. I'll reply tomorrow."
+        proposal="Sorry, man, I've been really occupied with the audits. I'll reply tomorrow."
+        out,diag=copyedit(source,lambda *_:proposal)
+        self.assertEqual(out,proposal.replace('really occupied','really, really occupied'))
+        self.assertIn('repeated_emphasis',diag['local_repairs'])
+
+    def test_intensifiers_do_not_move_between_clauses(self):
+        from polish import restore_repeated_emphasis
+        for source,output in [('It is very very good. It is very late.','It is good. It is very late.'),
+                              ('It is very very good. It is very very good.','It is very good. It is very good.'),
+                              ('It is really. Really helpful.','It is really helpful.'),
+                              ('The the task is done.','The task is done.'),
+                              ('I am really really sorry, no, I am happy.','I am happy.')]:
+            self.assertEqual(restore_repeated_emphasis(source,output),output)
+
+    def test_quoted_title_restores_literal_words_without_discarding_cleanup(self):
+        source='The the title is "it is just it is very abrupt". Please save it.'
+        proposal='The title is "It is just very abrupt." Please save it.'
+        out,diag=copyedit(source,lambda *_:proposal)
+        self.assertIn('"it is just it is very abrupt"',out)
+        self.assertNotIn('The the',out)
+        self.assertIn('literal_fragment',diag['local_repairs'])
+        self.assertIn('abrupt\". Please save it.',out)
+
+    def test_quote_spacing_does_not_duplicate_existing_terminator(self):
+        source='The title is "raw text".'
+        proposal='The title is "raw text" .'
+        output,_=copyedit(source,lambda *_:proposal)
+        self.assertEqual(output,proposal)
+        self.assertEqual(output.count('.'),1)
+
+    def test_incomplete_copula_keeps_unfinished_words(self):
+        for source,proposal in [("It's actually it's", "It's actually."),
+                                ("It's fine. It's actually it's", "It's fine. It's actually.")]:
+            self.assertEqual(copyedit(source,lambda *_:proposal)[0],source+'...')
+        complete="It's actually it's very abrupt."
+        self.assertEqual(copyedit(complete,lambda *_:"It's actually very abrupt.")[0],"It's actually very abrupt.")
+
+    def test_literal_restore_does_not_guess_missing_or_reordered_quotes(self):
+        from polish import restore_literal_fragments
+        for source,proposal in [('She said "it is just it is abrupt".','She said "It is just abrupt."'),
+                                ('The title is "a".','The title is now a.'),
+                                ('The label is "a". The title is "b".','The title is "b". The label is "a".')]:
+            self.assertEqual(restore_literal_fragments(source,proposal),proposal)
+
+    def test_explicit_emphasis_and_unmarked_conflict_are_not_resolved(self):
+        for source,proposal in [('For emphasis. Remove Atlas. And remove Atlas as well.','For emphasis, remove Atlas.'),
+                                ('Do not remove Atlas. And remove Atlas as well.','Do not remove Atlas.'),
+                                ('For emphasis. Send Payment. And send Payment as well.','For emphasis, send Payment.')]:
+            self.assertEqual(copyedit(source,lambda *_:proposal)[0],source)
+        source='Remove Atlas, sorry, disable Atlas.'
+        self.assertEqual(copyedit(source,lambda *_:'Disable Atlas.')[0],'Disable Atlas.')
+
+    def test_adjacent_other_restart_preserves_marked_emphasis(self):
+        source='Use the other other platforms for this.'
+        self.assertEqual(copyedit(source,lambda *_:source)[0],'Use the other platforms for this.')
+        from polish import collapse_adjacent_other
+        for text in ['Use the other, other platforms.', 'The title is "the other other platforms".',
+                     'For emphasis, use the other other platforms.', 'Use the other other option.',
+                     'Use other other platforms.']:
+            self.assertEqual(collapse_adjacent_other(text,text),text)
+
+    def test_explicit_other_emphasis_survives_the_whole_model_path(self):
+        source='For emphasis, use the other other platforms.'
+        proposal='For emphasis, use the other platforms.'
+        self.assertEqual(copyedit(source,lambda *_:proposal)[0],source)
+
+    def test_saved_later_question_intent_remains_question(self):
+        source='We need a test account. What is that best way so we give them access to the sandbox right but obviously I do not want production changes.'
+        proposal='We need a test account. The best way is to give them access to the sandbox, but I do not want any production changes.'
+        output,_=copyedit(source,lambda *_:proposal)
+        self.assertIn('What is that best way',output)
+        self.assertIn('right? But obviously I do not want production changes.',output)
+
 if __name__=='__main__':unittest.main()

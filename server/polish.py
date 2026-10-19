@@ -1356,6 +1356,8 @@ def conditional_restart_basis(source, output):
     Removing the abandoned 'since' and repeated pronoun must not spend the
     short-utterance content budget. Every other meaning check still runs.
     """
+    aligned = aligned_conditional_sentences(source, output)
+    if aligned is not None and words(aligned) == words(output): return aligned
     paired = repeated_actor_conditional_pair(source, output)
     if paired is not None and words(paired) == words(output): return paired
     if re.search(r'["“”`]', source + output) or re.search(r'\b(?:sorry|correction|rather)\b', source, re.I): return source
@@ -1379,6 +1381,8 @@ def repair_conditional_restart(source, output):
     'Since Orion and Vega if they approved it' cannot license an assertion that
     they approved it. Only the same unique actor and predicate may be repaired.
     """
+    aligned = aligned_conditional_sentences(source, output)
+    if aligned is not None: return aligned
     paired = repeated_actor_conditional_pair(source, output)
     if paired is not None: return paired
     if re.search(r'["“”`]', source + output) or re.search(r'\b(?:sorry|correction|rather)\b', source, re.I): return output
@@ -1394,6 +1398,39 @@ def repair_conditional_restart(source, output):
         replacement = ('If' if hit[0][0].isupper() else 'if') + hit[0][len('since'):]
         output = output[:hit.start()] + replacement + output[hit.end():]
     return output
+
+
+def aligned_conditional_sentences(source, output):
+    """Resolve explicit restarts using complete, ordered sentence anchors.
+
+    This permits repeated actors only when each whole question remains in its
+    source position and every other sentence keeps all words. No cue is moved
+    from one premise to another, even when actor and predicate are repeated.
+    """
+    if re.search(r'["“”`:;\n]|\b(?:sorry|correction|rather|i mean|verbatim)\b', source + output, re.I): return None
+    originals = re.findall(r'[^.!?]+[.!?]', source)
+    proposals = re.findall(r'[^.!?]+[.!?]', output)
+    if not 2 <= len(originals) == len(proposals) <= 4: return None
+    if ''.join(originals).strip() != source.strip() or ''.join(proposals).strip() != output.strip(): return None
+    pattern = (r'\s*Since (?P<actor>[A-Z][\w-]*(?: (?:and )?[A-Z][\w-]*){0,3}),?\s+'
+               r'if (?P<pronoun>they|he|she) (?P<predicate>[a-z]+(?: [a-z]+){1,3}),?\s+'
+               r'(?P<question>why (?:is|are|was|were|do|does|did|has|have|would|could) [^.!?]{3,100})\?')
+    result = []; changed = False
+    for original, proposed in zip(originals, proposals):
+        match = re.fullmatch(pattern, original)
+        if match:
+            premise = match['actor'] + ' ' + match['predicate']
+            tail = match['question']
+            if len(words(tail)) < 4: return None
+            normal = 'If ' + premise + ', ' + tail + '?'
+            permissible = [normal, 'Since ' + premise + ', ' + tail + '?', original]
+            if not any(words(proposed) == words(v) for v in permissible): return None
+            if not proposed.rstrip().endswith('?'): return None
+            result.append(normal); changed = True
+        else:
+            if words(original) != words(proposed) or original[-1] != proposed[-1]: return None
+            result.append(proposed.strip())
+    return ' '.join(result) if changed else None
 
 
 def repair_embedded_question(source, output):
@@ -1470,7 +1507,7 @@ def repair_framed_request(source, output):
     """Punctuate a uniquely aligned request after an explicit temporal frame."""
     if re.search(r'["“”`]', source + output): return output
     pattern = (r'\bwhile (?:you|we|they|I) (?:do|check|review|finish) (?:this|that|it),?\s+'
-               r'(?P<question>(?:can|could|would|will) you [^.!?;:\n]{3,160})[.?]?(?=\s|$)')
+               r'(?P<question>(?:can|could|would|will) you (?:[^.!?;:\n]|\.(?=\w)){3,160})[.?]?(?=\s|$)')
     for match in re.finditer(pattern, source, re.I):
         question = match['question'].strip()
         if not local_question_kind(question + '?'): continue
@@ -1480,6 +1517,116 @@ def repair_framed_request(source, output):
         if len(hits) != 1 or len(re.findall(re.escape(question), source, re.I)) != 1: continue
         hit = hits[0]
         output = output[:hit.end()-1] + '?' + output[hit.end():]
+    return output
+
+
+def restore_question_before_condition(source, output):
+    """Keep a topic-framed direct question and its following conditional action.
+
+    Both outside anchors must survive uniquely and in order. Restore only the
+    omitted interrogative span, never an answer, a quoted question or a nominal
+    subject. A surviving question receives a boundary without changing words.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|rather|i mean)\b', source, re.I):
+        return output
+    pattern = (r'\b(?P<frame>for (?:the|these|those|our|your) [\w-]+(?: [\w-]+){0,2}),\s*'
+               r'(?P<question>(?:what|which|why|how|where|when) (?:is|are|was|were|can|could|should|do|does|did) '
+               r'[^.!?;:\n]{3,100}?)\s+and\s+(?P<condition>if [^.!?;:\n]{3,140})[.!?]?(?=\s|$)')
+    for match in re.finditer(pattern, source, re.I):
+        question = match['question'].strip()
+        if not local_question_kind(question): continue
+        frame, condition = match['frame'], match['condition'].strip()
+        if any(len(re.findall(re.escape(value), source, re.I)) != 1
+               for value in (frame, question, condition)): continue
+        target = (re.escape(frame) + r',?\s+(?:' + re.escape(question)
+                  + r'\s+and\s+)?' + re.escape(condition) + r'(?=[.!?]|$)')
+        hits = list(re.finditer(target, output, re.I))
+        if len(hits) != 1: continue
+        hit = hits[0]
+        before = words(source[:match.start()])
+        after = words(output[:hit.start()])
+        if before and before[-1] == 'and' and (not after or after[-1] != 'and'): before = before[:-1]
+        if before[-3:] != after[-3:]: continue
+        replacement = hit[0][:len(frame)] + ', ' + question + '? ' + condition[0].upper() + condition[1:]
+        output = output[:hit.start()] + replacement + output[hit.end():]
+    return output
+
+
+def remove_stranded_filler_comma(source, output):
+    """Remove the leftover delimiter of a removed conjunction-internal filler."""
+    if re.search(r'["“”`]', source + output): return output
+    pattern = (r'\b(?P<join>so that|because|although|unless|until|if|when)\s*,\s*'
+               r'(?:you know|um|uh)\s*,\s*(?P<tail>\w+(?:[ \t]+\w+){1,3})')
+    for match in re.finditer(pattern, source, re.I):
+        target = re.escape(match['join']) + r'\s*,\s*' + re.escape(match['tail'])
+        hits = list(re.finditer(target, output, re.I))
+        if len(hits) != 1 or len(re.findall(re.escape(match[0]), source, re.I)) != 1: continue
+        hit = hits[0]
+        if words(source[:match.start()])[-3:] != words(output[:hit.start()])[-3:]: continue
+        output = output[:hit.start()] + re.sub(r'\s*,\s*', ' ', hit[0], count=1) + output[hit.end():]
+    return output
+
+
+def restore_exception_specificity(source, output):
+    """Keep the demonstrative on the same uniquely anchored exception group."""
+    if re.search(r'["“”`]|\b(?:sorry|correction|rather|i mean)\b', source, re.I): return output
+    pattern = (r'\b(?P<cue>except(?: for)?|apart from|other than|instead of) '
+               r'(?P<determiner>these|those|the) (?P<group>(?:[a-z]+ ){0,2}'
+               r'(?:people|users|accounts|members|reviewers))\b')
+    for match in re.finditer(pattern, source, re.I):
+        if set(words(match['group'])) & {'and','or','not','only','all','no'}: continue
+        target = re.escape(match['cue']) + r' (?:these |those |the )?' + re.escape(match['group']) + r'\b'
+        hits = list(re.finditer(target, output, re.I))
+        if len(hits) != 1 or len(re.findall(pattern, source, re.I)) != 1: continue
+        hit = hits[0]
+        if words(source[:match.start()])[-4:] != words(output[:hit.start()])[-4:]: continue
+        if words(source[match.end():])[:4] != words(output[hit.end():])[:4]: continue
+        output = output[:hit.start()] + match[0] + output[hit.end():]
+    return output
+
+
+def restore_aligned_nuance(source, output):
+    """Preserve explicit emphasis, confirmation and tense on unique anchors.
+
+    These are text-preservation checks, not inferred audio corrections. A marked
+    self-correction abstains. Do not treat sentence-initial 'right' as a question.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|rather|i mean)\b', source, re.I): return output
+    token = r"[^\W_]+(?:['’][^\W_]+)*"
+    for match in re.finditer(r'\b(?P<word>tons|lots|more|again|over) and (?P=word)\b', source, re.I):
+        before = words(source[:match.start()])[-2:]; after = words(source[match.end():])[:2]
+        if not before or not after: continue
+        tokens = list(re.finditer(token, output)); values = [m[0].casefold() for m in tokens]
+        positions = [i for i,v in enumerate(values) if v == match['word'].casefold()
+                     and values[max(0,i-len(before)):i] == before and values[i+1:i+1+len(after)] == after]
+        if len(positions) != 1 or len(re.findall(re.escape(match[0]),source,re.I)) != 1: continue
+        hit = tokens[positions[0]]
+        output = output[:hit.start()] + match[0] + output[hit.end():]
+    for match in re.finditer(r'(?P<anchor>\b\w+ \w+ \w+),\s*right\?\s*(?P<next>\w+(?: \w+){0,2})?', source, re.I):
+        anchor = match['anchor']; following = match['next'] or ''
+        if len(re.findall(re.escape(anchor), source, re.I)) != 1: continue
+        target = re.escape(anchor) + (r'[,.;]?\s+' + re.escape(following) if following else r'\.?\s*$')
+        hits = list(re.finditer(target, output, re.I))
+        if len(hits) != 1: continue
+        hit = hits[0]
+        replacement = hit[0][:len(anchor)] + ', right?'
+        if following: replacement += ' ' + following[0].upper() + following[1:]
+        output = output[:hit.start()] + replacement + output[hit.end():]
+    # A single changed finite auxiliary cannot silently move a surviving claim
+    # into the past or present. Agreement changes (is/are) are not tense edits.
+    src = list(re.finditer(token, source)); out = list(re.finditer(token, output))
+    a = [m[0].casefold() for m in src]; b = [m[0].casefold() for m in out]; edits = []
+    families = [{'have','had'}, {'has','had'}, {'is','was'}, {'are','were'}, {'do','did'}, {'does','did'}]
+    for kind,i,j,k,l in difflib.SequenceMatcher(a=a,b=b,autojunk=False).get_opcodes():
+        if kind != 'replace' or j-i != 1 or l-k != 1: continue
+        if not any({a[i],b[k]} == family for family in families): continue
+        before = a[max(0,i-2):i]; after = a[j:j+3]
+        if len(before) < 2 or len(after) < 3: continue
+        if b[max(0,k-2):k] != before or b[l:l+3] != after: continue
+        if sum(a[n:n+6] == before+[a[i]]+after for n in range(len(a))) != 1: continue
+        if sum(b[n:n+6] == before+[b[k]]+after for n in range(len(b))) != 1: continue
+        edits.append((out[k].start(),out[k].end(),src[i][0]))
+    for start,end,value in reversed(edits): output=output[:start]+value+output[end:]
     return output
 
 
@@ -1568,8 +1715,12 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (repair_confirmation_manner_boundary, 'confirmation_manner'),
                          (repair_framed_request, 'framed_request'),
                          (restore_descriptive_attachment, 'descriptive_attachment'),
-                         (restore_excluded_group, 'excluded_group')]:
-        candidate = repair(source, output)
+                         (restore_excluded_group, 'excluded_group'),
+                         (restore_question_before_condition, 'question_before_condition'),
+                         (remove_stranded_filler_comma, 'stranded_filler_comma'),
+                         (restore_exception_specificity, 'exception_specificity'),
+                         (restore_aligned_nuance, 'aligned_nuance')]:
+        candidate = repair(text if repair is remove_stranded_filler_comma else source, output)
         reason = rejection_reason(source, candidate, known_terms) if candidate != output else None
         if candidate != output and reason == 'content_or_order' and repair is repair_conditional_restart:
             basis = conditional_restart_basis(source, candidate)

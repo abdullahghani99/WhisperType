@@ -6,6 +6,8 @@ public final class MeetingAudioJournal {
     public enum Track { case system, microphone }
     public let directory: URL
     public let wavURL: URL
+    public let tracksURL: URL
+    public private(set) var retentionError: Error?
     private let queue = DispatchQueue(label: "voice.capture.journal")
     private let lock = NSLock()
     private var queuedBytes = 0
@@ -21,6 +23,7 @@ public final class MeetingAudioJournal {
     public init(parent: URL, id: UUID = UUID()) throws {
         directory = parent.appendingPathComponent("capture-\(id.uuidString)", isDirectory: true)
         wavURL = parent.appendingPathComponent("meeting-\(id.uuidString).wav")
+        tracksURL = parent.appendingPathComponent("meeting-\(id.uuidString).tracks", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         let a = directory.appendingPathComponent("system.pcm")
@@ -65,7 +68,7 @@ public final class MeetingAudioJournal {
         if first { DispatchQueue.main.async { [weak self] in self?.onFailure?(error) } }
     }
 
-    public func finish() throws -> Data {
+    public func finish(microphonePaddedBytes: Int = 0) throws -> Data {
         lock.lock(); sealed = true; lock.unlock()
         try queue.sync {
             try system.synchronize(); try microphone.synchronize()
@@ -74,7 +77,23 @@ public final class MeetingAudioJournal {
         // Even a failed track retains its successfully written prefix on disk.
         if let error = error { throw error }
         try Self.recover(directory: directory, to: wavURL)
-        try FileManager.default.removeItem(at: directory)
+        // Preserve the exact streams that produced the mono mix. They already
+        // share the recorder's sample-index clock (including microphone gap
+        // padding); do not re-time, resample or upload them as part of retention.
+        // A sidecar failure must not make a successfully saved mix unavailable.
+        do {
+            let metadata: [String: Any] = [
+                "version": 1, "sample_rate": 16000, "channels_per_track": 1,
+                "encoding": "signed-int16-little-endian", "mixed_file": wavURL.lastPathComponent,
+                "alignment": "sample-index; microphone gaps padded by recorder",
+                "system_bytes": systemBytes, "microphone_bytes": microphoneBytes,
+                "microphone_padding_bytes": microphonePaddedBytes,
+                "retention": "preserved with recording; no automatic expiry"
+            ]
+            try RecordingStore.durableWrite(JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]),
+                                             to: directory.appendingPathComponent("tracks.json"))
+            try FileManager.default.moveItem(at: directory, to: tracksURL)
+        } catch { retentionError = error }
         return try Data(contentsOf: wavURL, options: .mappedIfSafe)
     }
 

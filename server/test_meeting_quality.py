@@ -70,4 +70,39 @@ class MeetingEvidenceTests(unittest.TestCase):
             self.assertTrue(q.self_introduced('**Speaker 1:** '+text,'Speaker 1','Alex'),text)
         self.assertFalse(q.self_introduced('**Speaker 2:** I am Alex.','Speaker 1','Alex'))
 
-if __name__=='__main__':unittest.main()
+
+class CommitmentDispositionTests(unittest.TestCase):
+    def notes(self,source,summary='The report was discussed.'):
+        response={k:[] for k in q.HEADINGS};response['summary']=[summary]
+        return q.selected_notes(q.passages(source),json.dumps(response))
+
+    def test_withdrawn_commitment_is_not_recreated_as_an_active_task(self):
+        source='**Alex:** I will send the report Friday.\n\n**Blair:** Please wait.\n\n**Alex:** I withdraw that commitment.'
+        self.assertNotIn('Action items',self.notes(source))
+
+    def test_unrelated_commitment_survives_later_retraction(self):
+        source='**Alex:** I will send the report Friday. I will publish the draft Monday. I withdraw that commitment.'
+        notes=self.notes(source)
+        self.assertIn('Alex: I will send the report Friday.',notes)
+        self.assertNotIn('Alex: I will publish the draft Monday.',notes)
+
+    def test_other_speaker_cannot_retract_your_commitment(self):
+        source='**Alex:** I will send the report Friday.\n\n**Blair:** I withdraw that commitment.'
+        self.assertIn('Alex: I will send the report Friday.',self.notes(source))
+
+    def test_going_to_commitment_keeps_retraction_on_the_nearest_task(self):
+        source="**Alex:** I will send the report Friday. I'm going to publish the draft Monday. I withdraw that commitment."
+        notes=self.notes(source)
+        self.assertIn('Alex: I will send the report Friday.',notes)
+        self.assertNotIn("Alex: I'm going to publish the draft Monday.",notes)
+
+    def test_conditional_question_remains_with_accepted_response(self):
+        source='**Alex:** If legal approves, can you send the report Friday?\n\n**Blair:** I will send the report Friday.'
+        notes=self.notes(source)
+        self.assertIn('Alex: If legal approves, can you send the report Friday? Blair: I will send the report Friday.',notes)
+
+    def test_explicit_role_play_does_not_become_a_real_task(self):
+        source='**Alex:** Imagine a manager saying this.\n\n**Blair:** I will send the report Friday.\n\n**Alex:** That was our example dialogue, not a real assignment.'
+        self.assertNotIn('Action items',self.notes(source))
+
+if __name__ == '__main__': unittest.main()

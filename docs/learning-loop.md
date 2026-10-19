@@ -78,3 +78,20 @@ source-channel preservation, or simultaneous-speech alignment. Preserve original
 recordings and old outputs before repairing an existing meeting. Keep unresolved
 mechanisms as separate actionable backlog entries with actual evidence and exact
 next steps, and carry verified repairs through the normal idle release gates.
+
+
+## Recording evidence and remaining ambiguity
+
+Completed meetings retain their original `system.pcm` and `microphone.pcm` in a
+sibling `.tracks` directory, with versioned `tracks.json` describing the existing
+sample-index alignment and microphone padding. These tracks stay private and do
+not change the mono upload or playback. An archival failure leaves the raw
+journal in place and keeps the completed mix available. Existing mixed recordings
+cannot be split back into their original sources.
+
+Speaker attribution must be tested against audio-grounded identities, not merely
+fewer uncertain labels or a desired speaker count. Word timestamps that alter
+recognized text, or align words to incorrect speaker turns, fail promotion.
+Preserve rejected experiments and pursue source-channel evidence independently.
+For notes, validate the full conversation, including later retractions, role-play
+framing and conditions in another speaker's preceding request.

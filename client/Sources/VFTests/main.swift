@@ -157,6 +157,8 @@ func run(_ name: String, _ body: () -> Void) {
         run("RecoveryTests.testSaveFailureIsReported") { t.testSaveFailureIsReported() }
         run("RecoveryTests.testRelaunchRecoversInterruptedWorkWithoutReplayingIt") { t.testRelaunchRecoversInterruptedWorkWithoutReplayingIt() }
         run("RecoveryTests.testJournalMixClipsAndPadsWithoutLosingTail") { t.testJournalMixClipsAndPadsWithoutLosingTail() }
+        run("RecoveryTests.testTrackRetentionFailureKeepsMixedRecordingAndOriginalTracks") { t.testTrackRetentionFailureKeepsMixedRecordingAndOriginalTracks() }
+        run("RecoveryTests.testRetainedTrackMetadataRecordsPaddingWithoutChangingAudio") { t.testRetainedTrackMetadataRecordsPaddingWithoutChangingAudio() }
         run("RecoveryTests.testInterruptedJournalCanBeRecoveredFromRawFiles") { t.testInterruptedJournalCanBeRecoveredFromRawFiles() }
         run("RecoveryTests.testJournalBackpressureReportsFailure") { t.testJournalBackpressureReportsFailure() }
         run("RecoveryTests.testConverterDrainsLargeDiagnostics") { t.testConverterDrainsLargeDiagnostics() }
@@ -213,7 +215,7 @@ if let files = try? fm.contentsOfDirectory(atPath: "Sources/VFTests") {
         }
     }
 }
-let registered = 133
+let registered = 135
 print("")
 if declared > 0 && declared != registered {
     print("  ✘ DRIFT: \(declared) test functions on disk, \(registered) registered.")

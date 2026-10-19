@@ -1319,12 +1319,45 @@ def rewritten_independent_question(source, output):
 
 
 
+def repeated_actor_conditional_pair(source, output):
+    """Align two distinct clauses by their question and command, not actor count.
+
+    Only an explicit since/if restart followed by the same actor's causal
+    assertion qualifies. Preserve both full tails and their order. A collapsed
+    repeated premise can be restored only when both independent tails survive.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|rather|verbatim|quote|repeat|twice)\b', source + output, re.I):
+        return None
+    actor = r'[A-Z][\w-]*(?: (?:and )?[A-Z][\w-]*){0,3}'
+    match = re.fullmatch(
+        r'\s*Since (?P<actor>' + actor + r'),?\s+if (?:they|he|she) '
+        r'(?P<predicate>[a-z]+(?: [a-z]+){1,3}),?\s+'
+        r'(?P<question>why (?:is|are|was|were|do|does|did|has|have|would|could) [^.!?;:\n]{3,100})\?\s+'
+        r'Since (?P=actor) (?P=predicate),\s*(?P<command>[^.!?;:\n]{3,100})\.\s*', source)
+    if not match: return None
+    if len(words(match['question'])) < 4 or len(words(match['command'])) < 3:
+        return None
+    if not re.match(r'(?:please )?(?:send|keep|retain|check|review|publish|file|save|show|hold|wait|ask|tell)\b', match['command'], re.I):
+        return None
+    premise = match['actor'] + ' ' + match['predicate']
+    target = (r'\s*(?:Since|If) ' + re.escape(premise) + r',?\s+'
+              + re.escape(match['question']) + r'\?\s+'
+              + r'(?:Since ' + re.escape(premise) + r',\s*)?'
+              + re.escape(match['command']) + r'\.\s*')
+    if not re.fullmatch(target, output, re.I): return None
+    normalized = ('If ' + premise + ', ' + match['question'] + '? Since '
+                  + premise + ', ' + match['command'] + '.')
+    return normalized
+
+
 def conditional_restart_basis(source, output):
     """Normalize only a uniquely aligned explicit restart for the full guard.
 
     Removing the abandoned 'since' and repeated pronoun must not spend the
     short-utterance content budget. Every other meaning check still runs.
     """
+    paired = repeated_actor_conditional_pair(source, output)
+    if paired is not None and words(paired) == words(output): return paired
     if re.search(r'["“”`]', source + output) or re.search(r'\b(?:sorry|correction|rather)\b', source, re.I): return source
     pattern = (r'\b[Ss]ince (?P<actor>[A-Z][\w-]*(?: (?:and )?[A-Z][\w-]*){0,3})'
                r',?\s+if (?P<pronoun>they|he|she) (?P<predicate>[a-z]+(?: [a-z]+){1,3})(?=[,?!.]| why\b)')
@@ -1346,6 +1379,8 @@ def repair_conditional_restart(source, output):
     'Since Orion and Vega if they approved it' cannot license an assertion that
     they approved it. Only the same unique actor and predicate may be repaired.
     """
+    paired = repeated_actor_conditional_pair(source, output)
+    if paired is not None: return paired
     if re.search(r'["“”`]', source + output) or re.search(r'\b(?:sorry|correction|rather)\b', source, re.I): return output
     pattern = (r'\b[Ss]ince (?P<actor>[A-Z][\w-]*(?: (?:and )?[A-Z][\w-]*){0,3})'
                r',?\s+if (?P<pronoun>they|he|she) (?P<predicate>[a-z]+(?: [a-z]+){1,3})(?=[,?!.]| why\b)')
@@ -1561,6 +1596,12 @@ def _copyedit(text, generate, examples=(), known_terms=()):
         return value
     candidate = spoken_symbols(unquote(generate(system,source)))
     reason = rejection_reason(source,candidate, known_terms)
+    if reason == 'content_or_order':
+        paired = repeated_actor_conditional_pair(source, candidate)
+        if paired is not None and rejection_reason(conditional_restart_basis(source, paired), paired, known_terms) is None:
+            return paired, {'status':'edited', 'rejection':reason, 'recovery':True,
+                            'examples':len(examples), 'reused_candidate':True,
+                            'restored_conditional_pair':True}
     if reason is None:
         return candidate, {'status':'edited' if candidate!=text else 'unchanged','rejection':None,'recovery':False,'examples':len(examples)}
     if reason == 'independent_question_intent':

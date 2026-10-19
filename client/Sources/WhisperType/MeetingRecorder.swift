@@ -251,8 +251,11 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         do {
             guard let journal = journal else { return Data() }
-            let data = try journal.finish()
+            let data = try journal.finish(microphonePaddedBytes: micPaddedBytes)
             savedRecordingURL = journal.wavURL
+            if let error = journal.retentionError {
+                log("source-track archival incomplete; original journal retained: \(error.localizedDescription)")
+            }
             return data
         } catch {
             DispatchQueue.main.async { [weak self] in

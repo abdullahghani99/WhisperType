@@ -176,6 +176,38 @@ final class RecoveryTests: XCTestCase {
             XCTAssertEqual(Data(wav.suffix(6)), Data([0xff,0x7f,3,0,3,0]))
             XCTAssertTrue(FileManager.default.fileExists(atPath: journal.wavURL.path))
             XCTAssertFalse(FileManager.default.fileExists(atPath: journal.directory.path))
+            XCTAssertEqual(try Data(contentsOf: journal.tracksURL.appendingPathComponent("system.pcm")), Data([0xff,0x7f,1,0]))
+            XCTAssertEqual(try Data(contentsOf: journal.tracksURL.appendingPathComponent("microphone.pcm")), Data([1,0,2,0,3,0]))
+            let recovered = directory.appendingPathComponent("from-tracks.wav")
+            try MeetingAudioJournal.recover(directory: journal.tracksURL, to: recovered)
+            XCTAssertEqual(try Data(contentsOf: recovered), wav)
+        }
+    }
+    func testTrackRetentionFailureKeepsMixedRecordingAndOriginalTracks() {
+        temporary { directory in
+            let journal = try MeetingAudioJournal(parent: directory)
+            journal.append(Data([1,0,2,0]), to: .system)
+            try FileManager.default.createDirectory(at: journal.tracksURL, withIntermediateDirectories: true)
+            let result = try journal.finish()
+            XCTAssertEqual(result.count, 48)
+            XCTAssertNotNil(journal.retentionError)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: journal.wavURL.path))
+            XCTAssertEqual(try Data(contentsOf: journal.directory.appendingPathComponent("system.pcm")), Data([1,0,2,0]))
+        }
+    }
+    func testRetainedTrackMetadataRecordsPaddingWithoutChangingAudio() {
+        temporary { directory in
+            let journal = try MeetingAudioJournal(parent: directory)
+            journal.append(Data([1,0,2,0,3,0]), to: .system)
+            journal.append(Data([0,0,4,0]), to: .microphone)
+            _ = try journal.finish(microphonePaddedBytes: 2)
+            let data = try Data(contentsOf: journal.tracksURL.appendingPathComponent("tracks.json"))
+            let metadata = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            XCTAssertEqual(metadata["microphone_padding_bytes"] as? Int, 2)
+            XCTAssertEqual(metadata["microphone_bytes"] as? Int, 4)
+            XCTAssertEqual(metadata["system_bytes"] as? Int, 6)
+            XCTAssertEqual(metadata["sample_rate"] as? Int, 16000)
+            XCTAssertNil(journal.retentionError)
         }
     }
     func testInterruptedJournalCanBeRecoveredFromRawFiles() {

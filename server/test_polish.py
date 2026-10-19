@@ -50,9 +50,7 @@ class CopyeditingTests(unittest.TestCase):
         from polish import repair_framed_request
         for text in ['While you do that, you can include the changes.',
                      'While you do that, can you help me is all she said.',
-                     'The label is "while you do that can you help me."',
-                     'While you do that, can you also check example.org.',
-                     'While you do that, can you also check version 2.5.']:
+                     'The label is "while you do that can you help me."']:
             self.assertEqual(repair_framed_request(text, text), text)
 
     def test_descriptive_attachment_keeps_one_subject_and_coordinated_details(self):

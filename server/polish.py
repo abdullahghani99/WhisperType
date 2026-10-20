@@ -224,7 +224,7 @@ def starts_question(text):
         return False
     # "Do it" takes an object in an imperative; it is not auxiliary-subject
     # inversion. Keep an explicitly marked echo question as a question.
-    if re.match(r"do it\b", value) and not any(mark in text for mark in '?؟？'):
+    if re.match(r"do (?:it|this|that)\b", value) and not any(mark in text for mark in '?؟？'):
         return False
     # Embedded wh-clauses have normal subject/verb order: "what I think is...".
     if re.match(r"(?:what|where|when|why|how|which) (?:i|you|we|he|she|they|it) ", value):
@@ -731,6 +731,7 @@ def restore_qualified_restart(source, proposal):
 
 def rejection_reason(source, output, known_terms=()):
     if not output.strip(): return 'empty'
+    if added_directive_modal(source, output): return 'added_directive_modal'
     prose = re.sub(r'^\s*\d+[.)]\s+', '', output, flags=re.M)
     if re.search(r'[.!?؟？]\s+[^.!?؟？]+$', prose) and not re.search(r'[.!?؟？][\"’\']?$', prose.strip()):
         # A generation cut off mid-sentence stops abruptly; a final full stop
@@ -1585,6 +1586,52 @@ def restore_exception_specificity(source, output):
     return output
 
 
+def added_directive_modal(source, output):
+    """Catch a new recommendation on a uniquely aligned asserted predicate.
+
+    Do not borrow a modal from another sentence or reject an explicit local
+    correction. This only covers pronoun-led clauses with unchanged predicates.
+    """
+    def clauses(text):
+        result = []
+        for clause in re.split(r'[.!?;\n]', text):
+            if re.search(r'\b(?:sorry|rather|correction|i mean)\b', clause, re.I): continue
+            ts = words(clause)
+            for i, w in enumerate(ts):
+                if w not in {'i','you','we','he','she','they','it'}: continue
+                j = i + 1; mods = [ts[i-1]] if i and ts[i-1] in {'should','must'} else []
+                while j < len(ts) and ts[j] in {'actually','already','also','just','really','still','should','must'}:
+                    mods.append(ts[j]); j += 1
+                if j + 2 >= len(ts) or ts[j] in FUNCTION_WORDS: continue
+                result.append((w,tuple(ts[j:j+3]),set(mods)&{'should','must'}))
+        return result
+    before, after = clauses(source), clauses(output)
+    for who,predicate,modal in after:
+        if not modal: continue
+        matches=[m for w,p,m in before if w==who and p==predicate]
+        if len(matches)==1 and not matches[0]: return True
+    return False
+
+
+def restore_standalone_confirmation(source, output):
+    """Restore explicitly punctuated Right? only between unique matching anchors."""
+    if re.search(r'["“”`]|\b(?:sorry|rather|correction|i mean)\b', source, re.I): return output
+    token = r"[^\W_]+(?:['’][^\W_]+)*"
+    for m in re.finditer(r'[.!]\s+Right\?\s+', source, re.I):
+        before=words(source[:m.start()])[-3:];after=words(source[m.end():])[:3]
+        if len(before)<3 or len(after)<3:continue
+        tokens=list(re.finditer(token, output));vals=[x[0].casefold() for x in tokens]
+        # words() expands contractions, so only use literal, unexpanded anchors.
+        before=[x[0].casefold() for x in re.finditer(token,source[:m.start()])][-3:]
+        after=[x[0].casefold() for x in re.finditer(token,source[m.end():])][:3]
+        positions=[i for i in range(3,len(vals)-2) if vals[i-3:i]==before and vals[i:i+3]==after]
+        if len(positions)!=1:continue
+        i=positions[0];a=tokens[i-1].end();b=tokens[i].start()
+        if not re.fullmatch(r'[.!]\s+',output[a:b]):continue
+        output=output[:a]+'. Right? '+output[b:]
+    return output
+
+
 def restore_aligned_nuance(source, output):
     """Preserve explicit emphasis, confirmation and tense on unique anchors.
 
@@ -1719,7 +1766,8 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (restore_question_before_condition, 'question_before_condition'),
                          (remove_stranded_filler_comma, 'stranded_filler_comma'),
                          (restore_exception_specificity, 'exception_specificity'),
-                         (restore_aligned_nuance, 'aligned_nuance')]:
+                         (restore_aligned_nuance, 'aligned_nuance'),
+                         (restore_standalone_confirmation, 'standalone_confirmation')]:
         candidate = repair(text if repair is remove_stranded_filler_comma else source, output)
         reason = rejection_reason(source, candidate, known_terms) if candidate != output else None
         if candidate != output and reason == 'content_or_order' and repair is repair_conditional_restart:

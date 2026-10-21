@@ -1555,16 +1555,41 @@ def restore_question_before_condition(source, output):
 
 def remove_stranded_filler_comma(source, output):
     """Remove the leftover delimiter of a removed conjunction-internal filler."""
-    if re.search(r'["“”`]', source + output): return output
-    pattern = (r'\b(?P<join>so that|because|although|unless|until|if|when)\s*,\s*'
+    if re.search(r'["“”`]', source): return output
+    pattern = (r'\b(?P<join>so that|because|although|unless|until|if|when|and then|(?:i|you|we|they|he|she|it) (?:can|could|will|would|should|must|may|might))\s*,\s*'
                r'(?:you know|um|uh)\s*,\s*(?P<tail>\w+(?:[ \t]+\w+){1,3})')
     for match in re.finditer(pattern, source, re.I):
+        # A retained parenthetical after the deleted filler still needs its
+        # delimiter: 'we can, you know, if needed, ...'.
+        if match['join'].casefold() == 'and then' or re.search(r'\b(?:can|could|will|would|should|must|may|might)$', match['join'], re.I):
+            if words(match['tail'])[0] in {'if','when','unless','although','because','as','after','before','during','in','on','at','for','with','without'}:
+                continue
         target = re.escape(match['join']) + r'\s*,\s*' + re.escape(match['tail'])
         hits = list(re.finditer(target, output, re.I))
         if len(hits) != 1 or len(re.findall(re.escape(match[0]), source, re.I)) != 1: continue
         hit = hits[0]
         if words(source[:match.start()])[-3:] != words(output[:hit.start()])[-3:]: continue
         output = output[:hit.start()] + re.sub(r'\s*,\s*', ' ', hit[0], count=1) + output[hit.end():]
+    return output
+
+
+def remove_stranded_determiner_restart(source, output):
+    """Remove an abandoned determiner before adjuncts and a resumed subject.
+
+    An actual noun after the adjuncts, quoted speech and marked corrections
+    abstain. Match the same unique surviving clause prefix in accepted output.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|rather|correction|i mean)\b', source + output, re.I): return output
+    pattern = (r'(?:^|[.!?]\s+)(?P<prefix>And) the,\s*'
+               r'(?P<tail>(?:(?:on|in|at|for) [^,.!?;:\n]{3,80},\s*){1,2}'
+               r'(?:you|we|they|he|she|it|I) (?:still |already |also )?'
+               r'(?:have|has|are|is|need|needs|want|wants|can|will|must)\b)')
+    for match in re.finditer(pattern, source, re.I):
+        target=r'\bAnd the,\s*'+re.escape(match['tail'])
+        hits=list(re.finditer(target,output,re.I))
+        if len(hits)!=1 or len(re.findall(re.escape(match['tail']),source,re.I))!=1:continue
+        hit=hits[0]
+        output=output[:hit.start()]+re.sub(r'\bthe,\s*','',hit[0],count=1,flags=re.I)+output[hit.end():]
     return output
 
 
@@ -1767,7 +1792,8 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (remove_stranded_filler_comma, 'stranded_filler_comma'),
                          (restore_exception_specificity, 'exception_specificity'),
                          (restore_aligned_nuance, 'aligned_nuance'),
-                         (restore_standalone_confirmation, 'standalone_confirmation')]:
+                         (restore_standalone_confirmation, 'standalone_confirmation'),
+                         (remove_stranded_determiner_restart, 'determiner_restart')]:
         candidate = repair(text if repair is remove_stranded_filler_comma else source, output)
         reason = rejection_reason(source, candidate, known_terms) if candidate != output else None
         if candidate != output and reason == 'content_or_order' and repair is repair_conditional_restart:

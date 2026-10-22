@@ -230,7 +230,9 @@ struct CaptureDestination {
     func isCurrent(diagnose: (String) -> Void = { _ in }) -> Bool {
         guard AXIsProcessTrusted() else { diagnose("accessibility-denied"); return false }
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier else {
-            diagnose("application-changed"); return false
+            let current = NSWorkspace.shared.frontmostApplication
+            diagnose("application-changed expected=\(app.bundleIdentifier ?? "unknown") pid=\(app.processIdentifier) actual=\(current?.bundleIdentifier ?? "none") pid=\(current?.processIdentifier ?? 0)")
+            return false
         }
         let application = AXUIElementCreateApplication(app.processIdentifier)
         func attribute(_ object: AXUIElement, _ key: String) -> CFTypeRef? {

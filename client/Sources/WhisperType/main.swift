@@ -45,6 +45,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var terminationPending = false
     private var unsavedRecordings: [UUID: (audio: Data, entry: RecordingStore.Entry)] = [:]
     private var reviewedRecordingID: UUID?
+    private var savedInsertionActive = false
+    private var menuDestination: CaptureDestination?
     private var importTask: Task<Void, Never>?
     private var meetingAttemptID: UUID?
     private var meetingFinishing = false
@@ -388,6 +390,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(micItem)
         menu.addItem(.separator())
 
+        menu.addItem(NSMenuItem(title: "Insert last saved dictation here",
+                                action: #selector(insertSavedDictationHere), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Correct last dictation… (teach a fix)",
                                 action: #selector(correctLastDictation), keyEquivalent: "e"))
         menu.addItem(NSMenuItem(title: "Summarize a recording… (meeting notes)",
@@ -878,6 +882,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Recent dictations dropdown
 
     func menuWillOpen(_ menu: NSMenu) {
+        if menu === statusItem.menu {
+            menuDestination = CaptureDestination.capture { vlog("menu placement target: \($0)") }
+        }
         // Refresh the cache from the server when the main menu opens.
         if menu !== historyMenu {
             Task { await refreshHistory() }
@@ -1420,7 +1427,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 addToHistory(entry.text); lastDictationId = result.id; lastDictationText = entry.text
                 if destinations[id] == nil { vlog("insertion deferred: id=\(id) no-captured-destination") }
                 if isRecording { vlog("insertion deferred: id=\(id) another-recording-active") }
-                if !isRecording, let target = destinations[id], target.isCurrent(diagnose: { vlog("insertion destination: id=\(id) \($0)") }) {
+                if !isRecording, let target = destinations[id], await awaitOriginalDestination(target, id: id) {
+                    entry.placementDeferred = false; try RecordingStore.save(entry)
                     try await insert(entry.text, into: target, id: id)
                     entry.status = "inserted"; try RecordingStore.save(entry)
                     try RecordingStore.removeAudio(id)
@@ -1429,10 +1437,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         mainWC.settings.captureStatus = "Sent to \(target.name)"; SoundFeedback.done()
                     }
                 } else {
+                    entry.placementDeferred = true
                     let secureInput = CaptureDestination.secureInputActive
                     entry.error = secureInput
                         ? SecureInput.message(holder: CaptureDestination.secureInputHolder)
-                        : "Result ready. Review it in Inbox to choose placement."
+                        : "Paste paused because focus changed. Click the intended text box, then choose Insert last saved dictation here from the WhisperType menu."
                     try RecordingStore.save(entry)
                     if presentationID == id && !isRecording {
                         dockController.state.ready()
@@ -1472,7 +1481,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let chosen: (String?) -> Void = { [weak self] text in
             guard let self = self, let text = text, !text.isEmpty else { return }
             guard var edited = try? RecordingStore.entries().first(where: { $0.id == id }) else { return }
-            edited.text = text; edited.status = "ready"; edited.sendCompleted = false; edited.error = ""
+            edited.text = text; edited.status = "ready"; edited.sendCompleted = false; edited.placementDeferred = false; edited.error = ""
             do { try RecordingStore.save(edited) }
             catch { self.mainWC.settings.status = "Could not save edit: \(error.localizedDescription)"; return }
             guard let target = target else {
@@ -1513,6 +1522,66 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             promptReview.show(concise: entry.variants["concise"] ?? entry.text,
                               detailed: entry.variants["detailed"] ?? "", coding: entry.variants["coding"] ?? "", destination: destination, onDraft: saveDraft, onChoose: chosen)
         } else { promptReview.showText(entry.text, destination: destination, onDraft: saveDraft, onChoose: chosen) }
+    }
+
+    @MainActor private func awaitOriginalDestination(_ target: CaptureDestination, id: UUID) async -> Bool {
+        var gate = DestinationRecovery()
+        while true {
+            var reason = ""
+            let matches = target.isCurrent { reason = $0 }
+            let decision = gate.observe(matches: matches, applicationChangedOnly: reason.hasPrefix("application-changed"),
+                                        cancelled: Task.isCancelled || isRecording || savedInsertionActive)
+            switch decision {
+            case .ready: return true
+            case .stop:
+                vlog("insertion destination: id=\(id) deferred \(reason)")
+                return false
+            case .wait:
+                vlog("insertion destination: id=\(id) settling \(reason)")
+                do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return false }
+            }
+        }
+    }
+
+    /// Explicit user action captures the current target; it never sends an old
+    /// result automatically on later app activation or retries a completed send.
+    @objc private func insertSavedDictationHere() {
+        guard !isRecording, !savedInsertionActive, processingTasks.isEmpty else {
+            mainWC.settings.status = "Finish the current dictation before inserting a saved result."; return
+        }
+        guard let entry = try? RecordingStore.entries().filter({ $0.canInsertSavedHere }).max(by: { $0.created < $1.created }) else {
+            mainWC.settings.status = "No unsent dictation is waiting for placement."; return
+        }
+        guard let target = menuDestination else {
+            mainWC.settings.status = "Click the intended text box, then choose Insert last saved dictation here from the WhisperType menu."; return
+        }
+        savedInsertionActive = true
+        Task { @MainActor in
+            defer { self.savedInsertionActive = false; self.recordingsChanged() }
+            var edited = entry
+            do {
+                // Let the status menu close. Do not activate another application.
+                try await Task.sleep(nanoseconds: 150_000_000)
+                guard !self.isRecording, target.isCurrent() else {
+                    throw self.destinationUnavailable("Destination changed. Result retained; review placement.")
+                }
+                let attemptID = UUID()
+                if target.isRemote { try await self.prepareRemote(target, id: attemptID) }
+                edited.placementDeferred = false; try RecordingStore.save(edited)
+                try await self.insert(entry.text, into: target, id: attemptID)
+                edited.status = "inserted"; edited.error = ""
+                try RecordingStore.save(edited); try RecordingStore.removeAudio(entry.id)
+                self.dockController.state.complete(words: entry.text.split(whereSeparator: { $0.isWhitespace }).count)
+                self.mainWC.settings.status = "Sent saved dictation to \(target.name)"
+            } catch {
+                edited.error = error.localizedDescription
+                if (error as NSError).domain == "whispertype.insertion", (error as NSError).code == 2 {
+                    edited.status = "sent_unverified"; edited.sendCompleted = true
+                }
+                try? RecordingStore.save(edited)
+                self.mainWC.settings.status = edited.error
+            }
+        }
     }
 
     @MainActor private func insert(_ text: String, into target: CaptureDestination, id: UUID) async throws {

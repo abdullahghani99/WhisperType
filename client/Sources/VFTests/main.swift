@@ -77,6 +77,15 @@ func run(_ name: String, _ body: () -> Void) {
         run("DesignSystemTests.testSentenceCaseLowersInteriorWordsButKeepsAcronymsAndNames") { t.testSentenceCaseLowersInteriorWordsButKeepsAcronymsAndNames() }
         run("DesignSystemTests.testShadowsAreWarmNotBlack") { t.testShadowsAreWarmNotBlack() }
     }
+    suite("DestinationRecoveryTests") {
+        let t = DestinationRecoveryTests()
+        run("DestinationRecoveryTests.testNormalTargetHasNoDelay") { t.testNormalTargetHasNoDelay() }
+        run("DestinationRecoveryTests.testReturnRequiresTwoStableMatches") { t.testReturnRequiresTwoStableMatches() }
+        run("DestinationRecoveryTests.testDifferentAppExpiresWithoutRetargeting") { t.testDifferentAppExpiresWithoutRetargeting() }
+        run("DestinationRecoveryTests.testFieldPermissionChangeAndNewCaptureStop") { t.testFieldPermissionChangeAndNewCaptureStop() }
+        run("DestinationRecoveryTests.testExplicitSavedPlacementExcludesDuplicateAndAmbiguousSends") { t.testExplicitSavedPlacementExcludesDuplicateAndAmbiguousSends() }
+        run("DestinationRecoveryTests.testLegacyRecoveryAndAttemptMarker") { t.testLegacyRecoveryAndAttemptMarker() }
+    }
     suite("DockStateTests") {
         let t = DockStateTests()
         run("DockStateTests.testBeginEntersListening") { t.testBeginEntersListening() }
@@ -215,7 +224,7 @@ if let files = try? fm.contentsOfDirectory(atPath: "Sources/VFTests") {
         }
     }
 }
-let registered = 135
+let registered = 141
 print("")
 if declared > 0 && declared != registered {
     print("  ✘ DRIFT: \(declared) test functions on disk, \(registered) registered.")

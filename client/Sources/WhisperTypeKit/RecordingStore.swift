@@ -17,6 +17,16 @@ public enum RecordingStore {
         public var sendCompleted: Bool?
         /// Explicit filing only; never implies delivery or deletes saved audio.
         public var archived: Bool?
+        /// True only when automatic placement was deferred before any send.
+        public var placementDeferred: Bool?
+        public var canInsertSavedHere: Bool {
+            guard kind == "dictation", status == "ready", !isArchived,
+                  !sentUnverified, sendCompleted != true, !text.isEmpty else { return false }
+            if let deferred = placementDeferred { return deferred }
+            // Known legacy pre-send failure; never retry a partial/unverified send.
+            return error == "Destination changed. Result retained; review placement."
+                || error == "Result ready. Review it in Inbox to choose placement."
+        }
         public var isArchived: Bool { archived == true }
         public var hasResult: Bool {
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||

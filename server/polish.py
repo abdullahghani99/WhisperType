@@ -1593,6 +1593,31 @@ def remove_stranded_determiner_restart(source, output):
     return output
 
 
+def repair_topic_question_frame(source, output):
+    """Separate an explicit inverted question from its surviving topic frame.
+
+    Preserve the frame and every question word. Nominal complements, uncertain
+    framing, quoted language and corrections abstain; do not infer a question.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|rather|correction|i mean)\b', source + output, re.I): return output
+    pattern = (r'(?:^|[.!?]\s+)(?P<frame>(?:my|our|the) (?:issue|question|concern) is) that '
+               r'(?P<question>(?:why|how|when|where) (?:is|are|was|were|do|does|did|can|could|will|would|should|must) '
+               r'[^\n.!?;:]{3,240}\?)')
+    for match in re.finditer(pattern, source, re.I):
+        phrase = match['frame'] + ' that ' + match['question']
+        if len(re.findall(re.escape(phrase), source, re.I)) != 1: continue
+        hits = list(re.finditer(r'(?<!\w)' + re.escape(phrase), output, re.I))
+        if len(hits) != 1: continue
+        hit = hits[0]
+        if words(source[:match.start()])[-4:] != words(output[:hit.start()])[-4:]: continue
+        # The output must still have a sentence boundary before this frame.
+        if hit.start() and not re.search(r'[.!?]\s+$', output[:hit.start()]): continue
+        frame, question = hit[0].split(' that ', 1) if ' that ' in hit[0] else (match['frame'], match['question'])
+        replacement = frame + ': ' + question[0].upper() + question[1:]
+        output = output[:hit.start()] + replacement + output[hit.end():]
+    return output
+
+
 def restore_exception_specificity(source, output):
     """Keep the demonstrative on the same uniquely anchored exception group."""
     if re.search(r'["“”`]|\b(?:sorry|correction|rather|i mean)\b', source, re.I): return output
@@ -1793,7 +1818,8 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (restore_exception_specificity, 'exception_specificity'),
                          (restore_aligned_nuance, 'aligned_nuance'),
                          (restore_standalone_confirmation, 'standalone_confirmation'),
-                         (remove_stranded_determiner_restart, 'determiner_restart')]:
+                         (remove_stranded_determiner_restart, 'determiner_restart'),
+                         (repair_topic_question_frame, 'topic_question_frame')]:
         candidate = repair(text if repair is remove_stranded_filler_comma else source, output)
         reason = rejection_reason(source, candidate, known_terms) if candidate != output else None
         if candidate != output and reason == 'content_or_order' and repair is repair_conditional_restart:

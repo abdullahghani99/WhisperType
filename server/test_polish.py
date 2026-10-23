@@ -5,6 +5,64 @@ from polish import (copyedit,rejection_reason,rehearing,clean_stutters,spoken_sy
                     project_punctuation,words,starts_question,SYSTEM,EXAMPLES)
 
 class CopyeditingTests(unittest.TestCase):
+    def test_separate_statement_does_not_become_a_how_question(self):
+        source = 'Why is the date wrong? What does that mean? and we keep the original delivery date'
+        proposed = 'Why is the date wrong? What does that mean, and how do we keep the original delivery date?'
+        output, diag = copyedit(source, lambda *_: proposed)
+        self.assertEqual(output, 'Why is the date wrong? What does that mean? And we keep the original delivery date.')
+        self.assertIn('statement_after_question', diag['local_repairs'])
+        self.assertIsNone(rejection_reason(source, output))
+
+    def test_statement_recovery_preserves_other_cleanup_and_following_clause(self):
+        from polish import restore_statement_after_question
+        source = 'Um, why is it late? and they send the revised schedule. Keep the original.'
+        proposal = 'Why is it late, and how do they send the revised schedule? Keep the original.'
+        # Changed preceding anchors abstain instead of guessing alignment.
+        self.assertEqual(restore_statement_after_question(source, proposal), proposal)
+        source = 'Why is it late? and they send the revised schedule. Keep the original.'
+        self.assertEqual(restore_statement_after_question(source, proposal),
+                         'Why is it late? And they send the revised schedule. Keep the original.')
+
+    def test_statement_recovery_allows_prior_quantity_adjective_cleanup(self):
+        source = 'Why do we have 4 weeks delivery time? What does that mean? and we retain the original invoice date'
+        proposal = 'Why do we have a 4-week delivery time? What does that mean, and how do we retain the original invoice date?'
+        expected = 'Why do we have a 4-week delivery time? What does that mean? And we retain the original invoice date.'
+        self.assertEqual(copyedit(source, lambda *_: proposal)[0], expected)
+
+    def test_statement_recovery_keeps_accepted_capitalization(self):
+        from polish import restore_statement_after_question
+        source = 'What does that mean? and i send the file to orion'
+        proposal = 'What does that mean, and how do I send the file to Orion?'
+        self.assertEqual(restore_statement_after_question(source, proposal),
+                         'What does that mean? And I send the file to Orion.')
+
+    def test_statement_recovery_keeps_true_questions_and_uncertain_sources(self):
+        from polish import restore_statement_after_question
+        cases = [
+            'What does that mean, and how do we keep the original date?',
+            'What does that mean? And how do we keep the original date?',
+            'What does that mean? Can we keep the original date?',
+            'What does that mean? And we keep the original date?',
+            'What does that mean and we keep the original date',
+            'What does that mean? And we should keep the original date.',
+            'What does that mean? And we keep, sorry, change the original date.',
+            'The label says "What does that mean? And we keep the original date."',
+        ]
+        for source in cases:
+            self.assertEqual(restore_statement_after_question(source, source), source)
+            proposal = 'What does that mean, and how do we keep the original date?'
+            self.assertEqual(restore_statement_after_question(source, proposal), proposal)
+
+    def test_statement_recovery_abstains_on_changed_or_repeated_anchors(self):
+        from polish import restore_statement_after_question
+        source = 'What does that mean? and we keep the original date.'
+        for proposal in ['What does that mean, and how do we change the original date?',
+                         'What does this mean, and how do we keep the original date?',
+                         'What does that mean, and how do we keep the original date? What does that mean, and how do we keep the original date?']:
+            self.assertEqual(restore_statement_after_question(source, proposal), proposal)
+        proposal = 'What does that mean, and how do we keep the original date?'
+        self.assertEqual(restore_statement_after_question(source + ' ' + source, proposal), proposal)
+
     def test_short_conditional_normalization_keeps_full_semantic_guard(self):
         from polish import conditional_restart_basis
         source = 'Since Orion and Vega if they approved it why is the draft still pending?'

@@ -1618,6 +1618,40 @@ def repair_topic_question_frame(source, output):
     return output
 
 
+def restore_statement_after_question(source, output):
+    """Undo an invented 'how do' on a uniquely aligned separate statement.
+
+    Require an explicit source question boundary and verbatim statement tail.
+    Unpunctuated, quoted, corrected and already interrogative sources abstain.
+    This restores the source speech act without guessing omitted wording.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|rather|correction|i mean)\b', source + output, re.I): return output
+    pattern = (r'(?:^|[.!?]\s+)(?P<question>(?:what|which|why|how|where|when) '
+               r'(?:is|are|was|were|do|does|did|can|could|would|should) [^.!?;:\n]{2,160})\?\s+'
+               r'(?P<join>and) (?P<actor>i|we|you|they) '
+               r'(?P<tail>[^.!?;:\n]{3,240})(?:\.|$)')
+    for match in re.finditer(pattern, source, re.I):
+        tail = match['tail'].strip()
+        if words(tail)[0] in {'can', 'could', 'will', 'would', 'should', 'must', 'may', 'might',
+                              'am', 'are', 'were', 'have', 'had', 'not'}: continue
+        question = match['question']
+        statement = match['actor'] + ' ' + tail
+        if any(len(re.findall(re.escape(v), source, re.I)) != 1 for v in (question, statement)): continue
+        target = (r'(?<!\w)' + re.escape(question) + r'[,?]\s+and how do '
+                  + re.escape(statement) + r'\?')
+        hits = list(re.finditer(target, output, re.I))
+        if len(hits) != 1: continue
+        hit = hits[0]
+        # Require the same preceding clause anchor and sentence boundary.
+        if [root(w) for w in words(source[:match.start('question')])[-4:]] != [root(w) for w in words(output[:hit.start()])[-4:]]: continue
+        if hit.start() and not re.search(r'[.!?]\s+$', output[:hit.start()]): continue
+        # Preserve the accepted output's capitalization (I, names, acronyms).
+        rendered_statement = re.split(r'[,?]\s+and how do ', hit[0], maxsplit=1, flags=re.I)[1][:-1]
+        replacement = hit[0][:len(question)] + '? And ' + rendered_statement + '.'
+        output = output[:hit.start()] + replacement + output[hit.end():]
+    return output
+
+
 def restore_exception_specificity(source, output):
     """Keep the demonstrative on the same uniquely anchored exception group."""
     if re.search(r'["“”`]|\b(?:sorry|correction|rather|i mean)\b', source, re.I): return output
@@ -1819,7 +1853,8 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (restore_aligned_nuance, 'aligned_nuance'),
                          (restore_standalone_confirmation, 'standalone_confirmation'),
                          (remove_stranded_determiner_restart, 'determiner_restart'),
-                         (repair_topic_question_frame, 'topic_question_frame')]:
+                         (repair_topic_question_frame, 'topic_question_frame'),
+                         (restore_statement_after_question, 'statement_after_question')]:
         candidate = repair(text if repair is remove_stranded_filler_comma else source, output)
         reason = rejection_reason(source, candidate, known_terms) if candidate != output else None
         if candidate != output and reason == 'content_or_order' and repair is repair_conditional_restart:

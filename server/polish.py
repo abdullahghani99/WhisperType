@@ -1115,6 +1115,43 @@ def repair_nominal_boundaries(source, output):
     return output
 
 
+def restore_anchored_profanity(source, output):
+    """Restore an omitted emphatic word only inside a unique unchanged span.
+
+    A closed vocabulary and three unchanged words on each side keep the word
+    attached to its original phrase. Corrections, quotations, repeated anchors,
+    altered punctuation and substitutions abstain; no tone is inferred.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|rather|instead|i mean)\b', source, re.I):
+        return output
+    token = r"[^\W_]+(?:['’][^\W_]+)*"
+    src = list(re.finditer(token, source)); out = list(re.finditer(token, output))
+    a = [m[0].casefold() for m in src]; b = [m[0].casefold() for m in out]
+    edits = []
+    for i, value in enumerate(a):
+        if value not in {'fucking', 'damn', 'goddamn', 'bloody'}: continue
+        if i < 3 or i + 2 >= len(a): continue
+        before, after = a[i-3:i], a[i+1:i+4]
+        # Two following words suffice only at the actual end of the source.
+        if len(after) == 2 and not re.fullmatch(r'[.!?]?\s*', source[src[-1].end():]): continue
+        # No attachment across sentence boundaries, quotations or interruption.
+        if not all(re.fullmatch(r'\s+', source[src[j].end():src[j+1].start()])
+                   for j in range(i-3, i+len(after))): continue
+        if sum(a[n:n+4+len(after)] == before + [value] + after for n in range(len(a))) != 1: continue
+        positions = [n for n in range(3, len(b)-len(after)+1)
+                     if b[n-3:n] == before and b[n:n+len(after)] == after]
+        if len(positions) != 1: continue
+        n = positions[0]
+        if len(after) == 2 and n + 2 != len(b): continue
+        if not all(re.fullmatch(r'\s+', output[out[j].end():out[j+1].start()])
+                   for j in range(n-3, n+len(after)-1)): continue
+        # A second surviving copy must not be reassigned to this occurrence.
+        if a.count(value) != b.count(value) + 1: continue
+        edits.append((out[n].start(), src[i][0] + ' '))
+    for start, value in reversed(edits): output = output[:start] + value + output[start:]
+    return output
+
+
 def restore_repeated_emphasis(source, output):
     """Restore a lost repeated intensifier using unique unchanged word anchors."""
     token = r"[^\W_]+(?:['’][^\W_]+)*"
@@ -1836,6 +1873,7 @@ def copyedit(text, generate, examples=(), known_terms=()):
         output = candidate; changes.append('question_boundary')
     for repair, name in [(repair_nominal_boundaries, 'nominal_boundary'),
                          (restore_repeated_emphasis, 'repeated_emphasis'),
+                         (restore_anchored_profanity, 'anchored_profanity'),
                          (restore_literal_fragments, 'literal_fragment'),
                          (preserve_explicit_command_repetition, 'explicit_command_repetition'),
                          (collapse_adjacent_other, 'adjacent_other_restart'),

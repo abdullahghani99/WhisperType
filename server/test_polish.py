@@ -1296,3 +1296,75 @@ class DescriptiveRestartTests(unittest.TestCase):
         for noun in ['woman','child','dog','horse','teacher','patient','robot','device']:
             source = f'The {noun}, the tag on the {noun}, for this the {noun} looks different.'
             self.assertEqual(collapse_descriptive_restart(source, source), source)
+
+
+class AnchoredProfanityTests(unittest.TestCase):
+    def test_restore_only_missing_emphasis_and_keep_other_cleanup(self):
+        prefix = 'Please finish the account setup and verify the delivery timeline. The dashboard is incomplete. Some sections are still disconnected. '
+        source = prefix + 'Um, we have waited for the last fucking six days already. Please send the the report.'
+        proposal = prefix + 'We have waited for the last six days already. Please send the report.'
+        calls = []
+        def generate(*_): calls.append(True); return proposal
+        output, diag = copyedit(source, generate)
+        self.assertEqual(output, prefix + 'We have waited for the last fucking six days already. Please send the report.')
+        self.assertEqual(len(calls), 1)
+        self.assertIn('anchored_profanity', diag['local_repairs'])
+        self.assertIsNone(rejection_reason(source, output))
+
+    def test_several_emphatic_words_keep_their_own_attachment(self):
+        from polish import restore_anchored_profanity
+        for word in ['fucking', 'damn', 'goddamn', 'bloody']:
+            source = f'We waited for the {word} report to arrive yesterday.'
+            proposal = 'We waited for the report to arrive yesterday.'
+            self.assertEqual(restore_anchored_profanity(source, proposal), source)
+            self.assertEqual(restore_anchored_profanity(source, source), source)
+
+    def test_explicit_correction_and_quotation_are_not_reintroduced(self):
+        from polish import restore_anchored_profanity
+        for source in [
+            'We waited for the fucking report to arrive, sorry, the revised report.',
+            'We waited for the fucking report to arrive, I mean the revised report.',
+            'He said "we waited for the fucking report to arrive yesterday."',
+            'We waited for the fucking report to arrive; instead, send the memo.',
+        ]:
+            proposal = source.replace('fucking ', '')
+            self.assertEqual(restore_anchored_profanity(source, proposal), proposal)
+
+    def test_boundary_replacement_and_unaligned_anchors_abstain(self):
+        from polish import restore_anchored_profanity
+        source = 'We waited for the fucking report to arrive yesterday.'
+        for proposal in [
+            'We waited for the blessed report to arrive yesterday.',
+            'We waited for the report. To arrive yesterday.',
+            'We waited for the report to be published yesterday.',
+            'We waited for the report to arrive yesterday. We waited for the report to arrive again.',
+        ]:
+            self.assertEqual(restore_anchored_profanity(source, proposal), proposal)
+        repeated = source + ' ' + source
+        self.assertEqual(restore_anchored_profanity(repeated, repeated.replace('fucking ', '')), repeated.replace('fucking ', ''))
+
+    def test_real_restart_cleanup_is_preserved(self):
+        source = 'We waited for the damn draft, sorry, the final report to arrive yesterday.'
+        proposal = 'We waited for the final report to arrive yesterday.'
+        output, _ = copyedit(source, lambda *_: proposal)
+        self.assertEqual(output, proposal)
+
+    def test_other_meaning_checks_still_apply(self):
+        source = 'We did not send the fucking report to the client.'
+        output, _ = copyedit(source, lambda *_: 'We did send the report to the client.')
+        self.assertIn('not', output)
+        self.assertIsNone(rejection_reason(source, output))
+
+
+class ProfanitySentenceEndingTests(unittest.TestCase):
+    def test_emphasis_before_final_quantity(self):
+        from polish import restore_anchored_profanity
+        source = 'Why has this taken the last fucking five weeks?'
+        proposal = 'Why has this taken the last five weeks?'
+        self.assertEqual(restore_anchored_profanity(source, proposal), source)
+
+    def test_insufficient_or_boundary_crossing_context_abstains(self):
+        from polish import restore_anchored_profanity
+        for source in ['The fucking report.', 'We saw the fucking report. Yesterday was different.', 'We saw the fucking report, yesterday.']:
+            proposal = source.replace('fucking ', '')
+            self.assertEqual(restore_anchored_profanity(source, proposal), proposal)

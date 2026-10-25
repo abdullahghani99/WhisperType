@@ -1115,6 +1115,44 @@ def repair_nominal_boundaries(source, output):
     return output
 
 
+def restore_continuation_statement(source, output):
+    """Restore a wholly omitted continuation assertion between unique anchors.
+
+    These short finite clauses can fit inside the ordinary content-loss budget.
+    Require explicit sentence boundaries, unchanged neighboring words, and an
+    empty output gap. Corrections, quotations and repeated claims abstain.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|instead|rather|no|i mean|scratch that|take that back|ignore that)\b', source, re.I):
+        return output
+    token = r"[^\W_]+(?:['’][^\W_]+)*"
+    pattern = (r'(?<=[.!?])\s+(?P<clause>(?:it|this|that) '
+               r'(?:(?:also|still|just) )?(?:goes on(?: and on)?|went on(?: and on)?|'
+               r'keeps going|kept going|continues|continued))\.(?=\s+[A-Z])')
+    for m in re.finditer(pattern, source, re.I):
+        # Do not restore an assertion already present elsewhere or partially
+        # rewritten. Its non-function predicate must be entirely absent.
+        clause_words = words(m['clause'])
+        if sum(words(x) == clause_words for x in re.split(r'[.!?]+',source)) != 1: continue
+        predicate = {root(w) for w in clause_words if w not in FUNCTION_WORDS | FILLER_WORDS}
+        if not predicate or predicate & {root(w) for w in words(output)}: continue
+        before = words(source[:m.start()])[-3:]
+        after = words(source[m.end():])[:3]
+        if len(before) != 3 or len(after) != 3: continue
+        out = list(re.finditer(token, output)); values = [x[0].casefold() for x in out]
+        positions = [i for i in range(3,len(values)-2)
+                     if values[i-3:i] == before and values[i:i+3] == after]
+        if len(positions) != 1: continue
+        i = positions[0]
+        if not re.fullmatch(r'\.\s+', output[out[i-1].end():out[i].start()]): continue
+        # Anchors must belong to the neighboring clauses, not span another
+        # sentence or a quotation created by the candidate.
+        if any(re.search(r'[.!?;:"“”`]',output[out[j].end():out[j+1].start()])
+               for j in [i-3,i-2,i,i+1]): continue
+        start = out[i].start()
+        output = output[:start] + m['clause'][0].upper() + m['clause'][1:] + '. ' + output[start:]
+    return output
+
+
 def restore_anchored_profanity(source, output):
     """Restore an omitted emphatic word only inside a unique unchanged span.
 
@@ -1874,6 +1912,7 @@ def copyedit(text, generate, examples=(), known_terms=()):
     for repair, name in [(repair_nominal_boundaries, 'nominal_boundary'),
                          (restore_repeated_emphasis, 'repeated_emphasis'),
                          (restore_anchored_profanity, 'anchored_profanity'),
+                         (restore_continuation_statement, 'continuation_statement'),
                          (restore_literal_fragments, 'literal_fragment'),
                          (preserve_explicit_command_repetition, 'explicit_command_repetition'),
                          (collapse_adjacent_other, 'adjacent_other_restart'),

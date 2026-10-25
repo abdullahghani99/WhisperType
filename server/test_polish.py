@@ -1368,3 +1368,63 @@ class ProfanitySentenceEndingTests(unittest.TestCase):
         for source in ['The fucking report.', 'We saw the fucking report. Yesterday was different.', 'We saw the fucking report, yesterday.']:
             proposal = source.replace('fucking ', '')
             self.assertEqual(restore_anchored_profanity(source, proposal), proposal)
+
+
+class ContinuationStatementTests(unittest.TestCase):
+    def test_whole_continuation_is_restored_with_other_cleanup(self):
+        prefix = 'Okay, please review the updated account configuration and the delivery schedule. The audience is different. '
+        source = prefix + 'It also goes on and on. Be very careful and keep the the report.'
+        proposal = prefix.replace('Okay, ', '') + 'Be very careful and keep the report.'
+        calls=[]
+        def generate(*_): calls.append(True); return proposal
+        output, diag = copyedit(source, generate)
+        self.assertEqual(output, prefix.replace('Okay, ', '') + 'It also goes on and on. Be very careful and keep the report.')
+        self.assertEqual(len(calls),1)
+        self.assertIsNone(rejection_reason(source,output))
+        self.assertIn('continuation_statement',diag['local_repairs'])
+
+    def test_continuation_family(self):
+        from polish import restore_continuation_statement
+        for clause in ['It also goes on and on', 'This still keeps going', 'That continued', 'It went on and on', 'This just continues']:
+            source=f'The audience is different. {clause}. Be very careful.'
+            self.assertEqual(restore_continuation_statement(source,'The audience is different. Be very careful.'),source)
+            self.assertEqual(restore_continuation_statement(source,source),source)
+
+    def test_corrections_quotes_and_repeated_claims_abstain(self):
+        from polish import restore_continuation_statement
+        for source in [
+            'The audience is different. It goes on. Sorry, it stopped. Be very careful.',
+            'The audience is different. It goes on. No, it stopped. Be very careful.',
+            'The audience is different. It goes on. Scratch that. Be very careful.',
+            'The audience is different. "It goes on." Be very careful.',
+            'The audience is different. It goes on. It goes on. Be very careful.',
+        ]:
+            proposal=source.replace('It goes on. ','')
+            self.assertEqual(restore_continuation_statement(source,proposal),proposal)
+
+    def test_partial_rewrite_other_meaning_and_ambiguous_boundaries_abstain(self):
+        from polish import restore_continuation_statement
+        source='The audience is different. It also goes on and on. Be very careful.'
+        for proposal in ['The audience is different. It goes on. Be very careful.',
+                         'The audience is different. It continues. Be very careful.',
+                         'The audience is different, be very careful.',
+                         'The audience is different. Be extremely careful.',
+                         'The audience is different. Be very careful. The audience is different. Be very careful.']:
+            self.assertEqual(restore_continuation_statement(source,proposal),proposal)
+        for source in ['The audience is different it also goes on and on be very careful.',
+                       'The audience is different. It goes on to explain the discrepancy. Be very careful.',
+                       'The audience is different. It does not go on. Be very careful.',
+                       'The audience is different. It goes on? Be very careful.']:
+            self.assertEqual(restore_continuation_statement(source,'The audience is different. Be very careful.'),'The audience is different. Be very careful.')
+
+    def test_existing_predicate_elsewhere_abstains(self):
+        from polish import restore_continuation_statement
+        source='The introduction goes on. The audience is different. It goes on. Be very careful.'
+        proposal='The introduction goes on. The audience is different. Be very careful.'
+        self.assertEqual(restore_continuation_statement(source,proposal),proposal)
+
+    def test_full_guard_still_rejects_lost_negation(self):
+        source='The audience is different. It goes on. Be very careful. Do not send it.'
+        output,_=copyedit(source,lambda *_:'The audience is different. Be very careful. Do send it.')
+        self.assertIn('not',output)
+        self.assertIsNone(rejection_reason(source,output))

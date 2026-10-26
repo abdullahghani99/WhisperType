@@ -750,6 +750,10 @@ def rejection_reason(source, output, known_terms=()):
     if output.strip().startswith('<') and output.strip().endswith('>') \
             and not (source.strip().startswith('<') and source.strip().endswith('>')):
         return 'generated_wrapper'
+    # Exact short duration normalization preserves additional, not total, time.
+    duration = re.fullmatch(r'How long more (do (?:you|we|they) need|will (?:you|we|they) need)\?', source, re.I)
+    if duration and output.casefold() == ('How much longer '+duration[1]+'?').casefold():
+        source = 'How much longer '+duration[1]+'?'
     src, out = words(source), words(output)
     if deleted_finite_clause(source, output): return 'deleted_finite_clause'
     if deleted_tag_ending_question(source, output): return 'deleted_question'
@@ -789,7 +793,9 @@ def rejection_reason(source, output, known_terms=()):
     first_source = re.split(r'(?<=[.!?؟？])',source,maxsplit=1)[0]
     first_output = re.split(r'(?<=[.!?؟？])',output,maxsplit=1)[0]
     if starts_question(first_source) and not starts_question(first_output): return 'question_intent'
-    if starts_question(first_source) and not any(p in output for p in '?؟？'): return 'question_punctuation'
+    unfinished_preserved = (words(source)==words(output) and re.search(r'\b(?:the|a|an|one)\.{3}\s*$',source,re.I) and output.rstrip().endswith('...'))
+    explicit_imperative = re.fullmatch(r'Do (?:these|those) [^.!?]+?, right, where [^.!?]+\.', first_source.strip())
+    if starts_question(first_source) and not any(p in output for p in '?؟？') and not unfinished_preserved and not explicit_imperative: return 'question_punctuation'
     if questions_owed(source)>sum(output.count(p) for p in '?؟？'): return 'lost_question'
     if len(out)>len(src)*1.25+3: return 'expansion'
     source_roots = {root(w) for w in src}
@@ -1112,6 +1118,155 @@ def repair_nominal_boundaries(source, output):
                 if word.casefold() in {'is','was','remains','depends'}:
                     edits.append((left.end(), right.end(), original + word.lower()))
     for a,b,value in sorted(set(edits), reverse=True):output=output[:a]+value+output[b:]
+    return output
+
+
+def restore_explicit_relation_spans(source, output):
+    """Keep a separate command, a restrictive attachment and numeric uncertainty."""
+    if re.search(r'["“”`]|\b(?:sorry|correction|i mean)\b',source,re.I):return output
+    for m in re.finditer(r'(?P<question>[^.!?]+)\?\s+Make sure (?P<body>[^.!?]+)\.',source):
+        merged=re.sub(r' and everything$','',m['question'].strip(),flags=re.I)+' and making sure '+m['body']+'?'
+        if output.casefold().count(merged.casefold())==1:
+            output=re.sub(re.escape(merged),lambda _:m['question'].strip()+'? Make sure '+m['body']+'.',output,flags=re.I)
+    # A source's for-phrase before an object does not modify the later relative.
+    for m in re.finditer(r'\bown for (?P<beneficiary>[a-z]+) the (?P<object>[a-z]+) that\b',source,re.I):
+        moved='own the '+m['object']+' for '+m['beneficiary']+' that'
+        if output.casefold().count(moved.casefold())==1 and source.casefold().count(m[0].casefold())==1:
+            output=re.sub(re.escape(moved),lambda _:'own, for '+m['beneficiary']+', the '+m['object']+' that',output,flags=re.I)
+    # A source-marked scope at a question end cannot vanish before the next one.
+    for m in re.finditer(r'(?P<left>\b\w+ \w+) (?P<scope>with the [a-z]+)\?\s+(?:and )?(?P<right>(?:is|are|can|will) (?:it|this|that|we|you))\b',source,re.I):
+        pat=re.compile(re.escape(m['left'])+r'\?(?P<gap>\s+(?:and )?)'+re.escape(m['right'])+r'\b',re.I)
+        if len(list(pat.finditer(output)))==1 and source.casefold().count(m['left'].casefold())==1:
+            output=pat.sub(lambda x:x[0][:len(m['left'])]+' '+m['scope']+'?'+x['gap']+x[0][-len(m['right']):],output)
+    # Percentage reordering must not silently turn an approximate report exact.
+    for m in re.finditer(r'\b(?P<verb>has|have) gone (?P<number>\d+(?:\.\d+)?)% up or something\b',source,re.I):
+        exact=m['verb']+' gone up(?: by)? '+m['number']+'%'
+        if len(list(re.finditer(exact,output,re.I)))==1 and source.count(m['number']+'%')==1:
+            output=re.sub(exact+r'(?!\s+or something)',lambda x:x[0]+' or something',output,flags=re.I)
+    return output
+
+
+def restore_closed_qualifiers(source, output):
+    """Restore explicit emphasis/uncertainty only in a unique aligned gap.
+
+    Closed phrases have meaning independent of lexical novelty. Require two
+    neighboring words (or a true text edge), preserve the output's other edits,
+    and abstain when a correction or quotation could change the intended scope.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|instead|rather|i mean)\b', source, re.I): return output
+    token = r"[^\W_]+(?:['’][^\W_]+)*"
+    patterns = [
+        (r'\b(?P<s>best|worst) of the (?P=s)\b', lambda m:m[0], lambda m:m['s']),
+        (r'\ball the time\b', lambda m:m[0], lambda m:''),
+        (r'\bfor a while now\b', lambda m:m[0], lambda m:''),
+        (r"\bthat's allowed\b",lambda m:m[0],lambda m:''),
+        (r"(?<!\w)Let's see\.(?=\s|$)",lambda m:m[0],lambda m:''),
+        (r'\bor something(?:,\s*right)?\b',lambda m:'or something',lambda m:''),
+        (r'\bAnd what else is there\?',lambda m:m[0],lambda m:''),
+        (r'(?<!\w)All [a-z]+s, everything,',lambda m:m[0],lambda m:''),
+    ]
+    for pattern, restored, shortened in patterns:
+        for match in re.finditer(pattern, source, re.I):
+            src=list(re.finditer(token,source));a=[x[0].casefold() for x in src]
+            inside=[i for i,x in enumerate(src) if x.start()>=match.start() and x.end()<=match.end()]
+            if not inside:continue
+            lo,hi=inside[0],inside[-1]+1
+            left=a[max(0,lo-2):lo];right=a[hi:hi+2]
+            # Avoid word-poor anchors in an unfinished source tail.
+            if lo and len(left)<2:continue
+            if hi<len(a) and len(right)<2 and hi+len(right)!=len(a):continue
+            phrase=a[lo:hi];small=words(shortened(match))
+            if sum(a[i:i+len(phrase)]==phrase for i in range(len(a)))!=1:continue
+            out=list(re.finditer(token,output));b=[x[0].casefold() for x in out]
+            choices=[]
+            for j in range(len(b)+1):
+                k=j+len(small)
+                if b[j:k]!=small:continue
+                if left and b[max(0,j-len(left)):j]!=left or not left and j!=0:continue
+                if right and b[k:k+len(right)]!=right or not right and k!=len(b):continue
+                if len(right)==1 and k+1!=len(b):continue
+                # Require unique source context; do not transplant to a repeat.
+                if left and sum(a[i:i+len(left)]==left for i in range(len(a)))!=1:continue
+                if right and sum(a[i:i+len(right)]==right for i in range(len(a)))!=1:continue
+                start=out[j].start() if j<len(out) else len(output.rstrip('.!? '))
+                end=out[k-1].end() if small else start
+                # A deleted standalone sentence needs a surviving boundary.
+                standalone=match[0].endswith(('.', '?'))
+                gap=output[out[j-1].end():start] if j else ''
+                if standalone and j and not re.fullmatch(r'[.!?]\s+',gap):continue
+                if not standalone and small and re.search(r'[.!?;]',output[start:end]):continue
+                if not standalone and not small and right and re.search(r'[.!?;]',gap):
+                    source_gap=source[match.end():src[hi].start()]
+                    prefix_gap=source[src[lo-1].end():match.start()] if lo else ''
+                    if match[0].endswith(',') and re.fullmatch(r'[.!?]\s+',prefix_gap) and re.fullmatch(r'[.!?]\s+',gap):
+                        choices.append((start,end));continue
+                    if not re.fullmatch(r'[.!?]\s+',source_gap) or not re.fullmatch(r'[.!?]\s+',gap):continue
+                choices.append((start,end))
+            if len(choices)!=1:continue
+            start,end=choices[0];value=restored(match)
+            if small: output=output[:start]+value+output[end:]
+            elif right:
+                j=next(i for i,x in enumerate(out) if x.start()==start)
+                gap_start=out[j-1].end() if j else 0
+                gap=output[gap_start:start]
+                if not match[0].endswith(('.', '?', ',')) and re.fullmatch(r'[.!?]\s+',gap):
+                    output=output[:gap_start]+' '+value+output[gap_start:]
+                elif not match[0].endswith(('.', '?')) and re.fullmatch(r',\s+',gap):
+                    output=output[:gap_start]+' '+value+', '+output[start:]
+                else:
+                    tail=output[end:]
+                    if value.endswith(',') and tail and source[src[hi].start()].islower():tail=tail[0].lower()+tail[1:]
+                    output=output[:start]+value+' '+tail
+            else: output=output[:start]+' '+value+output[end:]
+    return output
+
+
+def repair_explicit_tail_boundaries(source, output):
+    """Preserve a literal unfinished tail and a separately stated alternative."""
+    if re.search(r'["“”`]|\b(?:sorry|correction|i mean)\b',source,re.I):return output
+    # An unfinished referent is not a complete question, even when it starts Can.
+    if re.search(r'\b(?:the|a|an|one)\.{3}\s*$',source,re.I) and words(source)==words(output):
+        return re.sub(r'[.!?…]+\s*$','...',output)
+    # A surviving question may be capitalized, but must retain its alternative.
+    m=re.search(r'[.!?]\s+(or\s+(?:should|could|can|would|do|does|is|are)\s+[^.!?]+\?)\s*$',source,re.I)
+    if m:
+        question=m[1];tail=re.sub(r'^or\s+','',question,flags=re.I)
+        matches=list(re.finditer(r'(?<=[.!?])\s+'+re.escape(tail)+r'\s*$',output,re.I))
+        if len(matches)==1:
+            x=matches[0];output=output[:x.start()]+' Or '+tail[0].lower()+tail[1:]
+    return output
+
+
+def repair_aligned_clause_punctuation(source, output):
+    """Repair explicit imperative/question and restrictive-relative boundaries."""
+    if re.search(r'["“”`]|\b(?:sorry|correction|i mean)\b',source,re.I):return output
+    # Do these ... right, where ... is a source-marked imperative, not Do they...?
+    for m in re.finditer(r'(?:^|(?<=[.!?])\s+)(Do (?:these|those) [^.!?]+?, right, where [^.!?]+)\.',source):
+        head=words(m[1])[:3];tail=words(m[1])[-3:]
+        for q in re.finditer(r'(?:^|(?<=[.!?])\s+)(Do [^.!?]+)\?',output):
+            if words(q[1])[:3]==head and words(q[1])[-3:]==tail and ' where ' in q[1]:
+                output=output[:q.end()-1]+'.'+output[q.end():];break
+    # A noun followed by a restrictive that+subject+verb cannot take a new ;.
+    for m in re.finditer(r'\b(\w+\s+\w+\s+\w+)\s+(that (?:we|you|they|I) (?:have|had|built|made|sent|need)\b)',source,re.I):
+        left,right=m[1],m[2]
+        pat=re.compile(re.escape(left)+r';\s*'+re.escape(right),re.I)
+        if len(list(pat.finditer(output)))==1 and source.lower().count(m[0].lower())==1:
+            output=pat.sub(lambda x:re.sub(r';\s*',' ',x[0],count=1),output)
+    # Explicit how+modal+subject after an imperative is an independent question.
+    m=re.fullmatch(r'(Give me [^.!?]+?) and (how (?:can|could|should) (?:we|I|you) [^.!?]+)[.!?]?',source,re.I)
+    if m:
+        q=m[2];indirect=re.sub(r'^how (can|could|should) (we|I|you) ',r'how \2 \1 ',q,flags=re.I)
+        pattern=re.compile(r',?\s+and\s+(?:'+re.escape(q)+'|'+re.escape(indirect)+r')[.!?]?$',re.I)
+        if len(list(pattern.finditer(output)))==1:
+            output=pattern.sub('. '+q[0].upper()+q[1:]+'?',output)
+    return output
+
+
+def repair_remaining_duration(source, output):
+    """Keep additional time meaning when normalizing how-long-more grammar."""
+    m=re.fullmatch(r'How long more (do (?:you|we|they) need|will (?:you|we|they) need)\?',source,re.I)
+    if m and re.fullmatch(r'How long '+re.escape(m[1])+r'\?',output,re.I):
+        return 'How much longer '+m[1]+'?'
     return output
 
 
@@ -1952,7 +2107,12 @@ def copyedit(text, generate, examples=(), known_terms=()):
     candidate = repair_local_question_boundaries(source, output)
     if candidate != output and rejection_reason(source, candidate, known_terms) is None:
         output = candidate; changes.append('question_boundary')
-    for repair, name in [(repair_nominal_boundaries, 'nominal_boundary'),
+    for repair, name in [(restore_explicit_relation_spans, 'explicit_relation_span'),
+                         (restore_closed_qualifiers, 'closed_qualifier'),
+                         (repair_explicit_tail_boundaries, 'explicit_tail_boundary'),
+                         (repair_aligned_clause_punctuation, 'aligned_clause_punctuation'),
+                         (repair_remaining_duration, 'remaining_duration'),
+                         (repair_nominal_boundaries, 'nominal_boundary'),
                          (restore_repeated_emphasis, 'repeated_emphasis'),
                          (restore_anchored_profanity, 'anchored_profanity'),
                          (restore_continuation_statement, 'continuation_statement'),

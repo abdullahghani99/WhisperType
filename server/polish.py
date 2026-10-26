@@ -1009,6 +1009,53 @@ def collapse_copular_fragments(text):
     return re.sub(pattern, replace, text, flags=re.I)
 
 
+def repair_copular_verb_restart(source, output):
+    """Resolve an explicit interrupted copula before a complete verb phrase.
+
+    Retain the subject and every modifier; never complete a terminal fragment.
+    Both source and accepted output must contain the same interrupted span.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|rather|instead|not|never)\b', source, re.I):
+        return output
+    pause = r'(?:\.{3}|…)(?:\s*(?:\.{3}|…))?\s*'
+    pattern = (r"\b(?P<subject>it|he|she)['’]s\s+"
+               r'(?P<modifiers>(?:(?:still|actually|just)\s+){0,3}(?:still|actually|just))'
+               r'\s*' + pause + r'(?P<verb>does|has)\s+'
+               r'(?P<determiner>this|that|the)\s+(?P<one>one\s*)?'
+               r'(?P<pause>' + pause + r')?(?P<object>[a-z]+)\b')
+    for match in re.finditer(pattern, source, re.I):
+        if re.match(r'[^.!?]*\?', source[match.end():]): continue
+        # A conjunction or another restart is not a completed object.
+        if match['object'].lower() in {'and','or','but','well','so','then','not','no','which','that','one'}:
+            continue
+        hits = list(re.finditer(re.escape(match[0]), output, re.I))
+        if len(hits) != 1 or source.lower().count(match[0].lower()) != 1: continue
+        if match['pause'] and not match['one']: continue
+        replacement = (match['subject'] + ' ' + match['modifiers'] + ' ' + match['verb']
+                       + ' ' + match['determiner'] + ' ' + ('one ' if match['one'] else '')
+                       + match['object'])
+        hit = hits[0]
+        if hit[0][0].isupper(): replacement = replacement[0].upper() + replacement[1:]
+        output = output[:hit.start()] + replacement + output[hit.end():]
+    return output
+
+
+def restore_merged_what_questions(source, output):
+    """Undo a unique two-question merge without guessing a new question."""
+    if re.search(r'["“”`]|\b(?:sorry|correction|rather|instead)\b', source, re.I): return output
+    pattern = r'\b(?P<first>And what else is there\?)\s+(?P<second>What (?P<tail>(?:did|do|does|would|will|can|could|should) [^.!?]{2,100})\?)'
+    matches = list(re.finditer(pattern, source, re.I))
+    if len(matches) != 1: return output
+    match = matches[0]
+    if re.search(r'\bwhat else is there\b', output, re.I): return output
+    target = r'\bWhat else\s+' + re.escape(match['tail']) + r'\?'
+    hits = list(re.finditer(target, output, re.I))
+    if len(hits) != 1: return output
+    if len(re.findall(re.escape(match['tail']), source, re.I)) != 1: return output
+    hit = hits[0]
+    return output[:hit.start()] + match['first'] + ' ' + match['second'] + output[hit.end():]
+
+
 def local_question_kind(text):
     """Recognize bounded independent questions, not headings or embedded clauses."""
     if any(c in text for c in ('"', '“', '”', '`', ':', ';', '\n')): return None
@@ -2107,7 +2154,9 @@ def copyedit(text, generate, examples=(), known_terms=()):
     candidate = repair_local_question_boundaries(source, output)
     if candidate != output and rejection_reason(source, candidate, known_terms) is None:
         output = candidate; changes.append('question_boundary')
-    for repair, name in [(restore_explicit_relation_spans, 'explicit_relation_span'),
+    for repair, name in [(repair_copular_verb_restart, 'copular_verb_restart'),
+                         (restore_merged_what_questions, 'merged_what_questions'),
+                         (restore_explicit_relation_spans, 'explicit_relation_span'),
                          (restore_closed_qualifiers, 'closed_qualifier'),
                          (repair_explicit_tail_boundaries, 'explicit_tail_boundary'),
                          (repair_aligned_clause_punctuation, 'aligned_clause_punctuation'),

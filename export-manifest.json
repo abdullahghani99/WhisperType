@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "34f1ca119d8153f89ddcc818d86c4c2b76b138de058e758a7812678cee40df0b",
+    "VERSION": "6539238818f52576bf2fb54e3d370a71f371aee2d585deb77adbe3989e395b78",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/AudioUploadTests.swift": "1bd8f3580878381507e4d23ede7f5ff16b90d7fc1ff05f1adf068b7c5298328e",
@@ -110,7 +110,7 @@
     "server/inference_worker.py": "5b3f43b88c2abedc25cfd6d3575aea819b0650aa92a28ce8ce24373a43cc4525",
     "server/learning.py": "d9f1b5e1060d1581145ec1895a26fd45a396fff5e7b4896ebe47aa4eed8c8b56",
     "server/meeting_quality.py": "3c31693e8f8b23eb2654fbba81ec6627ea6726bd850e73d745f1a7239e63a220",
-    "server/polish.py": "370fb2446784dde9f5ebe30525d576dcbcc932155e235e9b65b5a2d9b0efb0ee",
+    "server/polish.py": "d978684801b166d10174600adf8e1d1628788ec086ed47af80a9690ad9bc929a",
     "server/requirements-diarize-lock.txt": "0634e2a6fd432ff6ae82b3cf7d045dcb963f07b5fea0599f9a85e3f18c805f15",
     "server/requirements-lock.txt": "52f6c853921d29a55dfebcaea9e77b5ab99f92ccea7baf0a92b31b0132af99ff",
     "server/requirements.txt": "bb12900b14f541ac611c731cd4fa89f5f1cbfc91514b1f17009929746378c394",
@@ -120,7 +120,7 @@
     "server/test_fragment.py": "e1b7eebb6c353acee33a0bfe9aa9dcdd0ec6b20b48c3b13ebaa434bf5e9fd253",
     "server/test_learning.py": "e999006ff099bcdebdcf01fb05987d86cfad887fe08b4e3a710d0767fa3fc23d",
     "server/test_meeting_quality.py": "29385ec02d04ddd409053da88ad6e8d5a62d0bf226a3e60b3e226db416cec8f7",
-    "server/test_polish.py": "b6ec3057f17d7b607af6d2e3de416e863d667d1ded23875217674d24a51f1d7a",
+    "server/test_polish.py": "e21e641e3aad30dbe4038361e2ea125c88ba98226d941c040ceb43038431049c",
     "server/test_reliability.py": "251c305001620df24c4349e4dd3dab1f5e0a39334f95fe98c3f0878e5c4fe123",
     "server/test_remaining_quality.py": "62ddadbd25b9e286b4189e43839b65e1ed4ac3d96c09c07092ce18a4a3eb2b6a",
     "server/test_repeated_actor.py": "b0c04b8c0ddaabe628a7cf1c054906c0ba42bd7c14d3087fbdb6602571775456",

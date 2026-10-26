@@ -51,6 +51,12 @@ def commitment_context(source, index):
         if re.search(r"\b(?:I|we) (?:withdraw|retract|cancel) (?:that|this|my|our) (?:commitment|promise|task)\b", following['text'], re.I):
             return True, []
         if re.search(first_person, following['text']): break
+    # A speaker immediately questioning whether the same promised action is
+    # needed has not made an unqualified task. Different follow-up details stay.
+    next_row = source[index+1] if index+1<len(source) else None
+    promised = re.search(r"\bI(?:['’]ll| will) (?:just )?([a-z]+)\b", row['text'], re.I)
+    if next_row and next_row['speaker']==row['speaker'] and promised and re.match(r'Do I (?:need|have) to '+re.escape(promised[1])+r'\b',next_row['text'],re.I):
+        return True, []
     before = source[max(0,index-3):index]
     after = source[index+1:index+4]
     framed = any(re.search(r'\b(?:imagine|suppose|example|role.play)\b.*\b(?:saying|says|say|dialogue|conversation)\b', x['text'], re.I) for x in before)
@@ -62,6 +68,52 @@ def commitment_context(source, index):
             and re.match(r'^(?:If|Unless|Provided that|Only if)\b',previous['text'],re.I):
         prefixes.append(previous)
     return False, prefixes
+
+
+def restore_future_summary_attribution(source, summary):
+    """Replace an unsupported completed-action template with its exact promise.
+
+    Only a unique same-speaker future action qualifies. Past-action evidence,
+    retracted promises and compound summary claims are left for wider review.
+    """
+    past={'enter':'entered','send':'sent','publish':'published','submit':'submitted','finish':'finished','review':'reviewed','check':'checked','create':'created','deliver':'delivered','prepare':'prepared'}
+    all_words=set(re.findall(r"\w+",' '.join(x['text'] for x in source).casefold()))
+    for speaker in {x['speaker'] for x in source if x['speaker']}:
+        pattern=re.compile(r'(?<!\w)'+re.escape(speaker)+r' proceeded to (?P<verb>'+ '|'.join(past) +r') (?P<body>[^.!?]+)',re.I)
+        for match in reversed(list(pattern.finditer(summary))):
+            verb=match['verb'].lower()
+            if past[verb] in all_words or re.search(r'\b(?:and|but|although|because|when)\b',match['body'],re.I):continue
+            refs=[]
+            for i,row in enumerate(source):
+                if row['speaker']!=speaker:continue
+                if re.match(r"^(?:(?:ok(?:ay)?|yes|sure)[,.]\s*){0,2}I(?:['’]ll| will) (?:just )?"+verb+r'\b',row['text'],re.I) and not commitment_context(source,i)[0]:refs.append(row['text'])
+            if len(refs)!=1:continue
+            quote=refs[0].rstrip('.!?')
+            summary=summary[:match.start()]+speaker+' said, “'+quote+'”'+summary[match.end():]
+    return summary
+
+
+def retain_disputed_numeric_estimate(source, summary):
+    """Keep a unique explicit disagreement with a summarized percentage claim.
+
+    This adds the speaker's exact words, not a verdict about the estimate.
+    Ambiguous topics, quotations, later corrections and multiple matches abstain.
+    """
+    verbs={'handle':r'handl(?:e[ds]?|ing)','automate':r'automat(?:e[ds]?|ing)','cover':r'cover(?:s|ed|ing)?','achieve':r'achiev(?:e[ds]?|ing)'}
+    eligible=[]
+    for i,row in enumerate(source):
+        m=re.fullmatch(r"I (?:don't|do not) think (?:we|you|they) (?:can|could) (?P<verb>"+'|'.join(verbs)+r") [^.!?]*?(?P<number>\d+(?:\.\d+)?)%[.!?]?",row['text'],re.I)
+        if not m or not row['speaker']:continue
+        later=[x['text'] for x in source[i+1:i+4] if x['speaker']==row['speaker']]
+        if any(re.match(r'(?:Actually|Correction|I mean|I (?:withdraw|retract))\b',t,re.I) for t in later):continue
+        if commitment_context(source,i)[0]:continue
+        claims=[t for t in re.split(r'(?<=[.!?])\s+',summary) if re.search(r'(?<![\d.])'+re.escape(m['number'])+r'%',t) and re.search(verbs[m['verb'].lower()],t,re.I)]
+        if len(claims)!=1 or re.search(r"\b(?:not|disputed|disagreed|questioned|skeptical|doubted)\b",claims[0],re.I):continue
+        if row['text'] in summary:continue
+        eligible.append(row)
+    if len(eligible)==1:
+        row=eligible[0];summary=summary.rstrip()+' '+row['speaker']+' said, “'+row['text'].rstrip('.!?')+'”.'
+    return summary
 
 
 def selected_notes(source, response):
@@ -77,14 +129,15 @@ def selected_notes(source, response):
     # suggestions, quoted examples and hypothetical context do not qualify.
     if not all(isinstance(selected[k],list) and all(isinstance(x,str) for x in selected[k]) for k in HEADINGS):
         raise ValueError('Notes selection returned invalid excerpts')
-    commitment=re.compile(r"^(?:I(?:['’]ll| will)|[Ww]e(?:['’]ll| will)|I(?:['’]m| am) going to)\s+(?:send|set|review|check|prepare|finish|publish|build|share|schedule|create|contact|draft|deliver|submit|test|provide|update|upload|confirm|arrange|organize|write|open|make|follow up)\b")
+    commitment=re.compile(r"^(?:(?:[Ss]o )?(?:[Ii]f|[Uu]nless|[Pp]rovided that) [^.!?]{1,180},\s*)?(?:(?:[Oo][Kk](?:ay)?|[Yy]es|[Ss]ure)[,.]\s*){0,2}(?:I(?:['’]ll| will)|[Ww]e(?:['’]ll| will)|I(?:['’]m| am) going to)\s+(?:just\s+)?(?:send|set|review|check|prepare|finish|publish|build|share|schedule|create|contact|draft|deliver|submit|test|provide|update|upload|confirm|arrange|organize|write|open|make|follow up|discuss|enter|add|give (?:you|him|her|them|us) a call)\b")
     for index,row in enumerate(source):
         text=row['text']
         previous=source[index-1] if index else None
         context=text
         if previous and previous['speaker']==row['speaker']:context=previous['text']+' '+context
         contextual_hypothesis=bool(previous and previous['speaker']==row['speaker'] and re.search(r'\b(?:if|unless|said|quoted|suppose|imagine)\b',previous['text'],re.I))
-        if not contextual_hypothesis and row['speaker'] and len(text.split())<=90 and commitment.search(text) and not re.search(r'\b(?:example|hypothetical|imagine|suppose|quoted|maybe|probably|might)\b',context,re.I):
+        incomplete = bool(re.search(r"(?:send|share|give|provide|deliver|submit) (?:it )?(?:you|him|her|them|us)?[.!?]?$",text,re.I))
+        if not incomplete and not contextual_hypothesis and row['speaker'] and len(text.split())<=90 and commitment.search(text) and not re.search(r'\b(?:example|hypothetical|imagine|suppose|quoted|maybe|probably|might)\b',context,re.I):
             selected['action_items']=[item for item in selected['action_items'] if item not in text]
             selected['action_items'].append(text)
     def norm(text): return re.sub(r'\s+', ' ', text).strip()
@@ -99,6 +152,7 @@ def selected_notes(source, response):
             text=norm(excerpt)
             if not text or text in seen or (key=='summary' and text in dedicated): continue
             if key=='summary':
+                text=retain_disputed_numeric_estimate(source,restore_future_summary_attribution(source,text))
                 all_source=' '.join(row['speaker']+' '+row['text'] for row in source)
                 numbers=re.findall(r'(?<!\w)\d+(?:[.,]\d+)*(?:%|\b)',text)
                 source_numbers={n.replace(',','') for n in re.findall(r'(?<!\w)\d+(?:[.,]\d+)*(?:%|\b)',all_source)}
@@ -121,6 +175,11 @@ def selected_notes(source, response):
                 if owner not in shortest or len(match['text'])<len(shortest[owner]['text']):shortest[owner]=match
             matches=list(shortest.values())
             if key=='action_items' and not re.search(r"\b(?:I(?:['’]ll| will)|[Ww]e(?:['’]ll| will)|(?:I|[Ww]e) (?:commit|agree|promise)|I(?:['’]m| am) going to|[A-Z][a-z]+ will)\b",text):continue
+            if key == 'action_items':
+                # A model-selected prediction or unfinished object is not rescued
+                # merely because its words occur in a real speaker's sentence.
+                body=re.sub(r"^(?:(?:ok(?:ay)?|yes|sure)[,.]\s*){0,2}(?:I['’]ll|I will|[Ww]e['’]ll|[Ww]e will)\s+",'',text,flags=re.I)
+                if re.fullmatch(r'(?:be (?:late|early)|(?:send|share|give|provide|deliver|submit) (?:you|him|her|them|us)|call (?:that|it) (?:a success|a day))[.!?]?',body,re.I):continue
             # Check the surrounding source sentence as well as the excerpt:
             # selecting 'I will' out of a hypothetical cannot make it a task.
             context=' '.join(row['text'] for row in matches)

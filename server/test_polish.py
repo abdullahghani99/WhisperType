@@ -1477,3 +1477,100 @@ class RepeatedPredicateAlternativeTests(unittest.TestCase):
         output,_=copyedit(source,lambda *_:'They send it to other reviewers, as well as to managers and for approval. Do publish it.')
         self.assertIn('not',output)
         self.assertIsNone(rejection_reason(source,output))
+
+class CompletionRepairsTests(unittest.TestCase):
+    def apply(self,source,proposal):return copyedit(source,lambda *_:proposal)[0]
+
+    def test_superlative_not_stutter(self):
+        self.assertEqual(self.apply('What is the best of the best approach?', 'What is the best approach?'),'What is the best of the best approach?')
+        self.assertEqual(self.apply('What is the best best approach?', 'What is the best approach?'),'What is the best approach?')
+
+    def test_temporal_and_reiterated_scope(self):
+        self.assertEqual(self.apply('It runs every day all the time without our help.', 'It runs every day without our help.'),'It runs every day all the time without our help.')
+        self.assertIn('All documents, everything, make',self.apply('We need all documents as well. All documents, everything, make it fully functional.', 'We need all documents as well. Make it fully functional.'))
+        self.assertIn('for a while now.',self.apply('The remote terminal is not responding for a while now. Can you check it?', 'The remote terminal is not responding. Can you check it?'))
+
+    def test_uncertainty_and_independent_question(self):
+        self.assertIn("Let's see.",self.apply("I tried my part. Let's see. I've told him about it.","I tried my part. I've told him about it."))
+        self.assertIn('bot key or something, which',self.apply('Please check the service bot key or something, right, which we use for sales.','Please check the service bot key, which we use for sales.'))
+        self.assertIn('And what else is there?',self.apply('We need every record, right? And what else is there? What did you ask?', 'We need every record, right? What did you ask?'))
+
+    def test_qualifier_controls(self):
+        from polish import restore_closed_qualifiers
+        pairs=[('I said "the best of the best plan".', 'I said "the best plan".'),
+               ('We need the best of the best plan, sorry, the simplest plan.', 'We need the simplest plan.'),
+               ('What is the best of the best plan? What is the best plan?', 'What is the best plan? What is the best plan?'),
+               ("Let's see the report.", 'See the report.'),
+               ('It runs every day all the time without our help.', 'It runs every night without our help.')]
+        for source,proposal in pairs:self.assertEqual(restore_closed_qualifiers(source,proposal),proposal)
+
+    def test_remaining_duration_and_total_duration(self):
+        self.assertEqual(self.apply('How long more do you need?', 'How long do you need?'),'How much longer do you need?')
+        self.assertEqual(self.apply('How long do you need?', 'How long do you need?'),'How long do you need?')
+        self.assertEqual(self.apply('How long more do you think is remaining?', 'How long do you think is remaining?'),'How long do you think is remaining?')
+
+    def test_explicit_unfinished_referent(self):
+        self.assertEqual(self.apply('Can we remove it from the one...', 'Can we remove it from the one?'),'Can we remove it from the one...')
+        self.assertEqual(self.apply('Can we remove it from the old one?', 'Can we remove it from the old one?'),'Can we remove it from the old one?')
+        self.assertEqual(rejection_reason('Can we remove it from the old one?', 'Can we remove it from the old one.'),'question_punctuation')
+
+    def test_alternative_question_boundary(self):
+        self.assertEqual(self.apply('Tell me the next action. or should we wait?', 'Tell me the next action. Should we wait?'),'Tell me the next action. Or should we wait?')
+        self.assertEqual(self.apply('Tell me the next action. Should we wait?', 'Tell me the next action. Should we wait?'),'Tell me the next action. Should we wait?')
+
+    def test_imperative_and_question(self):
+        self.assertEqual(self.apply('Do these checks, right, where we compare results.', 'Do these checks, where we compare results?'),'Do these checks, where we compare results.')
+        self.assertEqual(self.apply('Do these checks produce results?', 'Do these checks produce results?'),'Do these checks produce results?')
+        self.assertEqual(self.apply('Give me a score and how can we improve it.', 'Give me a score, and how can we improve it.'),'Give me a score. How can we improve it?')
+
+    def test_relative_clause_semicolon(self):
+        self.assertEqual(self.apply('Please send the full dossier as well that we have built.', 'Please send the full dossier as well; that we have built.'),'Please send the full dossier as well that we have built.')
+        from polish import repair_aligned_clause_punctuation
+        self.assertEqual(repair_aligned_clause_punctuation('Send the dossier; that we have agreed.', 'Send the dossier; that we have agreed.'),'Send the dossier; that we have agreed.')
+
+    def test_cleanup_and_negation_survive(self):
+        self.assertEqual(self.apply('Um, send the the report to Alex, sorry, to Blair.', 'Send the report to Blair.'),'Send the report to Blair.')
+        self.assertIn('not',self.apply('This is the best of the best plan. Do not publish it.','This is the best plan. Do publish it.'))
+
+class ExplicitRelationSpanTests(unittest.TestCase):
+    def test_separate_command_not_optional_question(self):
+        source='Are you checking every change? Make sure everything is validated.'
+        proposal='Are you checking every change and making sure everything is validated?'
+        output,_=copyedit(source,lambda *_:proposal)
+        self.assertEqual(output,source)
+
+    def test_restrictive_object_attachment(self):
+        source='Can we own for partners the goods that are stored abroad?'
+        output,_=copyedit(source,lambda *_:'Can we own the goods for partners that are stored abroad?')
+        self.assertIn('the goods that are stored abroad?',output)
+        self.assertNotIn('goods for partners that',output)
+        source='Can we own the goods for partners that are stored abroad?'
+        output,_=copyedit(source,lambda *_:source)
+        self.assertEqual(output,source)
+
+    def test_percentage_approximation_after_reordering(self):
+        source='Our usage has gone 500% up or something. Can you check?'
+        output,_=copyedit(source,lambda *_:'Our usage has gone up by 500%. Can you check?')
+        self.assertEqual(output,'Our usage has gone up by 500% or something. Can you check?')
+        exact='Our usage has gone 500% up. Can you check?'
+        output,_=copyedit(exact,lambda *_:'Our usage has gone up by 500%. Can you check?')
+        self.assertNotIn('or something',output)
+
+class ScopeAndBoundaryControls(unittest.TestCase):
+    def test_scope_before_next_question(self):
+        source='Can we have alignment and coherence with the team? And is it ready?'
+        output,_=copyedit(source,lambda *_:'Can we have alignment and coherence? Is it ready?')
+        self.assertIn('coherence with the team?',output)
+    def test_exact_and_everything_command_boundary(self):
+        source='Are you validating each change and everything? Make sure everything is independently validated and verified.'
+        output,_=copyedit(source,lambda *_:'Are you validating each change and making sure everything is independently validated and verified?')
+        self.assertEqual(output,source)
+    def test_allowance_and_scope_controls(self):
+        from polish import restore_closed_qualifiers,restore_explicit_relation_spans
+        source="The store has a lead time that's allowed, if I'm not mistaken."
+        self.assertIn("that's allowed,",restore_closed_qualifiers(source,"The store has a lead time, if I'm not mistaken."))
+        source='Can we have alignment and coherence? Is it ready?'
+        self.assertEqual(restore_explicit_relation_spans(source,source),source)
+    def test_singleword_following_anchor_must_be_final(self):
+        from polish import restore_closed_qualifiers
+        self.assertEqual(restore_closed_qualifiers('We need the best of the best plan.', 'We need the best plan for everyone.'),'We need the best plan for everyone.')

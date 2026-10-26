@@ -1428,3 +1428,52 @@ class ContinuationStatementTests(unittest.TestCase):
         output,_=copyedit(source,lambda *_:'The audience is different. Be very careful. Do send it.')
         self.assertIn('not',output)
         self.assertIsNone(rejection_reason(source,output))
+
+
+class RepeatedPredicateAlternativeTests(unittest.TestCase):
+    def test_alternative_survives_repeated_predicate_cleanup(self):
+        source='They actually send it to other reviewers as well or they send it to managers and for approval as well.'
+        proposal='They actually send it to other reviewers, as well as to managers and for approval.'
+        calls=[]
+        def generate(*_):calls.append(True);return proposal
+        output,diag=copyedit(source,generate)
+        self.assertEqual(output,'They actually send it to other reviewers as well, or to managers and for approval.')
+        self.assertEqual(len(calls),1)
+        self.assertIn('repeated_predicate_alternative',diag['local_repairs'])
+        self.assertIsNone(rejection_reason(source,output))
+
+    def test_multiple_actors_verbs_and_prepositions(self):
+        from polish import restore_repeated_predicate_alternative
+        for actor,verb,prep in [('We','get','from'),('You','share','with'),('They','reserve','for')]:
+            source=f'{actor} {verb} them {prep} other teams as well or {actor.lower()} {verb} them {prep} regional managers today.'
+            proposal=f'{actor} {verb} them {prep} other teams and {prep} regional managers today.'
+            expected=f'{actor} {verb} them {prep} other teams as well, or {prep} regional managers today.'
+            self.assertEqual(restore_repeated_predicate_alternative(source,proposal),expected)
+
+    def test_genuine_addition_correction_quotation_and_different_actor_abstain(self):
+        from polish import restore_repeated_predicate_alternative
+        base='They send it to other reviewers as well or they send it to managers and for approval.'
+        proposal='They send it to other reviewers, as well as to managers and for approval.'
+        for source in [base.replace(' as well or ',' as well and '),base.replace('or they','or we'),base.replace('or they send','or they give'),base.replace('or they send it','or they send them'),base.replace('or they send it to','or they send it from'),'Sorry, '+base,'"'+base+'"','They send it to both reviewers and managers.']:
+            self.assertEqual(restore_repeated_predicate_alternative(source,proposal),proposal)
+
+    def test_existing_or_and_changed_anchors_abstain(self):
+        from polish import restore_repeated_predicate_alternative
+        source='They send it to other reviewers as well or they send it to managers and for approval.'
+        for proposal in ['They send it to other reviewers or to managers and for approval.',
+                         'They send it to other reviewers, as well as to supervisors and for approval.',
+                         'They send it to other reviewers. And to managers and for approval.',
+                         'They send it to other reviewers, as well as to managers. And for approval.']:
+            self.assertEqual(restore_repeated_predicate_alternative(source,proposal),proposal)
+
+    def test_repeated_source_anchors_are_ambiguous(self):
+        from polish import restore_repeated_predicate_alternative
+        source='They send it to other reviewers as well or they send it to managers and for approval. They send it to other reviewers later.'
+        proposal='They send it to other reviewers, as well as to managers and for approval. They send it to other reviewers later.'
+        self.assertEqual(restore_repeated_predicate_alternative(source,proposal),proposal)
+
+    def test_guard_still_preserves_negation(self):
+        source='They send it to other reviewers as well or they send it to managers and for approval. Do not publish it.'
+        output,_=copyedit(source,lambda *_:'They send it to other reviewers, as well as to managers and for approval. Do publish it.')
+        self.assertIn('not',output)
+        self.assertIsNone(rejection_reason(source,output))

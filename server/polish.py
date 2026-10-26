@@ -1115,6 +1115,49 @@ def repair_nominal_boundaries(source, output):
     return output
 
 
+def restore_repeated_predicate_alternative(source, output):
+    """Preserve an explicit alternative while allowing repeated-predicate cleanup.
+
+    The same actor, verb, object and preposition must introduce both branches.
+    Only replace a newly additive connector between unique unchanged anchors;
+    never infer alternatives from a list, correction, quotation or new clause.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|instead|rather|i mean|not|never|either|both)\b', source, re.I):
+        return output
+    token = r"[^\W_]+(?:['’][^\W_]+)*"
+    pattern = (r'\b(?P<actor>i|we|you|they|he|she) (?:actually )?'
+               r'(?P<verb>[a-z]+) (?P<object>it|them) (?P<prep>to|from|with|for) '
+               r'(?P<left>(?:[a-z]+ ){0,6}[a-z]+)'
+               r'(?P<gap> as well or (?P=actor) (?P=verb) (?P=object) )'
+               r'(?P=prep) (?=[a-z])')
+    for m in re.finditer(pattern, source, re.I):
+        if set(words(m['left'])) & {'and','or','but','if','unless','except'}: continue
+        before = words(source[:m.start('gap')])[-3:]
+        after = words(source[m.end('gap'):])[:3]
+        if len(before) != 3 or len(after) != 3: continue
+        src = list(re.finditer(token,source)); a = [x[0].casefold() for x in src]
+        out = list(re.finditer(token,output)); b = [x[0].casefold() for x in out]
+        # Repeated neighboring phrases make an alignment ambiguous even if
+        # only one of the output connectors happens to have changed.
+        if any(sum(a[i:i+3] == anchor for i in range(len(a)-2)) != 1
+               for anchor in [before,after]): continue
+        positions=[]
+        for i in range(3,len(b)-2):
+            if b[i-3:i] != before: continue
+            for size in [1,3]:
+                j=i+size
+                if b[j:j+3] != after: continue
+                gap=output[out[i-1].end():out[j].start()]
+                if not re.fullmatch(r',?\s+(?:as well as|and)\s+',gap,re.I): continue
+                if any(re.search(r'[.!?;:"“”`]',output[out[k].end():out[k+1].start()])
+                       for k in [i-3,i-2,j,j+1]): continue
+                positions.append((out[i-1].end(),out[j].start()))
+        if len(positions) != 1: continue
+        start,end=positions[0]
+        output=output[:start]+' as well, or '+output[end:]
+    return output
+
+
 def restore_continuation_statement(source, output):
     """Restore a wholly omitted continuation assertion between unique anchors.
 
@@ -1913,6 +1956,7 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (restore_repeated_emphasis, 'repeated_emphasis'),
                          (restore_anchored_profanity, 'anchored_profanity'),
                          (restore_continuation_statement, 'continuation_statement'),
+                         (restore_repeated_predicate_alternative, 'repeated_predicate_alternative'),
                          (restore_literal_fragments, 'literal_fragment'),
                          (preserve_explicit_command_repetition, 'explicit_command_repetition'),
                          (collapse_adjacent_other, 'adjacent_other_restart'),

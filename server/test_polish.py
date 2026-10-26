@@ -1532,6 +1532,47 @@ class CompletionRepairsTests(unittest.TestCase):
         self.assertEqual(self.apply('Um, send the the report to Alex, sorry, to Blair.', 'Send the report to Blair.'),'Send the report to Blair.')
         self.assertIn('not',self.apply('This is the best of the best plan. Do not publish it.','This is the best plan. Do publish it.'))
 
+class InterruptedVerbAndMergedQuestionTests(unittest.TestCase):
+    def test_interrupted_copula_preserves_modality_and_modifiers(self):
+        source="I think it's actually just... ...does that one... ...calculation every hour."
+        result,_=copyedit(source,lambda *_:source)
+        self.assertEqual(result,'I think it actually just does that one calculation every hour.')
+
+    def test_no_invented_object_or_question_reinterpretation(self):
+        from polish import repair_copular_verb_restart
+        for source in ["It's just...", "It's just... does that one...", "It's just... Does this matter?",
+                       "It's just... does that one thing?", "It's just... does that one... but I forget.",
+                       'He said "it\'s just... does that one thing".', "It's not just... does that one thing.",
+                       "It's just... sorry, he does that one thing."]:
+            with self.subTest(source=source):
+                self.assertEqual(repair_copular_verb_restart(source,source),source)
+
+    def test_requires_same_surviving_unique_span(self):
+        from polish import repair_copular_verb_restart
+        source="It's just... does that one thing."
+        for output in ['He does another thing.','It just does that one thing.',source+' '+source]:
+            self.assertEqual(repair_copular_verb_restart(source,output),output)
+
+    def test_recover_two_questions_without_rephrasing(self):
+        source='We need every record, right? And what else is there? What did you ask?'
+        result,_=copyedit(source,lambda *_:'We need every record, right? What else did you ask?')
+        self.assertEqual(result,source)
+
+    def test_single_question_quotes_and_corrections_are_unchanged(self):
+        from polish import restore_merged_what_questions
+        for source in ['What else did you ask?', 'And what else is there? Sorry, what did you ask?',
+                       'He said "And what else is there? What did you ask?"',
+                       'And what else is there? What did you ask? What did you ask?']:
+            output='What else did you ask?'
+            self.assertEqual(restore_merged_what_questions(source,output),output)
+
+    def test_real_emphasis_and_cleanup_controls(self):
+        source="I'm sorry this took so long. It was very, very difficult."
+        result,_=copyedit(source,lambda *_:source)
+        self.assertEqual(result,source)
+        result,_=copyedit('Um, send the the report to Alex, sorry, to Blair.',lambda *_:'Send the report to Blair.')
+        self.assertEqual(result,'Send the report to Blair.')
+
 class ExplicitRelationSpanTests(unittest.TestCase):
     def test_separate_command_not_optional_question(self):
         source='Are you checking every change? Make sure everything is validated.'

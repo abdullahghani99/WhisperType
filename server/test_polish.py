@@ -1532,6 +1532,36 @@ class CompletionRepairsTests(unittest.TestCase):
         self.assertEqual(self.apply('Um, send the the report to Alex, sorry, to Blair.', 'Send the report to Blair.'),'Send the report to Blair.')
         self.assertIn('not',self.apply('This is the best of the best plan. Do not publish it.','This is the best plan. Do publish it.'))
 
+class NestedReportedSpeechTests(unittest.TestCase):
+    def test_no_invented_quote_scope_for_nested_reporter(self):
+        source="They said, the manager came and said that, okay, you know, I'll delay it and I will not approve the draft."
+        proposal='They said, "The manager came and said that, okay, I\'ll delay it and I will not approve the draft."'
+        output,_=copyedit(source,lambda *_:proposal)
+        self.assertEqual(output,"They said, the manager came and said that, okay, I'll delay it and I will not approve the draft.")
+
+    def test_explicit_quotation_and_quotation_cues_preserved(self):
+        from polish import remove_inferred_nested_quotation
+        proposal='She said, "The editor said that I should wait."'
+        for source in [proposal,'Her exact words: she said, the editor said that I should wait.',
+                       "She said, 'The editor said that I should wait.'",
+                       "She said, the editor said that 'I should wait'.",
+                       'Please quote this. She said, the editor said that I should wait.']:
+            self.assertEqual(remove_inferred_nested_quotation(source,proposal),proposal)
+
+    def test_simple_report_and_changed_attribution_untouched(self):
+        from polish import remove_inferred_nested_quotation
+        for source,proposal in [('She said I will wait.','She said, "I will wait."'),
+                               ('They said, the editor said that I should wait.','She said, "The editor said that I should wait."'),
+                               ('They said, the editor said that I should not wait.','They said, "The editor said that I should wait."')]:
+            self.assertEqual(remove_inferred_nested_quotation(source,proposal),proposal)
+
+    def test_repeated_or_corrected_report_is_ambiguous(self):
+        from polish import remove_inferred_nested_quotation
+        source='They said, the editor said that I should wait.'
+        proposal='They said, "The editor said that I should wait."'
+        self.assertEqual(remove_inferred_nested_quotation(source+' '+source,proposal),proposal)
+        self.assertEqual(remove_inferred_nested_quotation('Sorry, '+source,proposal),proposal)
+
 class InterruptedVerbAndMergedQuestionTests(unittest.TestCase):
     def test_interrupted_copula_preserves_modality_and_modifiers(self):
         source="I think it's actually just... ...does that one... ...calculation every hour."

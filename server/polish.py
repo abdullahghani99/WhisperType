@@ -1542,6 +1542,40 @@ def preserve_explicit_command_repetition(source, output):
     return output
 
 
+def remove_inferred_nested_quotation(source, output):
+    """Keep unmarked nested reported speech neutral about quotation scope.
+
+    An editor-created quote enclosing a second narrator can falsely identify
+    whose exact words those are. Remove only its delimiters when the complete
+    span uniquely matches the source, allowing known filler cleanup. Preserve
+    explicit quotations and literal-quotation instructions.
+    """
+    if re.search(r'["“”`]|\b(?:quote|verbatim|exact words|quotation|correction|sorry)\b', source, re.I):
+        return output
+    if re.search(r"(?<!\w)['‘].+['’](?!\w)", source): return output
+    def tokens(value):
+        value = re.sub(r'\byou know\b|\b(?:okay|ok)\b', '', value, flags=re.I)
+        return words(value)
+    pattern = r'\b(?P<outer>(?:they|he|she|we|i|you) said)[,:]?\s+(?P<open>["“])(?P<inner>[^"“”]+)(?P<close>["”])'
+    matches = list(re.finditer(pattern, output, re.I))
+    if len(matches) != 1: return output
+    m = matches[0]
+    if (m['open'],m['close']) not in [('"','"'),('“','”')]: return output
+    if not re.match(r'(?:the \w+|\w+) (?:actually )?(?:came and )?said that\b', m['inner'], re.I):
+        return output
+    if not re.search(r"\b(?:i|we|you)(?:['’](?:ll|re|ve|m))?\b", m['inner'], re.I): return output
+    wanted = tokens(m['outer']+' '+m['inner']); original = tokens(source)
+    if sum(original[i:i+len(wanted)]==wanted for i in range(len(original))) != 1: return output
+    # Match the source's reporter capitalization, rather than introducing a
+    # new sentence after the first reporting verb.
+    first = re.match(r'\w+',m['inner'])[0]
+    anchor = list(re.finditer(re.escape(m['outer'])+r'[, :]+'+re.escape(first)+r'\b',source,re.I))
+    if len(anchor)!=1: return output
+    source_first = re.search(re.escape(first)+r'$',anchor[0][0],re.I)[0]
+    inner=source_first+m['inner'][len(first):]
+    return output[:m.start('open')]+inner+output[m.end('close'):]
+
+
 def restore_literal_fragments(source, output):
     """Keep explicitly quoted titles and exact unfinished copular fragments."""
     pattern=r'"[^"\n]+"|“[^”\n]+”'
@@ -2166,6 +2200,7 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (restore_anchored_profanity, 'anchored_profanity'),
                          (restore_continuation_statement, 'continuation_statement'),
                          (restore_repeated_predicate_alternative, 'repeated_predicate_alternative'),
+                         (remove_inferred_nested_quotation, 'nested_report_quotation'),
                          (restore_literal_fragments, 'literal_fragment'),
                          (preserve_explicit_command_repetition, 'explicit_command_repetition'),
                          (collapse_adjacent_other, 'adjacent_other_restart'),

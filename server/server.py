@@ -22,7 +22,7 @@ Run under launchd (see scripts/) so it auto-starts.
 Env:
     VF_WHISPER_URL   default http://127.0.0.1:8181  (ms3 tailscale IP)
     VF_POLISH        default 1 (on, narrow). Set 0 for pure near-verbatim.
-    VF_POLISH_MODEL  default mlx-community/Qwen2.5-7B-Instruct-4bit (fast)
+    VF_POLISH_MODEL  default = VF_PROMPT_MODEL (one model, loaded once)
     VF_PROMPT        default 1 (prompt mode on). Set 0 to disable.
     VF_PROMPT_MODEL  default mlx-community/Qwen2.5-14B-Instruct-4bit (stronger;
                      background-loaded; falls back to VF_POLISH_MODEL on failure)
@@ -60,7 +60,9 @@ from mlx_lm import load, generate
 WHISPER_URL = os.environ.get("VF_WHISPER_URL", "http://127.0.0.1:8181").rstrip("/")
 WHISPER_MODEL = os.environ.get("VF_WHISPER_MODEL", "mlx-community/whisper-large-v3-mlx")
 # Fast model for the high-frequency dictation-polish path.
-POLISH_MODEL = os.environ.get("VF_POLISH_MODEL", "mlx-community/Qwen2.5-7B-Instruct-4bit")
+# One model by default: the 8B + LoRA never served polish (4,299 of 4,299 logged
+# runs used the 14B, 2026-10-30) and only cost ~4.5 GB and startup time.
+POLISH_MODEL = os.environ.get("VF_POLISH_MODEL", os.environ.get("VF_PROMPT_MODEL", "mlx-community/Qwen2.5-14B-Instruct-4bit"))
 # Stronger model for the deliberate prompt-engineering path (quality > speed).
 # Falls back to POLISH_MODEL if it can't be loaded.
 PROMPT_MODEL = os.environ.get("VF_PROMPT_MODEL", "mlx-community/Qwen2.5-14B-Instruct-4bit")
@@ -74,8 +76,7 @@ PROMPT_MODEL = os.environ.get("VF_PROMPT_MODEL", "mlx-community/Qwen2.5-14B-Inst
 # polish model, fail, and fall back to the base silently -- a promotion that
 # looks applied and changes nothing.
 PROMPT_ADAPTER = os.environ.get("VF_PROMPT_ADAPTER", "")
-POLISH_ADAPTER = os.environ.get("VF_POLISH_ADAPTER",
-                                os.path.join(os.path.dirname(__file__), "lora-polish"))
+POLISH_ADAPTER = os.environ.get("VF_POLISH_ADAPTER", "")
 # Speaker diarization runs in an ISOLATED venv (heavy torch deps kept away from
 # the live server). Set both to enable "who said what" in meeting mode; if the
 # venv/script is missing, /meeting gracefully falls back to an unlabeled transcript.
@@ -236,17 +237,6 @@ def _save_vocab(value=None):
             os.unlink(temporary)
 
 
-def _whisper_prompt() -> str | None:
-    """Bias Whisper toward the user's vocabulary (names/jargon spelled right)."""
-    terms = list(_vocab.get("terms", []))
-    terms += list({v for v in _vocab.get("replacements", {}).values()})
-    terms = [t for t in dict.fromkeys(terms) if t]
-    if not terms:
-        return None
-    joined = ", ".join(terms)
-    return f"Vocabulary and names: {joined[:600]}."
-
-
 # G.711 mu-law expansion, as a 256-entry table. Speech at 8 bits/sample sounds
 # the same to a recogniser as 16, and halves what has to be uploaded.
 #
@@ -357,9 +347,11 @@ def _transcribe_local(audio: bytes, language: str | None) -> tuple[str, float]:
         "compression_ratio_threshold": 2.4,
         "no_speech_threshold": 0.6,
     }
-    prompt = _whisper_prompt()
-    if prompt:
-        kwargs["initial_prompt"] = prompt
+    # No initial_prompt. Measured 2026-10-30 on 60 real dictations: Whisper is
+    # deterministic without one (0.00% run-to-run), and the vocabulary hint
+    # changed 5.8% of words -- it fixed ~10 names but invented sentences
+    # ("Thank you.") and flipped meaning ("properly perfect" -> "not perfect").
+    # A 19-name hint did the same. Vocabulary is applied after ASR instead.
     if language:
         kwargs["language"] = language
     res = mlx_whisper.transcribe(audio_arr, **kwargs)
@@ -444,10 +436,7 @@ def _transcribe_local_segments(audio: bytes, language: str | None, translate: bo
     }
     if translate:
         kwargs["task"] = "translate"
-    else:
-        prompt = _whisper_prompt()
-        if prompt:
-            kwargs["initial_prompt"] = prompt
+    else:   # no initial_prompt: see _transcribe_local
         if language:
             kwargs["language"] = language
     res = mlx_whisper.transcribe(audio_arr, **kwargs)
@@ -1252,7 +1241,7 @@ async def _startup():
     _init_db()
     if POLISH_ENABLED:
         t0 = time.time()
-        adapter = POLISH_ADAPTER if os.path.exists(os.path.join(POLISH_ADAPTER, "adapters.safetensors")) else None
+        adapter = POLISH_ADAPTER if POLISH_ADAPTER and os.path.exists(os.path.join(POLISH_ADAPTER, "adapters.safetensors")) else None
         _polish_distilled = adapter is not None
         log.info("loading polish model %s (adapter=%s) ...", POLISH_MODEL, adapter or "none")
         try:
@@ -1283,6 +1272,10 @@ async def _load_prompt_model():
     if PROMPT_ADAPTER and adapter is None:
         log.error("VF_PROMPT_ADAPTER set to %s but no adapters.safetensors there; "
                   "serving the base prompt model", PROMPT_ADAPTER)
+    if adapter is None and PROMPT_MODEL == POLISH_MODEL and _model is not None and not _polish_distilled:
+        _prompt_model, _prompt_tok = _model, _tok   # same weights: share, never load twice
+        log.info("prompt model shares the loaded polish model %s", PROMPT_MODEL)
+        return
     log.info("loading prompt model %s (background, adapter=%s) ...", PROMPT_MODEL, adapter or "none")
     try:
         if adapter:
@@ -1400,12 +1393,14 @@ async def health():
         "polish_distilled": _polish_distilled,
         "polish_policy_sha256": _POLISH_POLICY_SHA256,
         "learning": "corrections and measured candidates",
-        "polish_uses_prompt_model": _prompt_model is not None and _prompt_model is not _model,
+        # Polish prefers the prompt model; with one shared model the two are the
+        # same object, which still means polish runs on PROMPT_MODEL.
+        "polish_uses_prompt_model": _prompt_model is not None,
         "prompt_mode": prompt_state,
         "polish_model": POLISH_MODEL if _model is not None else None,
-        "prompt_model": PROMPT_MODEL if (_prompt_model is not None and _prompt_model is not _model) else None,
+        "prompt_model": PROMPT_MODEL if _prompt_model is not None else None,
         "whisper": WHISPER_MODEL if _WHISPER_LOCAL else f"remote:{WHISPER_URL}",
-        "biasing": _WHISPER_LOCAL,
+        "biasing": False,   # the Whisper vocabulary hint was removed (0.9.42)
     }
 
 

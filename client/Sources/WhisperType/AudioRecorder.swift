@@ -96,6 +96,7 @@ final class AudioRecorder {
     /// abandons a genuinely stuck AVAudioEngine.start() rather than jamming the
     /// queue forever.
     private let watchdogTimeout: TimeInterval = 8.0
+    private var finishedBringUp = 0     // last generation whose bring-up returned (bufLock)
 
     var onLevel: ((Float) -> Void)?
     var onCaptureFailure: ((String) -> Void)?
@@ -264,7 +265,10 @@ final class AudioRecorder {
         bufLock.unlock()
 
         let once = Once()
-        func report(_ ok: Bool) { once.run { DispatchQueue.main.async { completion(ok) } } }
+        func report(_ ok: Bool) {
+            bufLock.lock(); finishedBringUp = max(finishedBringUp, gen); bufLock.unlock()
+            once.run { DispatchQueue.main.async { completion(ok) } }
+        }
 
         // Wedge watchdog: if this attempt is still current yet never went live,
         // the queue is blocked in the HAL (BT transition). Abandon it + reset.
@@ -273,11 +277,14 @@ final class AudioRecorder {
             var cleanup: (generation: Int, queue: DispatchQueue)?
             self.bufLock.lock()
             let wedged = (gen == self.attempt) && !self.state.isRecording
+            // Releasing the key early advances `attempt`, so `wedged` alone missed
+            // a bring-up still hung in the HAL and the next press queued behind it
+            // (2026-10-30 14:34, two presses stuck at "reading input devices").
+            let hung = self.finishedBringUp < gen && q === self.engineQueue
             let phase = self.startupStage
-            if wedged {
-                self.attempt += 1   // invalidate the stuck attempt
+            if wedged || hung {
+                if wedged { self.attempt += 1; self.wantRecording = false }   // invalidate the stuck attempt
                 self.engineQueue = DispatchQueue(label: "app.whispertype.client.audio.\(self.attempt)")
-                self.wantRecording = false
                 cleanup = (self.attempt, self.engineQueue)
             }
             self.bufLock.unlock()
@@ -287,6 +294,8 @@ final class AudioRecorder {
             if wedged {
                 self.logError("audio startup timed out after \(Int(self.watchdogTimeout))s at \(phase); reset audio queue")
                 report(false)
+            } else if hung {
+                self.logError("abandoned audio startup still stuck after \(Int(self.watchdogTimeout))s at \(phase); reset audio queue")
             }
         }
 
@@ -458,7 +467,7 @@ final class AudioRecorder {
             }
             guard owns(gen) else { e.stop(); return nil }
             guard inFormat.channelCount > 0, inFormat.sampleRate > 0,
-                  let conv = AVAudioConverter.toMono(from: inFormat, to: outFormat) else {
+                  var conv = AVAudioConverter.toMono(from: inFormat, to: outFormat) else {
                 logError("skip \(dev.name): invalid format (\(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch)")
                 e.stop()          // never abandon an engine un-stopped (see teardown)
                 continue
@@ -468,9 +477,15 @@ final class AudioRecorder {
             let tap = CaptureTapToken()
             let outputFormat = input.outputFormat(forBus: 0)
             logError("input formats: hardware=\(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch, output=\(outputFormat.sampleRate)Hz/\(outputFormat.channelCount)ch")
-            input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { [weak self] buf, _ in
+            // format: nil -- naming the format makes installTap throw an uncatchable
+            // exception if the device changed it since we read it, which is what a
+            // headset does as a Teams call ends (two aborts on 2026-10-30). Take
+            // what the device delivers and follow it instead.
+            let outFormat: AVAudioFormat = self.outFormat
+            input.installTap(onBus: 0, bufferSize: 2048, format: nil) { [weak self] buf, _ in
                 tap.received(frames: Int(buf.frameLength))
                 guard let epoch = tap.epoch else { return }
+                if buf.format != conv.inputFormat, let fresh = AVAudioConverter.toMono(from: buf.format, to: outFormat) { conv = fresh }
                 self?.append(buf, epoch: epoch, converter: conv, statistics: tap)
             }
             do {

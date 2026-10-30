@@ -27,7 +27,7 @@ def configuration(previous, root, release, updates):
     old_root = Path(previous.get('WorkingDirectory', root))
     # Moving source into a release must never move the live data or adapter.
     for key, path in {'VF_DB_PATH': old_root / 'history.sqlite', 'VF_VOCAB_PATH': old_root / 'vocab.json',
-                      'VF_SPOOL_DIR': old_root / 'spool', 'VF_POLISH_ADAPTER': old_root / 'lora-polish'}.items():
+                      'VF_SPOOL_DIR': old_root / 'spool'}.items():
         env.setdefault(key, str(path))
     env['VF_DIARIZE_PY'] = str(release / 'diarize-venv/bin/python')
     env['VF_DIARIZE_SCRIPT'] = str(release / 'diarize.py')

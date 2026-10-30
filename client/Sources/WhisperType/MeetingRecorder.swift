@@ -385,7 +385,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             let inFormat = input.inputFormat(forBus: 0)
             guard inFormat.channelCount > 0, inFormat.sampleRate > 0,
-                  let conv = AVAudioConverter.toMono(from: inFormat, to: out16k) else {
+                  var conv = AVAudioConverter.toMono(from: inFormat, to: out16k) else {
                 log("mic: skip \(dev.name) (invalid format)"); continue
             }
             guard life.isCurrentAttempt(myToken) else { e.stop(); return }
@@ -394,9 +394,13 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             let health = MicHealth(startedAt: Date().timeIntervalSince1970)
             // Read the fault-injection flag ONCE, here, not on the audio thread.
             let fakeStall = Self.stallSimulationEnabled()
-            input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { [weak self] buf, _ in
+            // format: nil, as in AudioRecorder: a named format that no longer matches
+            // the device aborts the app.
+            let out16k = self.out16k
+            input.installTap(onBus: 0, bufferSize: 2048, format: nil) { [weak self] buf, _ in
                 guard let self = self else { return }
                 probe.add(Int(buf.frameLength))
+                if buf.format != conv.inputFormat, let fresh = AVAudioConverter.toMono(from: buf.format, to: out16k) { conv = fresh }
                 self.appendMic(buf, gen: gen, conv: conv, health: health, fakeStall: fakeStall)
             }
             do { e.prepare(); try e.start() }

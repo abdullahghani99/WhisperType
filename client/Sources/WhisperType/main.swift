@@ -128,6 +128,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSApp.terminate(nil)
             return
         }
+        // launchd restarts the app after a crash, but only a copy it started.
+        // A Dock or login launch ran unsupervised, so the 2026-10-30 crashes left
+        // dictation dead until noticed. Hand over to the agent instead; if it
+        // cannot start, reopen without handing off rather than not run at all.
+        let job = "app.whispertype.client"
+        let env = ProcessInfo.processInfo.environment
+        if env["XPC_SERVICE_NAME"] != job, env["VF_NO_HANDOFF"] == nil, env["VF_DOCK_PREVIEW"] == nil,
+           FileManager.default.fileExists(atPath: NSHomeDirectory() + "/Library/LaunchAgents/\(job).plist") {
+            vlog("not started by launchd — handing over to \(job)")
+            let relaunch = Process()
+            relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+            relaunch.arguments = ["-c", "sleep 1; launchctl kickstart gui/$(id -u)/\(job) || open -a \"$0\" --env VF_NO_HANDOFF=1",
+                                  Bundle.main.bundlePath]
+            try? relaunch.run()
+            NSApp.terminate(nil)
+            return
+        }
         // Preview harness (screenshot verification of DockView) — short-circuit.
         if ProcessInfo.processInfo.environment["VF_DOCK_PREVIEW"] == "1" {
             NSApp.setActivationPolicy(.regular)
@@ -1228,6 +1245,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard wav.count > 8_000 else {
             recordingStoppedAt.removeValue(forKey: id)
             let message = wav.count <= 64 ? "No audio captured. Wait for Listening, then speak." : "Recording too short. Hold the trigger while speaking."
+            vlog("capture discarded: id=\(id) bytes=\(wav.count) — \(message)")
             dockController.state.fail(message); mainWC.settings.captureStatus = message
             SoundFeedback.failed(); return
         }

@@ -1470,8 +1470,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         } catch {
-            vlog("insertion failed: id=\(id) \(error.localizedDescription)")
             entry.status = (error as NSError).domain == "whispertype.insertion" && (error as NSError).code == 2 ? "sent_unverified" : entry.hasResult ? "ready" : "pending"
+            // sent_unverified is the normal outcome for apps without a text receipt (Warp), not a failure.
+            if entry.status != "sent_unverified" { vlog("insertion failed: id=\(id) \(error.localizedDescription)") }
             entry.sendCompleted = entry.status == "sent_unverified" ? true : entry.sendCompleted
             entry.error = error is CancellationError ? "Processing canceled. Audio retained; retry when ready." : error.localizedDescription
             do { try RecordingStore.save(entry) } catch { mainWC.settings.status = "Could not update recovery metadata: \(error.localizedDescription)" }

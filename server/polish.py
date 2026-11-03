@@ -1809,6 +1809,39 @@ def repair_embedded_question(source, output):
     return output
 
 
+def restore_current_fact_after_plan_tag(source, output):
+    """Undo a uniquely aligned merge of a plan tag and a present activity.
+
+    The source must explicitly separate the knowledge confirmation from a
+    right-now progressive assertion. Restore that span only; do not decide
+    whether a plan or a current activity is true from outside context.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|rather|correction|i mean|quote|verbatim)\b', source + output, re.I): return output
+    if re.search(r"(?<!\w)[‘']|[’'](?!\w)", source + output): return output
+    pattern = (r"(?P<tag>\byou know (?P<owner>our|my|your|their) plans),\s*right\?\s+"
+               r"Right now,?\s+(?P<actor>we|they|you|I)(?P<aux>['’]re|['’]m| are| am) "
+               r"(?P<verb>running|using|testing|building|operating) "
+               r"(?P<object>(?:[^.!?;\n]|\.(?=\d)){2,100})\.")
+    base = {'running': 'run', 'using': 'use', 'testing': 'test',
+            'building': 'build', 'operating': 'operate'}
+    owner_actor = {'our': 'we', 'my': 'i', 'your': 'you', 'their': 'they'}
+    for match in re.finditer(pattern, source, re.I):
+        if owner_actor[match['owner'].lower()] != match['actor'].lower(): continue
+        obj = match['object'].strip()
+        if re.search(r'\b(?:not|maybe|perhaps|probably|possibly|if|unless)\b', obj, re.I): continue
+        target = (re.escape(match['tag']) + r' are to ' + base[match['verb'].lower()]
+                  + r' ' + re.escape(obj) + r' right now\.')
+        hits = list(re.finditer(target, output, re.I))
+        if len(hits) != 1 or len(re.findall(re.escape(match['tag']), source, re.I)) != 1: continue
+        hit = hits[0]
+        if words(source[:match.start()])[-4:] != words(output[:hit.start()])[-4:]: continue
+        # Retain the accepted output's casing of the knowledge tag and object.
+        restored = match[0]
+        restored = hit[0][:len(match['tag'])] + restored[len(match['tag']):]
+        output = output[:hit.start()] + restored + output[hit.end():]
+    return output
+
+
 def restore_confirmation_tense(source, output):
     """Preserve a source tag's time reference without changing its main clause."""
     if re.search(r'["“”`]', source + output) or re.search(r'\b(?:sorry|correction|rather)\b', source, re.I): return output
@@ -2208,6 +2241,7 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (repair_conditional_restart, 'conditional_restart'),
                          (repair_embedded_question, 'embedded_question'),
                          (restore_confirmation_tense, 'confirmation_tense'),
+                         (restore_current_fact_after_plan_tag, 'current_fact_after_plan_tag'),
                          (repair_confirmation_manner_boundary, 'confirmation_manner'),
                          (repair_framed_request, 'framed_request'),
                          (restore_descriptive_attachment, 'descriptive_attachment'),

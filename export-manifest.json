@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "883517ed45fe36e42b07c62752d021ee8d6849da5db103a36075038f4106b7d1",
+    "VERSION": "0d7e33167df661deb418a696fd185d78223217c3bc125e08ea4c8b5c7e4d3078",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/AudioUploadTests.swift": "1bd8f3580878381507e4d23ede7f5ff16b90d7fc1ff05f1adf068b7c5298328e",
@@ -122,13 +122,13 @@
     "server/test_learning.py": "e999006ff099bcdebdcf01fb05987d86cfad887fe08b4e3a710d0767fa3fc23d",
     "server/test_meeting_quality.py": "29385ec02d04ddd409053da88ad6e8d5a62d0bf226a3e60b3e226db416cec8f7",
     "server/test_polish.py": "1bc278c14bdce44a89db2207bcadf5aa202c2c182ec8e58c67f54f05a18b2ee4",
-    "server/test_reliability.py": "251c305001620df24c4349e4dd3dab1f5e0a39334f95fe98c3f0878e5c4fe123",
+    "server/test_reliability.py": "89b46625ddfca25ac6ac9967c685b77c757259d84f0050b134f274516f0e4c6f",
     "server/test_remaining_quality.py": "62ddadbd25b9e286b4189e43839b65e1ed4ac3d96c09c07092ce18a4a3eb2b6a",
     "server/test_repeated_actor.py": "b0c04b8c0ddaabe628a7cf1c054906c0ba42bd7c14d3087fbdb6602571775456",
     "server/test_speakers.py": "08debdb8e31183c2d4d8a3d5c18c2a9ceb897e3c2ba772d16cbf6d4a5815d7e7",
     "server/test_speech_act.py": "794579d6546107d124dc87bd0adc8062bc3031ee15f1d145a5e982476ac2bb4e",
     "server/test_topic_frame.py": "00612ef4c21da198c209d6a7f95f0ca645b62c7fbfb2e0ffa601d06f5a12ea85",
-    "server/server.py": "b977c133ae984e86ffd516b03355a305d22f7085afe3a4505aac3541c0bb07c0",
+    "server/server.py": "f8e74664b3824bd70ba8ea5d56d4fe6b22520d34da79e1184c26e77528e4dee7",
     "tests/agent/AgentTests.swift": "0330465f4f0df8fb027f775b5d326ceb6e3f815a9a7d8f2d13f3fe1740c51d40",
     "tests/agent/test_agent_http.py": "a1167a745ff010c7335d43a97d400f23ac729dee5dbc43725d610d4180a5b84a",
     "tests/live/DestinationFocus.swift": "f50bddf2d1c4b067780fcbd5ef3ee7d4073b85800fa2bf342f518f5d282d6a23",

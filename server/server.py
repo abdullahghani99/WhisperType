@@ -347,18 +347,51 @@ def _transcribe_local(audio: bytes, language: str | None) -> tuple[str, float]:
         "compression_ratio_threshold": 2.4,
         "no_speech_threshold": 0.6,
     }
-    # No initial_prompt. Measured 2026-10-30 on 60 real dictations: Whisper is
-    # deterministic without one (0.00% run-to-run), and the vocabulary hint
-    # changed 5.8% of words -- it fixed ~10 names but invented sentences
-    # ("Thank you.") and flipped meaning ("properly perfect" -> "not perfect").
-    # A 19-name hint did the same. Vocabulary is applied after ASR instead.
-    if language:
-        kwargs["language"] = language
+    # English unless asked: auto-detection turned one English dictation into
+    # Gurmukhi script (1 of 120, 2026-11-03).
+    kwargs["language"] = language or "en"
     res = mlx_whisper.transcribe(audio_arr, **kwargs)
     segments = res.get("segments", []) or []
     text = _drop_trailing_hallucination(res.get("text") or "", segments, audio_arr)
     nsp = max((float(s.get("no_speech_prob", 0.0)) for s in segments), default=0.0)
+    # The vocabulary hint alone invents sentences ("Thank you for watching.")
+    # and drops phrases; without it the speaker's names come out wrong ("d265",
+    # "Puli", "D to C"). So decode twice and take from the hinted pass only short
+    # spans that become a known term. ~0.6 s per dictation, measured 2026-11-03.
+    prompt = _whisper_prompt()
+    if prompt and text.strip():
+        hinted = mlx_whisper.transcribe(audio_arr, initial_prompt=prompt, **kwargs).get("text") or ""
+        text = _adopt_terms(text, hinted, _vocab_terms())
     return text, nsp
+
+
+def _vocab_terms() -> list[str]:
+    # Corrected words first: each is a recorded miss.
+    terms = sorted(set(_vocab.get("replacements", {}).values())) + list(_vocab.get("terms", []))
+    return [t for t in dict.fromkeys(terms) if t]
+
+
+def _whisper_prompt() -> str | None:
+    """Vocabulary hint for the second decoding pass, cut between terms."""
+    kept, size = [], 0
+    for t in _vocab_terms():
+        if size + len(t) + 2 > 600:
+            break
+        kept.append(t); size += len(t) + 2
+    return f"Vocabulary and names: {', '.join(kept)}." if kept else None
+
+
+def _adopt_terms(base: str, hinted: str, terms) -> str:
+    """Base transcript, with hinted replacements of at most three words that
+    introduce a known term of three or more characters. Everything else the
+    hinted pass changed -- insertions, deletions, rewrites -- is ignored."""
+    key = lambda w: re.sub(r"[^\w]", "", w.lower())
+    known = {key(t) for t in terms if len(key(t)) >= 3}
+    a, b, out = base.split(), hinted.split(), []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=[key(w) for w in a], b=[key(w) for w in b], autojunk=False).get_opcodes():
+        take = op == "replace" and i2 - i1 <= 3 and j2 - j1 <= 3 and any(key(w) in known for w in b[j1:j2])
+        out += b[j1:j2] if take else a[i1:i2]
+    return " ".join(out)
 
 
 def _segment_rms(audio_arr, start: float, end: float) -> float:
@@ -436,7 +469,7 @@ def _transcribe_local_segments(audio: bytes, language: str | None, translate: bo
     }
     if translate:
         kwargs["task"] = "translate"
-    else:   # no initial_prompt: see _transcribe_local
+    else:   # no hint for meetings: alone it invents sentences (see _transcribe_local)
         if language:
             kwargs["language"] = language
     res = mlx_whisper.transcribe(audio_arr, **kwargs)
@@ -1400,7 +1433,7 @@ async def health():
         "polish_model": POLISH_MODEL if _model is not None else None,
         "prompt_model": PROMPT_MODEL if _prompt_model is not None else None,
         "whisper": WHISPER_MODEL if _WHISPER_LOCAL else f"remote:{WHISPER_URL}",
-        "biasing": False,   # the Whisper vocabulary hint was removed (0.9.42)
+        "biasing": _WHISPER_LOCAL and _whisper_prompt() is not None,   # vocabulary terms adopted from a hinted pass
     }
 
 

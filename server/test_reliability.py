@@ -49,6 +49,20 @@ class ReliabilityTests(unittest.TestCase):
         Path(self.m._spool_path(n)).write_bytes(b'original audio')
         return n
 
+    def test_hinted_pass_contributes_only_known_terms(self):
+        terms = ["ERP42", "Uli", "AI", "OmniRoute"]
+        adopt = lambda base, hinted: self.m._adopt_terms(base, hinted, terms)
+        # Names from the hinted pass come in (cases seen 2026-11-03).
+        self.assertEqual(adopt("the d265 orchestrator", "the ERP42 orchestrator"), "the ERP42 orchestrator")
+        self.assertEqual(adopt("Puli was first", "Uli was first"), "Uli was first")
+        self.assertEqual(adopt("in omni route as well", "in OmniRoute as well"), "in OmniRoute as well")
+        # Everything else it does is ignored: invented and replaced sentences,
+        # deletions, meaning flips, and terms too short to trust.
+        self.assertEqual(adopt("it opens", "Thank you for watching. it opens"), "it opens")
+        self.assertEqual(adopt("prices come twice, that is wrong", "Thank you for watching."), "prices come twice, that is wrong")
+        self.assertEqual(adopt("made it properly perfect", "made it not perfect"), "made it properly perfect")
+        self.assertEqual(adopt("Yeah, ship it", "AI ship it"), "Yeah, ship it")
+
     def test_mixed_speaker_segment_is_not_falsely_attributed(self):
         turns=[{'start':0,'end':2,'speaker':'A'}, {'start':2,'end':4,'speaker':'B'}]
         text,order=self.m._label_transcript([(0,4,'A reply and an interruption.')],turns)

@@ -1470,6 +1470,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         } catch {
+            vlog("insertion failed: id=\(id) \(error.localizedDescription)")
             entry.status = (error as NSError).domain == "whispertype.insertion" && (error as NSError).code == 2 ? "sent_unverified" : entry.hasResult ? "ready" : "pending"
             entry.sendCompleted = entry.status == "sent_unverified" ? true : entry.sendCompleted
             entry.error = error is CancellationError ? "Processing canceled. Audio retained; retry when ready." : error.localizedDescription
@@ -1703,7 +1704,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var body: [String: Any] = ["id": id.uuidString]
         if let text = text { body["text"] = text }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data, response: URLResponse
+        do { (data, response) = try await URLSession.shared.data(for: request) }
+        catch let error as URLError where [.cannotConnectToHost, .cannotFindHost, .notConnectedToInternet].contains(error.code)
+                                          || (path == "prepare" && error.code == .timedOut) {
+            // Refused before anything was sent, so nothing was typed. The generic
+            // "Could not connect to the server" read as ms2 while the Mac Mini's
+            // tunnel was down for a day (2026-11-02).
+            throw insertionError("The paired Mac can't be reached: its connection is down, so nothing was typed there. Result saved in Inbox.")
+        }
         let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw insertionError(object?["detail"] as? String ?? "Remote insertion could not be confirmed. Inspect the paired Mac before retrying.")

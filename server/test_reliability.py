@@ -49,6 +49,20 @@ class ReliabilityTests(unittest.TestCase):
         Path(self.m._spool_path(n)).write_bytes(b'original audio')
         return n
 
+    def test_newly_learned_terms_reach_the_hint(self):
+        self.m._vocab = {"terms": [f"Old{i:03d}Term" for i in range(200)] + ["OmniRoute"], "replacements": {"aleks": "Alex"}}
+        hint = self.m._whisper_prompt()
+        self.assertTrue(hint.startswith("Vocabulary and names: Alex, OmniRoute,"), hint[:60])
+        self.assertLessEqual(len(hint), 640)
+
+    def test_terms_the_speaker_uses_stay_in_the_hint(self):
+        # WhisperType was the oldest term and fell out under newest-first ordering.
+        con = sqlite3.connect(self.m.DB_PATH)
+        con.execute("INSERT INTO history (ts, raw, corrected, polished) VALUES ('2026-11-03', 'x', 'x', 'the WhisperType and the WhisperType')")
+        con.commit(); con.close()
+        self.m._vocab = {"terms": ["WhisperType"] + [f"New{i:03d}Term" for i in range(200)], "replacements": {}}
+        self.assertTrue(self.m._whisper_prompt().startswith("Vocabulary and names: WhisperType,"))
+
     def test_hinted_pass_contributes_only_known_terms(self):
         terms = ["ERP42", "Uli", "AI", "OmniRoute"]
         adopt = lambda base, hinted: self.m._adopt_terms(base, hinted, terms)
@@ -56,12 +70,17 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(adopt("the d265 orchestrator", "the ERP42 orchestrator"), "the ERP42 orchestrator")
         self.assertEqual(adopt("Puli was first", "Uli was first"), "Uli was first")
         self.assertEqual(adopt("in omni route as well", "in OmniRoute as well"), "in OmniRoute as well")
+        self.assertEqual(self.m._adopt_terms("keys on the ball drive now", "keys on the Vault Tribe now", ["Vault Tribe"]),
+                         "keys on the Vault Tribe now")
         # Everything else it does is ignored: invented and replaced sentences,
         # deletions, meaning flips, and terms too short to trust.
         self.assertEqual(adopt("it opens", "Thank you for watching. it opens"), "it opens")
         self.assertEqual(adopt("prices come twice, that is wrong", "Thank you for watching."), "prices come twice, that is wrong")
         self.assertEqual(adopt("made it properly perfect", "made it not perfect"), "made it properly perfect")
         self.assertEqual(adopt("Yeah, ship it", "AI ship it"), "Yeah, ship it")
+        terms += ["WhisperType", "universe"]
+        self.assertEqual(adopt("in the WhisperType today", "in the universe today"), "in the WhisperType today")
+        self.assertEqual(adopt("use omni route that cycle", "use OmniRoute through cycle"), "use omni route that cycle")
 
     def test_mixed_speaker_segment_is_not_falsely_attributed(self):
         turns=[{'start':0,'end':2,'speaker':'A'}, {'start':2,'end':4,'speaker':'B'}]

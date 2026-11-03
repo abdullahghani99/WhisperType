@@ -365,10 +365,35 @@ def _transcribe_local(audio: bytes, language: str | None) -> tuple[str, float]:
     return text, nsp
 
 
+_term_rank: tuple = (None, {})   # (terms it was counted for, term -> uses)
+
+
+def _term_uses(terms: list[str]) -> dict:
+    """How often each term appears in the last 2,000 dictations, cached until the
+    term list changes. The hint holds ~80 of ~210 terms, so it carries the ones
+    the speaker actually says: newest-first dropped WhisperType (2026-11-03)."""
+    global _term_rank
+    if _term_rank[0] != terms:
+        counts = {}
+        try:
+            con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+            text = " ".join(r[0] or "" for r in con.execute(
+                "SELECT polished FROM history ORDER BY id DESC LIMIT 2000")).lower()
+            con.close()
+            counts = {t: len(re.findall(r"(?<!\w)" + re.escape(t.lower()) + r"(?!\w)", text)) for t in terms}
+        except sqlite3.Error:
+            pass
+        _term_rank = (list(terms), counts)
+    return _term_rank[1]
+
+
 def _vocab_terms() -> list[str]:
-    # Corrected words first: each is a recorded miss.
-    terms = sorted(set(_vocab.get("replacements", {}).values())) + list(_vocab.get("terms", []))
-    return [t for t in dict.fromkeys(terms) if t]
+    # Corrected words first (each is a recorded miss), then the most-used terms;
+    # ties keep the newest first.
+    terms = [t for t in dict.fromkeys(reversed(_vocab.get("terms", []))) if t]
+    uses = _term_uses(terms)
+    terms.sort(key=lambda t: -uses.get(t, 0))
+    return [t for t in dict.fromkeys(sorted(set(_vocab.get("replacements", {}).values())) + terms) if t]
 
 
 def _whisper_prompt() -> str | None:
@@ -383,13 +408,18 @@ def _whisper_prompt() -> str | None:
 
 def _adopt_terms(base: str, hinted: str, terms) -> str:
     """Base transcript, with hinted replacements of at most three words that
-    introduce a known term of three or more characters. Everything else the
+    are exactly one known term of three or more characters. Everything else the
     hinted pass changed -- insertions, deletions, rewrites -- is ignored."""
     key = lambda w: re.sub(r"[^\w]", "", w.lower())
     known = {key(t) for t in terms if len(key(t)) >= 3}
     a, b, out = base.split(), hinted.split(), []
     for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=[key(w) for w in a], b=[key(w) for w in b], autojunk=False).get_opcodes():
-        take = op == "replace" and i2 - i1 <= 3 and j2 - j1 <= 3 and any(key(w) in known for w in b[j1:j2])
+        # The hinted words must be exactly one term (two-word terms join), and
+        # the words they replace must not already be one: "OmniRoute through"
+        # and "WhisperType -> universe" were both wrong (2026-11-03).
+        ka, kb = key("".join(a[i1:i2])), key("".join(b[j1:j2]))
+        take = (op == "replace" and i2 - i1 <= 3 and j2 - j1 <= 3
+                and kb in known and (ka == kb or ka not in known))
         out += b[j1:j2] if take else a[i1:i2]
     return " ".join(out)
 

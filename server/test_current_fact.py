@@ -36,4 +36,44 @@ class CurrentFactTests(unittest.TestCase):
             with self.subTest(src=src, out=out):
                 self.assertEqual(polish.restore_current_fact_after_plan_tag(src, out), out)
 
+
+class CurrentFactBoundaryTests(unittest.TestCase):
+    def test_comma_to_future_clause_and_reordered_timing(self):
+        source = "You know our plans right? Right now we are using Cedar 2.4, we'll move to Maple tomorrow."
+        proposal = "You know our plans right now are to use Cedar 2.4. We'll move to Maple tomorrow."
+        expected = "You know our plans, right? Right now, we are using Cedar 2.4. We'll move to Maple tomorrow."
+        self.assertEqual(polish.restore_current_fact_after_plan_tag(source, proposal), expected)
+        final, _ = polish.copyedit(source, lambda *_: proposal)
+        self.assertIn("plans right? Right now we are using Cedar 2.4.", final)
+        self.assertIn("We'll move to Maple tomorrow.", final)
+
+    def test_old_timing_order_also_handles_missing_commas(self):
+        source = "You know my plans right? Right now I am testing the new service."
+        proposal = 'You know my plans are to test the new service right now.'
+        self.assertEqual(polish.restore_current_fact_after_plan_tag(source, proposal),
+                         'You know my plans, right? Right now, I am testing the new service.')
+
+    def test_comma_boundary_requires_unchanged_future_continuation(self):
+        source = "You know our plans right? Right now we are using Cedar, we'll move to Maple tomorrow."
+        proposal = "You know our plans right now are to use Cedar. We'll move to Maple tomorrow."
+        pairs = [
+            (source.replace(", we'll move to Maple tomorrow", ', with a backup'), proposal),
+            (source, proposal.replace('Maple', 'Birch')),
+            (source.replace('using Cedar', 'using Cedar, Maple and Birch'), proposal),
+            (source.replace('right?', 'right,'), proposal),
+            (source.replace('we are', 'they are'), proposal),
+            (source.replace('we are', 'we may be'), proposal),
+            (source.replace('we are using', 'we are not using'), proposal),
+            (source.replace("we'll move", 'we are moving'), proposal),
+            ('"' + source + '"', '"' + proposal + '"'),
+            ('Sorry, ' + source, 'Sorry, ' + proposal),
+            (source, proposal.replace('right now', 'tomorrow')),
+            (source, proposal.replace('right now are to', 'were going to')),
+            (source, source),
+            (proposal, proposal),
+        ]
+        for src, out in pairs:
+            with self.subTest(src=src, out=out):
+                self.assertEqual(polish.restore_current_fact_after_plan_tag(src, out), out)
+
 if __name__ == '__main__': unittest.main()

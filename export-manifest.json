@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "0401fd14f87d6630f08aaaecd30d985368181818e14d4cae787bbf43d891f8e3",
+    "VERSION": "871608104164d7c8e2a15e14f600544193fa1300bee0ca8df269635f486e2a52",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/AudioUploadTests.swift": "1bd8f3580878381507e4d23ede7f5ff16b90d7fc1ff05f1adf068b7c5298328e",
@@ -110,13 +110,13 @@
     "server/inference_worker.py": "5b3f43b88c2abedc25cfd6d3575aea819b0650aa92a28ce8ce24373a43cc4525",
     "server/learning.py": "d9f1b5e1060d1581145ec1895a26fd45a396fff5e7b4896ebe47aa4eed8c8b56",
     "server/meeting_quality.py": "3c31693e8f8b23eb2654fbba81ec6627ea6726bd850e73d745f1a7239e63a220",
-    "server/polish.py": "bb222aad50e22b4c51c81fd2c3b6bab48e821e96f7f3a8be23fa8f875d800f50",
+    "server/polish.py": "98c797dd7a369f1b892fdf503ae0406269bf3e5c50411ba3377f46108ae2f4b9",
     "server/requirements-diarize-lock.txt": "0634e2a6fd432ff6ae82b3cf7d045dcb963f07b5fea0599f9a85e3f18c805f15",
     "server/requirements-lock.txt": "52f6c853921d29a55dfebcaea9e77b5ab99f92ccea7baf0a92b31b0132af99ff",
     "server/requirements.txt": "bb12900b14f541ac611c731cd4fa89f5f1cbfc91514b1f17009929746378c394",
     "server/test_confirmation_modal.py": "977fb6ad6c8360f35b631d84fcaf51634a90203b8a71889d6bcc52229d4a8092",
     "server/test_continuous_learning.py": "a3d6dc4db55fe0d862895a28fae1a1cc1e5c0900a087dfa5832b3c2b05e57826",
-    "server/test_current_fact.py": "67e9479b73b2e1623349800f2bf9f7340692ca9ef07ae68d1c74ab51b5aeab23",
+    "server/test_current_fact.py": "d05924e0618c6c55df80810dbe2e1fdeabeef24e7ea2c679a718060e3b02290a",
     "server/test_diarize_recovery.py": "2bc0694a35ce0c58bed9c0ba0787a5fdb6f5e08c078a516a0204f54d0fe16dbf",
     "server/test_fragment.py": "e1b7eebb6c353acee33a0bfe9aa9dcdd0ec6b20b48c3b13ebaa434bf5e9fd253",
     "server/test_learning.py": "e999006ff099bcdebdcf01fb05987d86cfad887fe08b4e3a710d0767fa3fc23d",

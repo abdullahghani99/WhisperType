@@ -15,6 +15,14 @@ class MeetingEvidenceTests(unittest.TestCase):
         text='We discussed backups. You should enable snapshots. For example, we will migrate next year.'
         result=self.render(text,summary=[0],action_items=[1,2])
         self.assertNotIn('Action items',result)
+    def test_missing_comma_between_excerpts_is_repaired(self):
+        # Meeting 126 (2026-11-04): the model dropped one comma and the notes failed.
+        text = '**A:** We will ship Friday. **B:** I will push them to finish.'
+        out = ('```json\n{\n  "summary": [],\n  "decisions": [],\n  "action_items": [\n'
+               '    "We will ship Friday."\n    "I will push them to finish."\n  ],\n  "open_questions": []\n}\n```')
+        notes = q.selected_notes(q.passages(text), out)
+        self.assertIn("ship Friday", notes); self.assertIn("push them to finish", notes)
+
     def test_unknown_ids_and_schema_never_publish(self):
         source=q.passages('A real sentence.')
         for out in ['not json','[]','{}',json.dumps({**{k:[] for k in q.HEADINGS},'summary':[True]}),json.dumps({**{k:[] for k in q.HEADINGS},'summary':[9]})]:

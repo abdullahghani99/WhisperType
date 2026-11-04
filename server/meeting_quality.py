@@ -118,8 +118,13 @@ def retain_disputed_numeric_estimate(source, summary):
 
 def selected_notes(source, response):
     """Render validated excerpts for commitments; keep summaries readable."""
+    body = re.sub(r'^```(?:json)?\s*|\s*```$', '', response.strip())
+    # The model sometimes drops the comma between two excerpts (meeting 126,
+    # 2026-11-04). JSON strings cannot contain a raw newline, so a closing quote,
+    # a line break and an opening quote can only be two missing-comma items.
+    body = re.sub(r'"[ \t]*\n(\s*)"', r'",\n\1"', body)
     try:
-        selected = json.loads(re.sub(r'^```(?:json)?\s*|\s*```$', '', response.strip()))
+        selected = json.loads(body)
     except (ValueError, TypeError):
         raise ValueError('Notes selection returned invalid JSON') from None
     if not isinstance(selected, dict) or set(selected) != set(HEADINGS):

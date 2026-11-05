@@ -1809,6 +1809,46 @@ def repair_embedded_question(source, output):
     return output
 
 
+def restore_topical_demonstrative_question(source, output):
+    """Keep an explicit inverted question after a short, aligned topic.
+
+    Only whole utterances qualify. The output must contain the same topic and
+    predicate, either with a dropped demonstrative or a reversed copula. Do not
+    infer questions from nominal complements, reports or changed predicates.
+    """
+    if re.search(r'["“”`\n;:]|\b(?:sorry|rather|correction|i mean|quote|verbatim)\b', source + output, re.I):
+        return output
+    if re.search(r"(?<!\w)[‘']|[’'](?!\w)", source + output): return output
+    topic = r'(?P<topic>(?:on |about |regarding )?(?:the|our|your|my) [a-z][a-z-]*(?: [a-z][a-z-]*){0,3})'
+    match = re.fullmatch(topic + r',?\s+(?P<aux>shouldn[’\']t|couldn[’\']t|wouldn[’\']t|can[’\']t) '
+                         r'(?P<subject>this|that|these|those) be (?P<tail>[^.!?\n;:]{3,240})[.?]?', source.strip(), re.I)
+    copular = False
+    if not match:
+        match = re.fullmatch(topic + r',?\s+(?P<aux>is|are|was|were) (?P<subject>this|that|these|those) '
+                             r'(?P<tail>[^.!?\n;:]{3,240})[.?]?', source.strip(), re.I)
+        copular = True
+    if not match: return output
+    if set(words(match['topic'])) & {'that', 'which', 'who', 'if', 'whether', 'not', 'maybe', 'perhaps', 'said', 'asked', 'says', 'asks', 'is', 'are', 'was', 'were'}:
+        return output
+    tail = match['tail'].strip()
+    # A leading discourse "actually" may be legitimately cleaned. Everything
+    # else in the predicate must align exactly, including uncertainty/negation.
+    tails = [tail]
+    if re.match(r'actually\s+', tail, re.I): tails.append(re.sub(r'^actually\s+', '', tail, flags=re.I))
+    for remainder in tails:
+        if copular:
+            declaration = match['subject'] + ' ' + match['aux'] + ' ' + remainder
+        else:
+            declaration = match['aux'] + ' be ' + remainder
+        target = re.escape(match['topic']) + r',?\s+' + re.escape(declaration) + r'\.'
+        if not re.fullmatch(target, output.strip(), re.I): continue
+        rendered_topic = output.strip()[:len(match['topic'])]
+        rendered_tail = output.strip()[-len(remainder)-1:-1]
+        question = match['aux'] + ' ' + match['subject'] + (' ' if copular else ' be ') + rendered_tail
+        return rendered_topic + ': ' + question[0].upper() + question[1:] + '?'
+    return output
+
+
 def restore_current_fact_after_plan_tag(source, output):
     """Undo a uniquely aligned merge of a plan tag and a present activity.
 
@@ -2247,6 +2287,7 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (repair_conditional_restart, 'conditional_restart'),
                          (repair_embedded_question, 'embedded_question'),
                          (restore_confirmation_tense, 'confirmation_tense'),
+                         (restore_topical_demonstrative_question, 'topical_demonstrative_question'),
                          (restore_current_fact_after_plan_tag, 'current_fact_after_plan_tag'),
                          (repair_confirmation_manner_boundary, 'confirmation_manner'),
                          (repair_framed_request, 'framed_request'),

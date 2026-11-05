@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "35c69959afe79912be9096c2bc2ce4c9c8a7fb6bac3122f4468b3ce30b10e01c",
+    "VERSION": "9d7b0351f6f30d2d1a53f7651d5e0521b71cf3bd3b07e520d1d0be4d86ad47b6",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/AudioUploadTests.swift": "1bd8f3580878381507e4d23ede7f5ff16b90d7fc1ff05f1adf068b7c5298328e",
@@ -110,7 +110,7 @@
     "server/inference_worker.py": "5b3f43b88c2abedc25cfd6d3575aea819b0650aa92a28ce8ce24373a43cc4525",
     "server/learning.py": "d9f1b5e1060d1581145ec1895a26fd45a396fff5e7b4896ebe47aa4eed8c8b56",
     "server/meeting_quality.py": "ca2db05cc3f5a63ec88e6d5729fe141bab8e00fea3e8ed3e41253ee3c0433a1c",
-    "server/polish.py": "98c797dd7a369f1b892fdf503ae0406269bf3e5c50411ba3377f46108ae2f4b9",
+    "server/polish.py": "db0b92659c0f2b96cfcf1a2259fdbd3536f65fbbf6cb8091fd1d83416746c1d8",
     "server/requirements-diarize-lock.txt": "0634e2a6fd432ff6ae82b3cf7d045dcb963f07b5fea0599f9a85e3f18c805f15",
     "server/requirements-lock.txt": "52f6c853921d29a55dfebcaea9e77b5ab99f92ccea7baf0a92b31b0132af99ff",
     "server/requirements.txt": "bb12900b14f541ac611c731cd4fa89f5f1cbfc91514b1f17009929746378c394",
@@ -127,7 +127,7 @@
     "server/test_repeated_actor.py": "b0c04b8c0ddaabe628a7cf1c054906c0ba42bd7c14d3087fbdb6602571775456",
     "server/test_speakers.py": "08debdb8e31183c2d4d8a3d5c18c2a9ceb897e3c2ba772d16cbf6d4a5815d7e7",
     "server/test_speech_act.py": "794579d6546107d124dc87bd0adc8062bc3031ee15f1d145a5e982476ac2bb4e",
-    "server/test_topic_frame.py": "00612ef4c21da198c209d6a7f95f0ca645b62c7fbfb2e0ffa601d06f5a12ea85",
+    "server/test_topic_frame.py": "e408fd4e4c7a4e9747d58c2729ea0a92c66b2dd95eb61273ad3d939c69834e8b",
     "server/server.py": "1cb62b9357e1aa955564aa5e1b4e32ac075fd5beaebf7059738409ba03c8e64c",
     "tests/agent/AgentTests.swift": "0330465f4f0df8fb027f775b5d326ceb6e3f815a9a7d8f2d13f3fe1740c51d40",
     "tests/agent/test_agent_http.py": "a1167a745ff010c7335d43a97d400f23ac729dee5dbc43725d610d4180a5b84a",

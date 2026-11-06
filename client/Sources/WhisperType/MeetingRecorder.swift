@@ -344,7 +344,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             return old
         }
         if let wrapped = detached, let old = wrapped {
-            let stop = { old.stop(); old.inputNode.removeTap(onBus: 0) }
+            let stop = { old.retire() }
             if waitForHardware { stop() }
             else { DispatchQueue.global(qos: .utility).async(execute: stop) }
         }
@@ -388,9 +388,9 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                   var conv = AVAudioConverter.toMono(from: inFormat, to: out16k) else {
                 log("mic: skip \(dev.name) (invalid format)"); continue
             }
-            guard life.isCurrentAttempt(myToken) else { e.stop(); return }
+            guard life.isCurrentAttempt(myToken) else { e.retire(); return }
             let probe = ProbeCounter()            // one per candidate, not shared
-            guard let gen = life.newTapGeneration(forAttempt: myToken) else { e.stop(); return }
+            guard let gen = life.newTapGeneration(forAttempt: myToken) else { e.retire(); return }
             let health = MicHealth(startedAt: Date().timeIntervalSince1970)
             // Read the fault-injection flag ONCE, here, not on the audio thread.
             let fakeStall = Self.stallSimulationEnabled()
@@ -406,7 +406,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             do { e.prepare(); try e.start() }
             catch {
                 log("mic: skip \(dev.name) (engine start failed: \(error))")
-                e.stop(); input.removeTap(onBus: 0); continue
+                e.retire(); continue
             }
 
             // Opening proves nothing, and neither does a single burst: the
@@ -420,7 +420,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             if got == 0 || got <= firstWindow {
                 log("mic: skip \(dev.name) (\(got == 0 ? "delivered NO samples" : "stalled after \(got) frames"))")
                 if life.isCurrentAttempt(myToken) { AudioDevices.markSilent(uid: dev.uid) }
-                e.stop(); input.removeTap(onBus: 0)
+                e.retire()
                 continue
             }
 
@@ -430,7 +430,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 micName = dev.name; lastMicUID = dev.uid; micHealth = health
             }
             guard accepted else {
-                e.stop(); input.removeTap(onBus: 0); return
+                e.retire(); return
             }
             AudioDevices.markWorking(uid: dev.uid)
             log("mic: capturing from \(dev.name) (\(got) frames in probe)")

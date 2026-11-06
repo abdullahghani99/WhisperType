@@ -245,9 +245,7 @@ final class AudioRecorder {
         }
         if let old = old {
             stage("stopping previous engine", generation: gen)
-            old.stop()
-            stage("removing previous tap", generation: gen)
-            old.inputNode.removeTap(onBus: 0)
+            old.retire()
         }
     }
 
@@ -414,7 +412,7 @@ final class AudioRecorder {
             let e = AVAudioEngine()
             stage("opening input node for \(dev.name)", generation: gen)
             let input = e.inputNode
-            guard owns(gen) else { e.stop(); return nil }
+            guard owns(gen) else { e.retire(); return nil }
             if let au = input.audioUnit {
                 stage("pinning \(dev.name)", generation: gen)
                 // Pinning a Bluetooth device fails with -10851 while the link is
@@ -426,7 +424,7 @@ final class AudioRecorder {
                 // microphone, or on none.
                 var st: OSStatus = noErr
                 for attempt in 0..<6 {                    // up to ~1.2s
-                    guard owns(gen) else { e.stop(); return nil }
+                    guard owns(gen) else { e.retire(); return nil }
                     var id = dev.id
                     st = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
                                               kAudioUnitScope_Global, 0, &id,
@@ -439,10 +437,10 @@ final class AudioRecorder {
                 }
                 if st != noErr {
                     logError("skip \(dev.name): could not pin (err \(st)) after 6 attempts")
-                    e.stop(); continue
+                    e.retire(); continue
                 }
             }
-            guard owns(gen) else { e.stop(); return nil }
+            guard owns(gen) else { e.retire(); return nil }
             // A Bluetooth headset reports ZERO input channels while it negotiates
             // the mic link — measured on AirPods Pro: "24000.0Hz/0ch", repeatedly,
             // for a second or so after it becomes the input device. Treating that
@@ -456,7 +454,7 @@ final class AudioRecorder {
             var inFormat = input.inputFormat(forBus: 0)
             if inFormat.channelCount == 0 || inFormat.sampleRate == 0 {
                 for _ in 0..<6 {                       // up to ~1.2s
-                    guard owns(gen) else { e.stop(); return nil }
+                    guard owns(gen) else { e.retire(); return nil }
                     Thread.sleep(forTimeInterval: 0.2)
                     inFormat = input.inputFormat(forBus: 0)
                     if inFormat.channelCount > 0 && inFormat.sampleRate > 0 { break }
@@ -465,11 +463,11 @@ final class AudioRecorder {
                     logError("\(dev.name) was not ready; it settled at \(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch")
                 }
             }
-            guard owns(gen) else { e.stop(); return nil }
+            guard owns(gen) else { e.retire(); return nil }
             guard inFormat.channelCount > 0, inFormat.sampleRate > 0,
                   var conv = AVAudioConverter.toMono(from: inFormat, to: outFormat) else {
                 logError("skip \(dev.name): invalid format (\(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch)")
-                e.stop()          // never abandon an engine un-stopped (see teardown)
+                e.retire()          // never abandon an engine un-stopped (see teardown)
                 continue
             }
             // Tap converter and publication token belong to this local engine.
@@ -491,20 +489,20 @@ final class AudioRecorder {
             do {
                 stage("preparing \(dev.name) at \(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch", generation: gen)
                 e.prepare()
-                guard owns(gen) else { e.stop(); input.removeTap(onBus: 0); return nil }
+                guard owns(gen) else { e.retire(); return nil }
                 stage("starting \(dev.name)", generation: gen)
                 try e.start()
             }
             catch {
                 logError("skip \(dev.name): engine start failed (\(error))")
-                e.stop(); input.removeTap(onBus: 0)
+                e.retire()
                 continue
             }
             let bluetooth = AudioDevices.isBluetooth(dev.id)
             bufLock.lock()
             guard attempt == gen, !suspended else {
                 bufLock.unlock()
-                e.stop(); input.removeTap(onBus: 0)
+                e.retire()
                 return nil
             }
             let epoch = state.commitEngine()
@@ -752,5 +750,21 @@ extension AVAudioConverter {
         for i in 0..<Int(buffer.frameLength) {
             samples[i] = Int16(clamping: Int32(samples[i]) * 30)
         }
+    }
+}
+
+extension AVAudioEngine {
+    /// Stop, detach the tap, and keep the engine alive briefly.
+    ///
+    /// AVFAudio can still deliver a queued device-property notification to an
+    /// engine after we drop it; if the engine has already been freed, that call
+    /// lands on a dead object and the app segfaults. That happened on 2026-11-04
+    /// one second after a meeting skipped a stalled AirPods engine, while the
+    /// input was flipping between devices. Holding the reference for a few
+    /// seconds lets any late callback hit a live, stopped engine.
+    func retire() {
+        stop()
+        inputNode.removeTap(onBus: 0)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { withExtendedLifetime(self) {} }
     }
 }

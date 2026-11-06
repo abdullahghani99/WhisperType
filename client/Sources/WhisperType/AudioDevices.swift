@@ -189,8 +189,8 @@ enum AudioDevices {
         func rank(_ d: AudioInputDevice) -> Int {
             // A device that just gave us silence goes to the BACK, whatever its
             // transport — a dead wired mic must not beat a working built-in one.
-            if isRecentlySilent(d.uid) { return 90 }
-            if !pinned.isEmpty && d.uid == pinned { return -1 }   // the user's choice leads
+            if !pinned.isEmpty && d.uid == pinned { return -1 }   // the user's choice leads, even after a failure
+            if isRecentlySilent(d.uid) { return 90 }             // failed recently: last resort, never removed
             // THE SYSTEM DEFAULT COMES NEXT, whatever its transport.
             //
             // This overturns an earlier "wired beats Bluetooth" heuristic that

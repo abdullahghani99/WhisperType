@@ -406,6 +406,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             do { e.prepare(); try e.start() }
             catch {
                 log("mic: skip \(dev.name) (engine start failed: \(error))")
+                if life.isCurrentAttempt(myToken) { AudioDevices.markSilent(uid: dev.uid) }
                 e.retire(); continue
             }
 

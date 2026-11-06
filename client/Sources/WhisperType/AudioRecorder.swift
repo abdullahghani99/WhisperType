@@ -97,6 +97,7 @@ final class AudioRecorder {
     /// queue forever.
     private let watchdogTimeout: TimeInterval = 8.0
     private var finishedBringUp = 0     // last generation whose bring-up returned (bufLock)
+    private var startupDeviceUID = ""   // device bring-up is currently opening (bufLock)
 
     var onLevel: ((Float) -> Void)?
     var onCaptureFailure: ((String) -> Void)?
@@ -280,6 +281,7 @@ final class AudioRecorder {
             // (2026-10-30 14:34, two presses stuck at "reading input devices").
             let hung = self.finishedBringUp < gen && q === self.engineQueue
             let phase = self.startupStage
+            let stuckOn = self.startupDeviceUID
             if wedged || hung {
                 if wedged { self.attempt += 1; self.wantRecording = false }   // invalidate the stuck attempt
                 self.engineQueue = DispatchQueue(label: "app.whispertype.client.audio.\(self.attempt)")
@@ -289,6 +291,9 @@ final class AudioRecorder {
             if let cleanup = cleanup {
                 cleanup.queue.async { [weak self] in self?.teardownCommitted(expected: cleanup.generation) }
             }
+            // The device that hung bring-up goes to the back of the line, or the
+            // next press waits 8 s on it again (PowerConf, 2026-11-04).
+            if (wedged || hung) && !stuckOn.isEmpty { AudioDevices.markSilent(uid: stuckOn) }
             if wedged {
                 self.logError("audio startup timed out after \(Int(self.watchdogTimeout))s at \(phase); reset audio queue")
                 report(false)
@@ -369,6 +374,7 @@ final class AudioRecorder {
         guard !candidates.isEmpty else { logError(forWarming ? "input left idle by warming policy" : "no physical input device available"); return nil }
         for dev in candidates {
             guard owns(gen) else { return nil }
+            bufLock.lock(); startupDeviceUID = dev.uid; bufLock.unlock()
             logError("input diagnostics before start: " + AudioDevices.inputMuteSummary(dev))
             if AudioDevices.isBluetooth(dev.id) {
                 stage("opening input-only session for \(dev.name)", generation: gen)
@@ -495,6 +501,7 @@ final class AudioRecorder {
             }
             catch {
                 logError("skip \(dev.name): engine start failed (\(error))")
+                AudioDevices.markSilent(uid: dev.uid)   // a mic that will not start ranks last for a while, like a silent one
                 e.retire()
                 continue
             }

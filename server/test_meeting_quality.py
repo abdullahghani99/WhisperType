@@ -200,3 +200,47 @@ class DisputedEstimateTests(unittest.TestCase):
         for text in ["**Alex:** He said I don't think you can handle 65%.","**Alex:** I don't think you can handle 65%. Actually, I retract that estimate."]:
             summary='The group discussed that 65% could be handled by AI.'
             self.assertEqual(q.retain_disputed_numeric_estimate(q.passages(text),summary),summary)
+
+
+class AddressedCommitmentTests(unittest.TestCase):
+    def notes(self, transcript, selected=()):
+        response={k:[] for k in q.HEADINGS}
+        response['summary']=['The configuration was discussed.']
+        response['action_items']=list(selected)
+        return q.selected_notes(q.passages(transcript),json.dumps(response))
+
+    def test_questioner_is_not_assigned_the_responders_commitment(self):
+        transcript="**Alex:** No, I'll change this. Otherwise, I'll delete these and create them again.\n\n**Blair:** You will try to change it, right? Yes. Okay, thanks."
+        notes=self.notes(transcript,['You will try to change it, right? Yes. Okay, thanks.'])
+        self.assertIn("Alex: No, I'll change this. Otherwise, I'll delete these and create them again.",notes)
+        self.assertNotIn('Blair:',notes)
+
+    def test_named_question_and_second_person_instruction_are_not_acceptance(self):
+        for sentence in ['You will send the report.', 'You will send the report, right?', 'Alex will send the report, right?', 'Will you send the report?']:
+            self.assertNotIn('Action items',self.notes('**Blair:** '+sentence,[sentence]))
+
+    def test_own_promise_and_named_statement_survive(self):
+        for sentence in ["I'll send the report, okay?", 'We will test it, all right?', 'Alex will send the report.', 'Yes, I will send it tomorrow.']:
+            self.assertIn(sentence,self.notes('**Blair:** '+sentence,[sentence]))
+
+    def test_retains_uncertainty_in_longer_same_owner_excerpt(self):
+        t='**Alex:** I will check and push them. I will try.'
+        for items in [['I will check and push them. I will try.','I will check and push them.'],['I will check and push them.','I will check and push them. I will try.']]:
+            result=self.notes(t,items)
+            self.assertEqual(result.count('Alex: I will check and push them.'),1)
+            self.assertIn('I will try.',result)
+
+    def test_distinct_owners_and_actions_are_not_collapsed(self):
+        t='**Alex:** I will check the draft.\n\n**Blair:** I will check the draft and send it.\n\n**Alex:** I will check the totals.'
+        result=self.notes(t)
+        for sentence in ['Alex: I will check the draft.','Blair: I will check the draft and send it.','Alex: I will check the totals.']:self.assertIn(sentence,result)
+
+    def test_change_predictions_quotes_and_retractions_are_not_recovered(self):
+        for text in ["I'll change my mind.", "No, I'll probably change this.", "He said I'll change this.", "For example. I'll change this.", "I'll change this. I withdraw that commitment.", "I'll change this?"]:
+            self.assertNotIn('Action items',self.notes('**Alex:** '+text))
+
+    def test_fallback_stays_local_and_condition_is_retained(self):
+        t="**Alex:** I'll change this. Otherwise, I'll leave it as it is."
+        self.assertIn("I'll change this. Otherwise, I'll leave it as it is.",self.notes(t))
+        t="**Alex:** I'll change this.\n\n**Blair:** Otherwise, I'll leave it as it is."
+        self.assertNotIn('Alex: Otherwise',self.notes(t))

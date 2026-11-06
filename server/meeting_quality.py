@@ -135,14 +135,22 @@ def selected_notes(source, response):
     if not all(isinstance(selected[k],list) and all(isinstance(x,str) for x in selected[k]) for k in HEADINGS):
         raise ValueError('Notes selection returned invalid excerpts')
     commitment=re.compile(r"^(?:(?:[Ss]o )?(?:[Ii]f|[Uu]nless|[Pp]rovided that) [^.!?]{1,180},\s*)?(?:(?:[Oo][Kk](?:ay)?|[Yy]es|[Ss]ure)[,.]\s*){0,2}(?:I(?:['’]ll| will)|[Ww]e(?:['’]ll| will)|I(?:['’]m| am) going to)\s+(?:just\s+)?(?:send|set|review|check|prepare|finish|publish|build|share|schedule|create|contact|draft|deliver|submit|test|provide|update|upload|confirm|arrange|organize|write|open|make|follow up|discuss|enter|add|give (?:you|him|her|them|us) a call)\b")
+    change_commitment = re.compile(r"^(?:No,\s*)?I(?:['’]ll| will) change (?:this|that|these|those|the [a-z][a-z -]{0,50})[.]$", re.I)
     for index,row in enumerate(source):
         text=row['text']
+        # Retain a directly stated change commitment and its adjacent fallback.
+        # Do not guess what 'this' refers to or turn a prediction into a task.
+        change = bool(change_commitment.fullmatch(text))
+        if change and index+1 < len(source):
+            following = source[index+1]
+            if following['speaker']==row['speaker'] and re.match(r"^Otherwise, I(?:['’]ll| will)\b", following['text']):
+                text += ' ' + following['text']
         previous=source[index-1] if index else None
         context=text
         if previous and previous['speaker']==row['speaker']:context=previous['text']+' '+context
         contextual_hypothesis=bool(previous and previous['speaker']==row['speaker'] and re.search(r'\b(?:if|unless|said|quoted|suppose|imagine)\b',previous['text'],re.I))
         incomplete = bool(re.search(r"(?:send|share|give|provide|deliver|submit) (?:it )?(?:you|him|her|them|us)?[.!?]?$",text,re.I))
-        if not incomplete and not contextual_hypothesis and row['speaker'] and len(text.split())<=90 and commitment.search(text) and not re.search(r'\b(?:example|hypothetical|imagine|suppose|quoted|maybe|probably|might)\b',context,re.I):
+        if not incomplete and not contextual_hypothesis and row['speaker'] and len(text.split())<=90 and (commitment.search(text) or change) and not re.search(r'\b(?:example|hypothetical|imagine|suppose|quoted|maybe|probably|might)\b',context,re.I):
             selected['action_items']=[item for item in selected['action_items'] if item not in text]
             selected['action_items'].append(text)
     def norm(text): return re.sub(r'\s+', ' ', text).strip()
@@ -181,6 +189,10 @@ def selected_notes(source, response):
             matches=list(shortest.values())
             if key=='action_items' and not re.search(r"\b(?:I(?:['’]ll| will)|[Ww]e(?:['’]ll| will)|(?:I|[Ww]e) (?:commit|agree|promise)|I(?:['’]m| am) going to|[A-Z][a-z]+ will)\b",text):continue
             if key == 'action_items':
+                own_promise = re.match(r"^(?:(?:ok(?:ay)?|yes|sure|no)[,.]\s*){0,2}(?:I(?:['’]ll| will)|[Ww]e(?:['’]ll| will))\b",text,re.I)
+                # 'You will ... right?' is addressed to someone else. A bare
+                # question about a named actor also does not establish consent.
+                if re.match(r'^You will\b',text) or ('?' in text and not own_promise):continue
                 # A model-selected prediction or unfinished object is not rescued
                 # merely because its words occur in a real speaker's sentence.
                 body=re.sub(r"^(?:(?:ok(?:ay)?|yes|sure)[,.]\s*){0,2}(?:I['’]ll|I will|[Ww]e['’]ll|[Ww]e will)\s+",'',text,flags=re.I)
@@ -205,7 +217,13 @@ def selected_notes(source, response):
                     for row in rows:
                         context = (row['speaker']+': ' if row['speaker'] else '') + row['text']
                         if context not in prefixes: prefixes.append(context)
-            lines.append(' '.join(prefixes + [(speaker+': ' if speaker else '')+text]));seen.add(text)
+            line=' '.join(prefixes + [(speaker+': ' if speaker else '')+text])
+            if key=='action_items' and speaker:
+                # Collapse only same-owner, sentence-boundary prefix excerpts.
+                # The longer validated quotation preserves conditions/hedges.
+                if any(old.startswith(line+' ') and text.endswith(('.', '!', '?')) for old in lines):continue
+                lines=[old for old in lines if not (line.startswith(old+' ') and old.endswith(('.', '!', '?')))]
+            lines.append(line);seen.add(text)
         if lines:output.append('**'+heading+':**\n'+'\n'.join('- '+line for line in lines))
     if not output:raise ValueError('No supported notes selected; transcript retained')
     return '\n\n'.join(output)

@@ -1461,7 +1461,7 @@ def restore_explicit_inclusive_scope(source, output):
 
 def restore_explicit_quantifier_emphasis(source, output):
     """An explicit 'by everything I mean everything' is intentional emphasis."""
-    pattern = r'\b(?P<q>everything|everyone|everybody|nothing),\s*(?:and )?by (?P=q) I mean (?P=q),'
+    pattern = r'\b(?P<q>everything|everyone|everybody|nothing)(?:,\s*|\s+)(?P<phrase>(?:and )?by (?P=q) I mean (?P=q))\b,?'
     matches = list(re.finditer(pattern, source, re.I))
     if len(matches) != 1: return output
     match = matches[0]
@@ -1481,7 +1481,7 @@ def restore_explicit_quantifier_emphasis(source, output):
     i = positions[0]
     if not re.fullmatch(r',?\s+', output[tokens[i].end():tokens[i+1].start()]): return output
     # Keep output capitalization and all existing edits outside this local gap.
-    value = tokens[i][0] + match[0][len(match['q']):]
+    value = tokens[i][0] + ', ' + match['phrase'] + ','
     return output[:tokens[i].start()] + value + ' ' + output[tokens[i+1].start():]
 
 

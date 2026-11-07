@@ -34,6 +34,12 @@ class QuantifierEmphasisTests(unittest.TestCase):
         source='Please check everything, and by everything I mean everything, including the images and descriptions. you know Thanks.'
         output='Please check everything, including the images and descriptions. Thanks.'
         self.assertEqual(emphasis(source,output),'Please check everything, and by everything I mean everything, including the images and descriptions. Thanks.')
+    def test_unpunctuated_source_keeps_deliberate_emphasis(self):
+        source='Please check everything and by everything I mean everything including the images.'
+        output='Please check everything, including the images.'
+        self.assertEqual(emphasis(source,output),'Please check everything, and by everything I mean everything, including the images.')
+        self.assertEqual(emphasis(source,'Please check everything. Including the images.'),'Please check everything. Including the images.')
+
     def test_closed_quantifiers_and_capitalization(self):
         for q in ['everyone','everybody','nothing']:
             source=f'We mean {q}, by {q} I mean {q}, in this group.'

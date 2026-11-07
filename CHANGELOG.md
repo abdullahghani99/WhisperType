@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.53
+
+- Preserve explicit everything-including scope when polishing narrows a request to its examples, requiring a unique complete example span and neighboring words.
+- Retain deliberate by-everything-I-mean-everything emphasis while preserving legitimate cleanup, capitalization and punctuation; abstain on corrections, quotations and ambiguous anchors.
+- Dictation postprocessing only, with no additional model calls. Preserve the 0.9.51–0.9.52 microphone fixes, meeting notes and existing model weights. Broader emphasis and boundary repairs remain open.
+
 ## [0.9.28] - 2026-10-18
 
 ### Fixed

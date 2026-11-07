@@ -1435,6 +1435,56 @@ def restore_anchored_profanity(source, output):
     return output
 
 
+
+def restore_explicit_inclusive_scope(source, output):
+    """Keep an explicitly inclusive object when an aligned example list survives.
+
+    Reinsert only the source's everything/including words. Require the complete
+    example span and neighboring source words; never infer a missing object.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|instead|rather|i mean)\b', source, re.I): return output
+    pattern = r'\b(?P<verb>[a-z]+) everything(?: (?P<particle>out|up|off))?[,]? including (?P<examples>[^.!?;:]+)'
+    for match in re.finditer(pattern, source, re.I):
+        before = words(source[:match.start()])[-3:]
+        if len(before) < 2: continue
+        short = match['verb'] + (' ' + match['particle'] if match['particle'] else '') + ' ' + match['examples'].strip()
+        hits = list(re.finditer(r'\b' + re.escape(short) + r'(?=[.!?;:]|$)', output, re.I))
+        if len(hits) != 1: continue
+        hit = hits[0]
+        if words(output[:hit.start()])[-len(before):] != before: continue
+        full = words(match[0])
+        if sum(words(source)[i:i+len(full)] == full for i in range(len(words(source)))) != 1: continue
+        replacement = hit[0][:len(match['verb'])] + ' everything' + (' ' + match['particle'] if match['particle'] else '') + ', including ' + hit[0][len(match['verb'])+(len(match['particle'])+1 if match['particle'] else 0)+1:]
+        output = output[:hit.start()] + replacement + output[hit.end():]
+    return output
+
+
+def restore_explicit_quantifier_emphasis(source, output):
+    """An explicit 'by everything I mean everything' is intentional emphasis."""
+    pattern = r'\b(?P<q>everything|everyone|everybody|nothing),\s*(?:and )?by (?P=q) I mean (?P=q),'
+    matches = list(re.finditer(pattern, source, re.I))
+    if len(matches) != 1: return output
+    match = matches[0]
+    rest = source[:match.start()] + source[match.end():]
+    if re.search(r'["“”`]|\b(?:sorry|correction|instead|rather|i mean)\b', rest, re.I): return output
+    token = r"[^\W_]+(?:['’][^\W_]+)*"
+    left = [x[0].casefold() for x in re.finditer(token, source[:match.start()])][-2:]
+    right = [x[0].casefold() for x in re.finditer(token, source[match.end():])][:2]
+    if len(left) != 2 or len(right) != 2: return output
+    tokens = list(re.finditer(token, output)); values = [x[0].casefold() for x in tokens]
+    anchor = left + [match['q'].casefold()] + right
+    src_short = source[:match.start()] + match['q'] + source[match.end():]
+    src_values = [x[0].casefold() for x in re.finditer(token, src_short)]
+    if sum(src_values[i:i+5] == anchor for i in range(len(src_values))) != 1: return output
+    positions = [i+2 for i in range(len(values)) if values[i:i+5] == anchor]
+    if len(positions) != 1: return output
+    i = positions[0]
+    if not re.fullmatch(r',?\s+', output[tokens[i].end():tokens[i+1].start()]): return output
+    # Keep output capitalization and all existing edits outside this local gap.
+    value = tokens[i][0] + match[0][len(match['q']):]
+    return output[:tokens[i].start()] + value + ' ' + output[tokens[i+1].start():]
+
+
 def restore_repeated_emphasis(source, output):
     """Restore a lost repeated intensifier using unique unchanged word anchors."""
     token = r"[^\W_]+(?:['’][^\W_]+)*"
@@ -2276,6 +2326,8 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (repair_remaining_duration, 'remaining_duration'),
                          (repair_nominal_boundaries, 'nominal_boundary'),
                          (restore_repeated_emphasis, 'repeated_emphasis'),
+                         (restore_explicit_inclusive_scope, 'inclusive_scope'),
+                         (restore_explicit_quantifier_emphasis, 'quantifier_emphasis'),
                          (restore_anchored_profanity, 'anchored_profanity'),
                          (restore_continuation_statement, 'continuation_statement'),
                          (restore_repeated_predicate_alternative, 'repeated_predicate_alternative'),

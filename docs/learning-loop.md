@@ -95,3 +95,17 @@ recognized text, or align words to incorrect speaker turns, fail promotion.
 Preserve rejected experiments and pursue source-channel evidence independently.
 For notes, validate the full conversation, including later retractions, role-play
 framing and conditions in another speaker's preceding request.
+
+## Distinct predicates during repeat cleanup
+
+Repeated subjects may be shortened without losing their different predicates.
+For three explicit clauses with the same subject and copula, a uniquely aligned
+shared-subject output must retain the middle predicate as well as the first and
+last. This bounded repair preserves the model's other accepted cleanup and adds
+no generation call. Changed actors or tenses, negation, corrections, quotations,
+conditional continuations and ambiguous repeated anchors remain outside its
+restoration rule. Identical predicates are not restored by this rule.
+
+This does not complete arbitrary repetition or emphasis handling. Acceptance,
+duration emphasis, uncertain alternatives and broader question boundaries remain
+separate repair mechanisms, with complete-output evaluation required for each.

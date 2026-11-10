@@ -1436,6 +1436,36 @@ def restore_anchored_profanity(source, output):
 
 
 
+
+def restore_distinct_coordinated_predicate(source, output):
+    """Preserve a distinct middle predicate when repeated subjects are shortened.
+
+    Require three explicit same-subject/copula clauses and exact surviving outer
+    predicates. Retain legitimate subject sharing instead of restoring every repeat.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|instead|rather|i mean)\b', source, re.I): return output
+    phrase = r'[a-z]+(?: [a-z]+){0,2}'
+    pattern = (r'\b(?P<subject>everything|everyone|everybody|it|this|that|they|we) '
+               r'(?P<copula>is|are|was|were) (?P<first>'+phrase+r') and '
+               r'(?P=subject) (?P=copula) (?P<middle>'+phrase+r') and '
+               r'(?P=subject) (?P=copula) (?P<last>[a-z]+)(?=[.!?;:]|$)')
+    for match in re.finditer(pattern, source, re.I):
+        predicates = [match[k] for k in ('first','middle','last')]
+        if len({v.casefold() for v in predicates}) != 3: continue
+        if any(re.search(r'\b(?:and|or|but|not|never|if|unless|because|except)\b', v, re.I) for v in predicates): continue
+        if len(list(re.finditer(re.escape(match[0]), source, re.I))) != 1: continue
+        prefix = match['subject']+' '+match['copula']+' '+match['first']
+        target = r'\b'+re.escape(prefix)+r'(?P<gap> and )'+re.escape(match['last'])+r'(?=[.!?;:]|$)'
+        # Do not attach an omitted predicate to a separate two-part statement.
+        if re.search(target, source, re.I): continue
+        if len(list(re.finditer(r'\b'+re.escape(prefix)+r'\b', source, re.I))) != 1: continue
+        hits = list(re.finditer(target, output, re.I))
+        if len(hits) != 1: continue
+        hit = hits[0]
+        output = output[:hit.start('gap')] + ' and '+match['middle']+output[hit.start('gap'):]
+    return output
+
+
 def restore_explicit_inclusive_scope(source, output):
     """Keep an explicitly inclusive object when an aligned example list survives.
 
@@ -2327,6 +2357,7 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (repair_nominal_boundaries, 'nominal_boundary'),
                          (restore_repeated_emphasis, 'repeated_emphasis'),
                          (restore_explicit_inclusive_scope, 'inclusive_scope'),
+                         (restore_distinct_coordinated_predicate, 'distinct_coordinated_predicate'),
                          (restore_explicit_quantifier_emphasis, 'quantifier_emphasis'),
                          (restore_anchored_profanity, 'anchored_profanity'),
                          (restore_continuation_statement, 'continuation_statement'),

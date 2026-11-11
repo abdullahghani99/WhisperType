@@ -116,6 +116,49 @@ def retain_disputed_numeric_estimate(source, summary):
     return summary
 
 
+
+def ground_naming_proposal(source, summary):
+    """Quote a unique explicit proposal when a summary changes its subject.
+
+    Only attributed naming claims qualify. Compound integration claims require
+    their own uniquely attributed source sentence; unrelated clauses abstain.
+    """
+    if re.search(r'["“”]', summary): return summary
+    proposal = re.compile(r"^(?:So )?(?:what I suggest is that|I suggest(?: that)?|I propose(?: that)?) we (?:call|name|rename) (?P<body>[^.!?]+)[.!?]?$", re.I)
+    def words(text): return re.findall(r"[a-z]+", text.casefold())
+    for speaker in {r['speaker'] for r in source if r['speaker']}:
+        rows = [r for r in source if r['speaker'] == speaker]
+        candidates = [(i, r, proposal.fullmatch(r['text'])) for i,r in enumerate(source) if r['speaker'] == speaker and proposal.fullmatch(r['text'])]
+        if len(candidates) != 1: continue
+        index, row, proposed = candidates[0]
+        if re.search(r'["“”]|\b(?:if|unless|not|never|example|hypothetical|instead)\b', row['text'], re.I): continue
+        if any(re.search(r'\b(?:withdraw|retract)\b.*\b(?:proposal|name|naming)\b|^(?:Actually|Correction|Instead|I mean)\b.*\b(?:call|name|rename|naming)\b', r['text'], re.I) for r in source[index+1:] if r['speaker']==speaker): continue
+        pattern = (r'(?<!\w)'+re.escape(speaker)+r' (?:suggested|proposed) (?:renaming|naming|calling) '
+                   r'(?P<target>[A-Za-z][A-Za-z -]{0,80}?) (?:to|as) (?P<name>[A-Za-z][A-Za-z -]{0,60}?)'
+                   r'(?P<extra> and integrating it with [A-Za-z][A-Za-z -]{0,60})?[.](?=\s|$)')
+        matches = list(re.finditer(pattern, summary))
+        if len(matches) != 1: continue
+        match = matches[0]
+        before = summary[:match.start()].rstrip()
+        if before and before[-1] not in '.!?': continue
+        if re.search(r'\b(?:and|or|but|not|if|unless)\b', match['target']+' '+match['name'], re.I): continue
+        name = words(match['name']); body = words(proposed['body'])
+        if not name or not any(body[i:i+len(name)]==name for i in range(len(body))): continue
+        target = set(words(match['target'])) - {'the','a','an','this','that'}
+        if not target or target <= set(body): continue
+        quotes = [row['text']]
+        if match['extra']:
+            integration = [r['text'] for r in rows if re.search(r'\b(?:connect|integrate)\b.*\b(?:two|both)\b.*\btogether\b',r['text'],re.I) and 'platform' in r['text'].casefold()]
+            if len(integration)!=1 or re.search(r'["“”]',integration[0]): continue
+            quotes = [integration[0]] + quotes
+        replacement = speaker+' said: '+' '.join('“'+q+'”' for q in quotes)
+        repaired = summary[:match.start()]+replacement+summary[match.end():]
+        # The renderer's summary limit must not turn a local repair into loss
+        # of the entire paragraph. Leave oversized expansions unchanged.
+        if len(repaired.split()) <= 160: summary = repaired
+    return summary
+
+
 def selected_notes(source, response):
     """Render validated excerpts for commitments; keep summaries readable."""
     body = re.sub(r'^```(?:json)?\s*|\s*```$', '', response.strip())
@@ -165,7 +208,7 @@ def selected_notes(source, response):
             text=norm(excerpt)
             if not text or text in seen or (key=='summary' and text in dedicated): continue
             if key=='summary':
-                text=retain_disputed_numeric_estimate(source,restore_future_summary_attribution(source,text))
+                text=ground_naming_proposal(source,retain_disputed_numeric_estimate(source,restore_future_summary_attribution(source,text)))
                 all_source=' '.join(row['speaker']+' '+row['text'] for row in source)
                 numbers=re.findall(r'(?<!\w)\d+(?:[.,]\d+)*(?:%|\b)',text)
                 source_numbers={n.replace(',','') for n in re.findall(r'(?<!\w)\d+(?:[.,]\d+)*(?:%|\b)',all_source)}

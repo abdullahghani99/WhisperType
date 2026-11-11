@@ -109,3 +109,17 @@ restoration rule. Identical predicates are not restored by this rule.
 This does not complete arbitrary repetition or emphasis handling. Acceptance,
 duration emphasis, uncertain alternatives and broader question boundaries remain
 separate repair mechanisms, with complete-output evaluation required for each.
+
+## Naming proposals in meeting summaries
+
+A summary may attach a proposed name to the wrong subject even when both names
+occur in the transcript. For a uniquely attributed explicit proposal, a bounded
+repair replaces that mismatched claim with the speaker's exact proposal. An
+attached integration claim also needs its own unique source sentence. Accurate
+aligned paraphrases stay readable; quotes, reported claims, corrections, multiple
+proposals and unsupported compound clauses abstain. Expansions that would exceed
+the summary limit leave the original paragraph intact.
+
+This is source-grounded repair of a naming claim, not independent verification
+of speaker identity or all summary facts. Wider agreement, attribution and
+commitment-recall failures require separate full-output evaluation.

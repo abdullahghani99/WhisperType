@@ -592,6 +592,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         self.overlay.show(.message("🔴 Recording meeting (mic: \(self.meetingRecorder.micName)) — menu ▸ “Stop meeting & summarize” to finish"))
                         self.overlay.hide(after: 5)
                     } else {
+                        // Sound and amber dot NOW, not after the watchdog's first check.
+                        SoundFeedback.failed()
+                        self.dockController.state.meetingMicTrouble = true
                         self.overlay.show(.message("⚠️ Recording, but NO working microphone — only other participants will be captured. Pick a mic in Settings and restart the recording."))
                         self.overlay.hide(after: 12)
                     }
@@ -609,6 +612,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
+    }
+
+    /// The mic track the journal keeps beside `meeting-<id>.wav`, if retained.
+    static func microphoneTrack(for wavURL: URL) -> Data? {
+        let url = wavURL.deletingPathExtension().appendingPathExtension("tracks").appendingPathComponent("microphone.pcm")
+        return try? Data(contentsOf: url, options: .mappedIfSafe)
     }
 
     private func stopMeeting() {
@@ -646,7 +655,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do {
                 // Submit for ASYNC processing — the durable server job survives even
                 // if this app quits; the result appears in the Meetings window.
-                let id = try await client.submitMeeting(wav: wav, title: "Meeting \(stamp)")
+                let id = try await client.submitMeeting(wav: wav, title: "Meeting \(stamp)",
+                                                        microphone: Self.microphoneTrack(for: wavURL))
                 vlog("meeting submitted: job \(id)")
                 await MainActor.run { self.overlay.hide(); self.mainWC.show(client: self.client, section: .meetings) }
             } catch {

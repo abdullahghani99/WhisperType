@@ -508,7 +508,41 @@ def _transcribe_local_segments(audio: bytes, language: str | None, translate: bo
     return res.get("text", "").strip(), segs
 
 
-def _label_transcript(segments, turns) -> tuple[str, dict]:
+def _owner_flags(segments, mixed_wav: bytes, mic_pcm: bytes) -> list[bool]:
+    """Which ASR segments are the recording's owner speaking. The client's mix is
+    system + microphone, and call audio never carries the owner's own voice, so
+    the system track is mix - mic, and a loud mic over quiet call audio is the
+    owner. Voice clustering alone gave ~25 of the owner's lines to a caller."""
+    none = [False] * len(segments)
+    try:
+        with wave.open(io.BytesIO(mixed_wav)) as w:
+            if (w.getframerate(), w.getnchannels(), w.getsampwidth()) != (16000, 1, 2):
+                return none
+            mixed = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(np.float64)
+    except (wave.Error, EOFError):
+        return none
+    mic = np.frombuffer(mic_pcm[:len(mic_pcm) // 2 * 2], dtype="<i2").astype(np.float64)
+    frame = 1600                                   # 100 ms at 16 kHz
+    n = min(len(mixed), len(mic)) // frame
+    if n == 0:
+        return none
+    mic = mic[:n * frame].reshape(n, frame)
+    system = mixed[:n * frame].reshape(n, frame) - mic
+    m, sys_ = np.sqrt((mic ** 2).mean(axis=1)), np.sqrt((system ** 2).mean(axis=1))
+    # Thresholds measured on a real AirPods call: mic noise floor ~43, speech
+    # 1000+; call audio silence <50, speech 650-7000.
+    owner = (m >= max(300.0, 4 * float(np.median(m)))) & (20 * np.log10((m + 1) / (sys_ + 1)) >= 6)
+    other = (sys_ >= 300) & ~owner
+    flags = []
+    for start, end, _ in segments:
+        a = int(start * 10)
+        b = max(a + 1, int(np.ceil(end * 10)))
+        mine, theirs = int(owner[a:b].sum()), int(other[a:b].sum())
+        flags.append(mine >= 3 and mine > theirs)
+    return flags
+
+
+def _label_transcript(segments, turns, owner=None) -> tuple[str, dict]:
     """Merge Whisper segments with pyannote speaker turns → a speaker-labeled
     transcript. Each segment gets the speaker whose turn overlaps it most.
     Consecutive segments from the same speaker are grouped under one label.
@@ -517,7 +551,10 @@ def _label_transcript(segments, turns) -> tuple[str, dict]:
     the "Speaker N" the human actually SEES. This mapping is the single source of
     truth for speaker identity: numbering the speakers anywhere else (over turns,
     or over the embeddings dict) produces a DIFFERENT numbering, and renaming a
-    speaker would then persist the wrong person's voiceprint."""
+    speaker would then persist the wrong person's voiceprint.
+
+    `owner` is (flags, name) from _owner_flags: flagged segments are the owner's
+    regardless of clustering, shown under their name."""
     if not segments:
         return "", {}
 
@@ -542,10 +579,15 @@ def _label_transcript(segments, turns) -> tuple[str, dict]:
     def flush():
         label = "Uncertain speaker" if cur_spk == uncertain else order[cur_spk]
         lines.append(f"**{label}:** " + " ".join(buf))
-    for (start, end, text) in segments:
+    owner_key = "__owner__"
+    for i, (start, end, text) in enumerate(segments):
         if not text:
             continue
-        speaker = speaker_for(start, end) or cur_spk or "SPEAKER_00"
+        if owner and owner[0][i]:
+            speaker = owner_key
+            order.setdefault(owner_key, owner[1])
+        else:
+            speaker = speaker_for(start, end) or cur_spk or "SPEAKER_00"
         if speaker != uncertain and speaker not in order:
             order[speaker] = f"Speaker {len(order) + 1}"
         if speaker != cur_spk and buf:
@@ -947,6 +989,19 @@ def _spool_path(job_id: int) -> str:
     return os.path.join(SPOOL_DIR, f"meeting-{job_id}.wav")
 
 
+def _mic_spool_path(job_id: int) -> str:
+    """The owner's own microphone track, uploaded beside the mix for attribution."""
+    return os.path.join(SPOOL_DIR, f"meeting-{job_id}.mic.pcm")
+
+
+def _drop_spool(job_id: int):
+    for path in (_spool_path(job_id), _mic_spool_path(job_id)):
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
 VOICEPRINT_THRESHOLD = float(os.environ.get("VF_VOICEPRINT_THRESHOLD", "0.75"))
 # A match must beat the runner-up by this much. Without a margin, two similar
 # voices yield a confident-looking but essentially arbitrary winner.
@@ -1258,10 +1313,7 @@ async def _run_spooled_meeting(job_id):
     row = _require_meeting(job_id)
     if row["transcript"]:
         # The essential result was committed before a restart during notes.
-        try:
-            os.unlink(_spool_path(job_id))
-        except FileNotFoundError:
-            pass
+        _drop_spool(job_id)
         await _finish_meeting(job_id, row["transcript"])
         return
     try:
@@ -1589,7 +1641,7 @@ async def _process_meeting(job_id: int, audio: bytes, language: str | None,
     HTTP request, so the result survives even if the client disconnects."""
     _inference_priority.set(10)
     try:
-        _require_meeting(job_id)
+        row = _require_meeting(job_id)
         want_diar = diarize and os.path.exists(DIARIZE_PY) and os.path.exists(DIARIZE_SCRIPT)
         t_asr = time.time()
         raw, segs, heard = "", [], False
@@ -1624,8 +1676,12 @@ async def _process_meeting(job_id: int, audio: bytes, language: str | None,
                 embeddings = {c: embeddings[c] for c in dict.fromkeys(merge.values())
                               if c in embeddings}
 
+                owner = None
+                if row.get("owner") and os.path.exists(_mic_spool_path(job_id)):
+                    with open(_mic_spool_path(job_id), "rb") as f:
+                        owner = (_owner_flags(segs, audio, f.read()), row["owner"])
                 labeled, order = _label_transcript(
-                    [(s, e, apply_vocab(txt)) for s, e, txt in segs], turns)
+                    [(s, e, apply_vocab(txt)) for s, e, txt in segs], turns, owner)
                 if labeled:
                     # `order` (raw label -> the "Speaker N" actually shown) is the
                     # ONLY enumeration used from here on. `display` tracks what
@@ -1648,7 +1704,7 @@ async def _process_meeting(job_id: int, audio: bytes, language: str | None,
                     # Pass the names voiceprints already claimed, so the LLM pass cannot
                     # hand the same person's name to a second speaker.
                     transcript, applied = await _infer(
-                        _name_speakers, labeled, set(known.values()))
+                        _name_speakers, labeled, set(known.values()) | ({owner[1]} if owner else set()))
                     _require_meeting(job_id)
                     for raw_label, shown in list(display.items()):
                         if shown in applied:
@@ -1664,10 +1720,7 @@ async def _process_meeting(job_id: int, audio: bytes, language: str | None,
         _meeting_set(job_id, status="processing", transcript=transcript, notes="",
                      notes_status="generating", speakers=speakers, asr_ms=asr_ms,
                      diar_ms=diar_ms, notes_ms=0)
-        try:
-            os.unlink(_spool_path(job_id))
-        except FileNotFoundError:
-            pass
+        _drop_spool(job_id)
         await _finish_meeting(job_id, transcript)
     except asyncio.CancelledError:
         raise
@@ -1676,7 +1729,7 @@ async def _process_meeting(job_id: int, audio: bytes, language: str | None,
         _meeting_set(job_id, status="error", error=str(error))
 
 
-def _write_meeting_spool(job_id, audio, limit=None):
+def _write_meeting_spool(job_id, audio, limit=None, path=None):
     """Disk fsync can stall; run separately from both the event loop and models."""
     temporary = None
     try:
@@ -1695,7 +1748,7 @@ def _write_meeting_spool(job_id, audio, limit=None):
                 raise HTTPException(status_code=422, detail="Empty recording")
             target.flush()
             os.fsync(target.fileno())
-        os.replace(temporary, _spool_path(job_id))
+        os.replace(temporary, path or _spool_path(job_id))
         temporary = None
         directory = os.open(SPOOL_DIR, os.O_RDONLY)
         try:
@@ -1714,6 +1767,8 @@ async def meeting(
     diarize: bool = Form(True),
     translate: bool = Form(True),   # meetings default to English output
     title: str = Form(""),
+    microphone: UploadFile | None = File(None),
+    owner: str = Form(""),
     authorization: str | None = Header(None),
 ):
     """Submit a meeting recording for ASYNC processing. Returns a job id
@@ -1731,19 +1786,24 @@ async def meeting(
         backlog = con.execute("SELECT COUNT(*) FROM meetings WHERE status IN ('accepting','processing')").fetchone()[0]
         if backlog >= int(os.environ.get("VF_MAX_PENDING_MEETINGS", "100")):
             raise HTTPException(status_code=429, detail="Meeting queue is full; retain the recording and retry later", headers={"Retry-After":"30"})
-        cur = con.execute("INSERT INTO meetings (title, status, language, diarize, translate, title_manual) "
-                          "VALUES (?, 'accepting', ?, ?, ?, ?)",
+        cur = con.execute("INSERT INTO meetings (title, status, language, diarize, translate, title_manual, owner) "
+                          "VALUES (?, 'accepting', ?, ?, ?, ?, ?)",
                           (title, language or "", int(diarize), int(translate),
-                           int(bool(title) and not re.match(r"^Meeting \d{4}-\d\d-\d\d", title))))
+                           int(bool(title) and not re.match(r"^Meeting \d{4}-\d\d-\d\d", title)),
+                           owner.strip()[:80] if microphone is not None else ""))
         job_id = cur.lastrowid
     try:
         # Starlette already spools the upload. Copy bounded chunks on the disk
         # worker instead of allocating up to a gigabyte per concurrent request.
+        # The mic track first: the main spool's existence is what makes a job resumable.
+        if microphone is not None:
+            await asyncio.to_thread(_write_meeting_spool, job_id, microphone.file, limit, _mic_spool_path(job_id))
         await asyncio.to_thread(_write_meeting_spool, job_id, file.file, limit)
         _meeting_set(job_id, status="processing")
     except HTTPException as error:
         with _db_connection() as con:
             con.execute("DELETE FROM meetings WHERE id=?", (job_id,))
+        _drop_spool(job_id)
         raise
     except Exception as error:
         _meeting_set(job_id, status="error", error=f"Audio was not accepted durably: {error}")
@@ -1844,10 +1904,7 @@ async def delete_meeting(job_id: int, authorization: str | None = Header(None)):
             await task
         except asyncio.CancelledError:
             pass
-    try:
-        os.unlink(_spool_path(job_id))
-    except FileNotFoundError:
-        pass
+    _drop_spool(job_id)
     # Voice vectors are biometric data — they must not outlive the meeting.
     _forget_meeting_embeddings(job_id)
     return {"id": job_id, "deleted": True}
@@ -2061,6 +2118,7 @@ def _init_db():
         _ensure_column("meetings", "language", "TEXT DEFAULT ''")
         _ensure_column("meetings", "diarize", "INTEGER DEFAULT 1")
         _ensure_column("meetings", "translate", "INTEGER DEFAULT 1")
+        _ensure_column("meetings", "owner", "TEXT DEFAULT ''")
         _ensure_column("voiceprints", "model", "TEXT DEFAULT ''")
         _ensure_column("voiceprints", "dims", "INTEGER DEFAULT 0")
 

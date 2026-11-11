@@ -306,6 +306,52 @@ class ReliabilityTests(unittest.TestCase):
                 self.m, '_transcribe_local', return_value=('', 0.9)):
             self.assertEqual(asyncio.run(self.m._run_asr(b'audio', 'a.wav', None))[0], '')
 
+    def owner_call(self):
+        """1 s caller, 1 s owner, 1 s caller: mix = system + mic, as the client sends it."""
+        import io, wave
+        import numpy as np
+        t = np.arange(16000) / 16000
+        voice = (3000 * np.sin(2 * np.pi * 220 * t)).astype(np.int16)
+        hiss = (np.random.default_rng(1).normal(0, 40, 16000)).astype(np.int16)
+        quiet = np.zeros(16000, np.int16)
+        system = np.concatenate([voice, quiet, voice])
+        mic = np.concatenate([hiss, voice, hiss])
+        out = io.BytesIO()
+        with wave.open(out, 'wb') as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+            w.writeframes((system + mic).astype('<i2').tobytes())
+        return out.getvalue(), mic.astype('<i2').tobytes()
+
+    def test_owner_flags_follow_the_microphone_not_the_voice_cluster(self):
+        mixed, mic = self.owner_call()
+        segs = [(0.0, 1.0, 'hello'), (1.0, 2.0, 'mine'), (2.0, 3.0, 'yours')]
+        self.assertEqual(self.m._owner_flags(segs, mixed, mic), [False, True, False])
+        self.assertEqual(self.m._owner_flags(segs, b'not a wav', mic), [False] * 3)
+
+    def test_uploaded_mic_track_names_the_owner_even_when_clustering_merges_voices(self):
+        mixed, mic = self.owner_call()
+        with patch.object(self.m, '_schedule_meeting'):
+            r = self.client.post('/meeting', files={'file': ('m.wav', mixed), 'microphone': ('mic.pcm', mic)},
+                                 data={'owner': 'Alex Ghani'})
+        n = r.json()['id']
+        self.assertTrue(Path(self.m._mic_spool_path(n)).exists())
+        self.m._WHISPER_LOCAL = True
+        self.m.DIARIZE_PY = self.m.DIARIZE_SCRIPT = __file__
+        segs = [(0.0, 1.0, 'hello'), (1.0, 2.0, 'mine'), (2.0, 3.0, 'yours')]
+        # The failure seen live: one cluster for the owner AND the caller.
+        turns = [{'start': 0.0, 'end': 3.0, 'speaker': 'SPEAKER_00'}]
+        with patch.object(self.m, '_transcribe_local_segments', return_value=('hello mine yours', segs)), \
+                patch.object(self.m, '_diarize', return_value=(turns, {})), \
+                patch.object(self.m, '_name_speakers', side_effect=lambda text, taken: (text, {})):
+            asyncio.run(self.m._run_spooled_meeting(n))
+        transcript = self.m._meeting_row(n)['transcript']
+        self.assertEqual(transcript, '**Speaker 1:** hello\n\n**Alex Ghani:** mine\n\n**Speaker 1:** yours')
+        self.assertFalse(Path(self.m._mic_spool_path(n)).exists())
+        # Without a mic track the owner is never guessed.
+        with patch.object(self.m, '_schedule_meeting'):
+            r = self.client.post('/meeting', files={'file': ('m.wav', mixed)}, data={'owner': 'Alex Ghani'})
+        self.assertEqual(self.m._meeting_row(r.json()['id'])['owner'], '')
+
     def test_notes_pending_and_manual_title_preserved(self):
         n = self.job()
         self.m._model = object()

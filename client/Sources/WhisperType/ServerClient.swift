@@ -171,7 +171,9 @@ struct ServerClient {
 
     /// Submit a meeting recording for ASYNC processing. Returns the job id
     /// immediately; poll meetings()/meeting(id) for the durable result.
-    func submitMeeting(wav: Data, title: String) async throws -> Int {
+    /// `microphone` is the recorder's own mic track (16 kHz mono s16le, same clock
+    /// as the mix). With it the server names the owner's lines by signal, not voice.
+    func submitMeeting(wav: Data, title: String, microphone: Data? = nil) async throws -> Int {
         let boundary = "vf-\(UUID().uuidString)"
         var req = URLRequest(url: baseURL.appendingPathComponent("meeting"))
         req.httpMethod = "POST"
@@ -182,9 +184,16 @@ struct ServerClient {
         req.timeoutInterval = 120   // just the upload; processing is async server-side
         var body = Data()
         func add(_ s: String) { body.append(s.data(using: .utf8)!) }
-        for (name, val) in [("title", title)] {
+        for (name, val) in [("title", title)] + (microphone == nil ? [] : [("owner", NSFullUserName())]) {
             add("--\(boundary)\r\n")
             add("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(val)\r\n")
+        }
+        if let microphone = microphone {
+            add("--\(boundary)\r\n")
+            add("Content-Disposition: form-data; name=\"microphone\"; filename=\"microphone.pcm\"\r\n")
+            add("Content-Type: application/octet-stream\r\n\r\n")
+            body.append(microphone)
+            add("\r\n")
         }
         add("--\(boundary)\r\n")
         add("Content-Disposition: form-data; name=\"file\"; filename=\"meeting.wav\"\r\n")

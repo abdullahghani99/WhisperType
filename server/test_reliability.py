@@ -293,6 +293,19 @@ class ReliabilityTests(unittest.TestCase):
             self.assertEqual(self.m._meeting_row(n)['status'], 'done')
             self.assertFalse(Path(self.m._spool_path(n)).exists())
 
+    def test_silent_local_asr_does_not_call_the_remote(self):
+        # A working local Whisper that hears nothing must report silence, not
+        # a connection error from a remote transcriber that no longer exists.
+        n = self.job()
+        self.m._WHISPER_LOCAL = True
+        with patch.object(self.m, '_transcribe_remote', side_effect=AssertionError('remote called')), patch.object(
+                self.m, '_transcribe_local_segments', return_value=('', [])):
+            asyncio.run(self.m._process_meeting(n, b'audio', None, False, True))
+        self.assertEqual(self.m._meeting_row(n)['error'], 'no speech detected')
+        with patch.object(self.m, '_transcribe_remote', side_effect=AssertionError('remote called')), patch.object(
+                self.m, '_transcribe_local', return_value=('', 0.9)):
+            self.assertEqual(asyncio.run(self.m._run_asr(b'audio', 'a.wav', None))[0], '')
+
     def test_notes_pending_and_manual_title_preserved(self):
         n = self.job()
         self.m._model = object()

@@ -1398,14 +1398,15 @@ async def _run_asr(audio: bytes, filename: str | None, language: str | None):
     the shared HTTP whisper server as fallback. Shared by /whispertype and
     /engineer."""
     t_asr = time.time()
-    raw, nsp = "", 0.0
+    raw, nsp, heard = "", 0.0, False
     if _WHISPER_LOCAL:
         try:
             raw, nsp = await _infer(_transcribe_local, audio, language)
+            heard = True   # empty text from a working Whisper means silence, not failure
         except Exception as e:  # noqa: BLE001
             log.warning("local ASR failed (%s); falling back to remote", e)
             raw, nsp = "", 0.0
-    if not raw:
+    if not heard:
         try:
             raw = await _infer(_transcribe_remote, audio, filename or "audio.wav", language)
             nsp = 0.0   # remote gives no probability → treat as speech (keep)
@@ -1591,14 +1592,15 @@ async def _process_meeting(job_id: int, audio: bytes, language: str | None,
         _require_meeting(job_id)
         want_diar = diarize and os.path.exists(DIARIZE_PY) and os.path.exists(DIARIZE_SCRIPT)
         t_asr = time.time()
-        raw, segs = "", []
+        raw, segs, heard = "", [], False
         if _WHISPER_LOCAL:
             try:
                 # Translation is independent of diarization availability.
                 raw, segs = await _infer(_transcribe_local_segments, audio, language, translate)
+                heard = True   # empty text means silence; the remote cannot hear more
             except Exception as error:
                 log.warning("meeting local ASR failed; remote fallback: %s", error)
-        if not raw:
+        if not heard:
             raw = await _infer(_transcribe_remote, audio, "meeting.wav", language, translate)
         _require_meeting(job_id)
         asr_ms = int((time.time() - t_asr) * 1000)

@@ -19,7 +19,7 @@ private final class ProbeCounter {
 }
 
 /// Live meeting recorder: captures SYSTEM audio (everyone else on the call, via
-/// ScreenCaptureKit) + your MIC (AVAudioEngine) simultaneously, mixes them into
+/// ScreenCaptureKit) + your MIC (AVCaptureSession) simultaneously, mixes them into
 /// one 16 kHz mono track, and returns a WAV for the /meeting endpoint.
 ///
 /// Requires Screen Recording permission (System Settings ▸ Privacy & Security ▸
@@ -27,10 +27,10 @@ private final class ProbeCounter {
 /// dictation path; a failure here never affects push-to-talk.
 final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var stream: SCStream?
-    private var micEngine: AVAudioEngine?
-    private var micConverter: AVAudioConverter?
-    private let out16k = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000,
-                                       channels: 1, interleaved: true)!
+    /// Input-only capture, the same path dictation uses. AVAudioEngine here got
+    /// "no samples" from AirPods and -10868 from every other mic during Teams
+    /// calls (2026-11-09..11), while SessionMicrophone carried 506/508 dictations.
+    private var micSession: SessionMicrophone?
     /// os_unfair_lock, not NSLock. appendMic runs on the real-time audio thread
     /// and shares this with the ScreenCaptureKit callback and the lifecycle
     /// paths; NSLock can leave a rendering callback waiting behind lower-priority
@@ -338,13 +338,13 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     /// changes this recovery path exists to handle. Bumping the generation first
     /// makes any in-flight callback a no-op before it can touch replaced state.
     private func tearDownMic(attempt: Int? = nil, waitForHardware: Bool = true) {
-        let detached: AVAudioEngine?? = life.detachEngine(attempt: attempt) {
-            let old = micEngine
-            micEngine = nil; micConverter = nil
+        let detached: SessionMicrophone?? = life.detachEngine(attempt: attempt) {
+            let old = micSession
+            micSession = nil
             return old
         }
         if let wrapped = detached, let old = wrapped {
-            let stop = { old.retire() }
+            let stop = { old.stop() }
             if waitForHardware { stop() }
             else { DispatchQueue.global(qos: .utility).async(execute: stop) }
         }
@@ -369,76 +369,67 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         guard life.publishAttempt(myToken, { micLive = false }) else { return }
         for dev in AudioDevices.preferredInputs() {
             // Check FIRST, every iteration. An abandoned attempt used to run on
-            // and overwrite micConverter, pendingHealth and the probe counter, and
+            // and overwrite micSession, pendingHealth and the probe counter, and
             // bump micGeneration — invalidating the replacement's own tap.
             guard life.isCurrentAttempt(myToken) else {
                 log("mic: abandoning superseded probe"); return
             }
-            let e = AVAudioEngine()
-            let input = e.inputNode
-            if let au = input.audioUnit {
-                var id = dev.id
-                let st = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
-                                              kAudioUnitScope_Global, 0, &id,
-                                              UInt32(MemoryLayout<AudioDeviceID>.size))
-                if st != noErr { log("mic: skip \(dev.name) (could not pin, err \(st))"); continue }
-            }
-            let inFormat = input.inputFormat(forBus: 0)
-            guard inFormat.channelCount > 0, inFormat.sampleRate > 0,
-                  var conv = AVAudioConverter.toMono(from: inFormat, to: out16k) else {
-                log("mic: skip \(dev.name) (invalid format)"); continue
-            }
-            guard life.isCurrentAttempt(myToken) else { e.retire(); return }
+            let mic = SessionMicrophone()
             let probe = ProbeCounter()            // one per candidate, not shared
-            guard let gen = life.newTapGeneration(forAttempt: myToken) else { e.retire(); return }
+            guard let gen = life.newTapGeneration(forAttempt: myToken) else { return }
             let health = MicHealth(startedAt: Date().timeIntervalSince1970)
             // Read the fault-injection flag ONCE, here, not on the audio thread.
             let fakeStall = Self.stallSimulationEnabled()
-            // format: nil, as in AudioRecorder: a named format that no longer matches
-            // the device aborts the app.
-            let out16k = self.out16k
-            input.installTap(onBus: 0, bufferSize: 2048, format: nil) { [weak self] buf, _ in
-                guard let self = self else { return }
-                probe.add(Int(buf.frameLength))
-                if buf.format != conv.inputFormat, let fresh = AVAudioConverter.toMono(from: buf.format, to: out16k) { conv = fresh }
-                self.appendMic(buf, gen: gen, conv: conv, health: health, fakeStall: fakeStall)
+            mic.onPCM = { [weak self] pcm in
+                probe.add(pcm.count / 2)
+                self?.appendMic(pcm, gen: gen, health: health, fakeStall: fakeStall)
             }
-            do { e.prepare(); try e.start() }
-            catch {
-                log("mic: skip \(dev.name) (engine start failed: \(error))")
+            mic.onFailure = { [weak self] message in self?.log("mic: \(dev.name) reported: \(message)") }
+            do {
+                guard try mic.start(device: dev, isCurrent: { life.isCurrentAttempt(myToken) }) else {
+                    mic.stop()
+                    guard life.isCurrentAttempt(myToken) else { return }
+                    log("mic: skip \(dev.name) (capture did not start)")
+                    AudioDevices.markSilent(uid: dev.uid); continue
+                }
+            } catch {
+                mic.stop()
+                log("mic: skip \(dev.name) (capture failed: \(error.localizedDescription))")
                 if life.isCurrentAttempt(myToken) { AudioDevices.markSilent(uid: dev.uid) }
-                e.retire(); continue
+                continue
             }
+            // A Bluetooth headset needs a moment to switch into its microphone mode.
+            let deadline = Date().addingTimeInterval(AudioDevices.isBluetooth(dev.id) ? 2.0 : 0.7)
+            while probe.value == 0 && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
 
             // Opening proves nothing, and neither does a single burst: the
             // built-in mic on this machine delivers ~0.4s of frames and then
             // stalls forever. Require delivery to still be GROWING in a second
             // window, so a device that dies after its first buffer is rejected.
-            Thread.sleep(forTimeInterval: 0.35)
             let firstWindow = probe.value
             Thread.sleep(forTimeInterval: 0.35)
             let got = probe.value
             if got == 0 || got <= firstWindow {
                 log("mic: skip \(dev.name) (\(got == 0 ? "delivered NO samples" : "stalled after \(got) frames"))")
                 if life.isCurrentAttempt(myToken) { AudioDevices.markSilent(uid: dev.uid) }
-                e.retire()
+                mic.stop()
                 continue
             }
 
             let accepted = life.publishAttempt(myToken) {
-                micEngine = e; micConverter = conv
+                micSession = mic
                 micLive = true; micStalled = false
                 micName = dev.name; lastMicUID = dev.uid; micHealth = health
             }
             guard accepted else {
-                e.retire(); return
+                mic.stop(); return
             }
             AudioDevices.markWorking(uid: dev.uid)
             log("mic: capturing from \(dev.name) (\(got) frames in probe)")
             return
         }
         guard life.publishAttempt(myToken, {
-            micEngine = nil; micConverter = nil; lastMicUID = ""
+            micSession = nil; lastMicUID = ""
             micHealth = MicHealth(startedAt: Date().timeIntervalSince1970)
         }) else { return }
         // Arm the clock anyway. Previously micHealth stayed nil when nothing was
@@ -564,32 +555,15 @@ final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     /// Runs on the real-time audio thread. Everything it needs is passed in, so
     /// it never resolves shared mutable state mid-render.
-    private func appendMic(_ buffer: AVAudioPCMBuffer,
-                           gen: Int,
-                           conv: AVAudioConverter,
-                           health: MicHealth,
-                           fakeStall: Bool) {
-        // A callback from a superseded engine must not touch anything.
+    private func appendMic(_ d: Data, gen: Int, health: MicHealth, fakeStall: Bool) {
+        // A callback from a superseded capture must not touch anything.
         guard life.isCurrentTap(gen) else { return }
 
-        let ratio = out16k.sampleRate / buffer.format.sampleRate
-        let cap = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1024
-        guard let outBuf = AVAudioPCMBuffer(pcmFormat: out16k, frameCapacity: cap) else { return }
-        var fed = false; var err: NSError?
-        conv.convert(to: outBuf, error: &err) { _, status in
-            if fed { status.pointee = .noDataNow; return nil }
-            fed = true; status.pointee = .haveData; return buffer
-        }
-        guard err == nil, let ch = outBuf.int16ChannelData else { return }
-        conv.restoreArrayGain(outBuf)
-        let n = Int(outBuf.frameLength)
         // Does this buffer carry SIGNAL, or is it zero-filled? A live mic in a
         // quiet room still has a noise floor, so all-zero means nothing is
         // getting through — the distinction the whole failure turned on.
-        var signal = false
-        for i in 0..<n where ch[0][i] != 0 { signal = true; break }
+        let signal = d.contains { $0 != 0 }
         health.observe(at: Date().timeIntervalSince1970, hasSignal: signal && !fakeStall)
-        let d = Data(bytes: ch[0], count: n * 2)
         os_unfair_lock_lock(&lockPrimitive)
         if life.isCapturing && life.isCurrentTap(gen) {
             // KEEP THE TWO TRACKS ON ONE CLOCK. mix() aligns by array index, so a

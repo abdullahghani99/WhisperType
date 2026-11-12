@@ -1437,6 +1437,25 @@ def restore_anchored_profanity(source, output):
 
 
 
+
+def restore_explicit_acceptance(source, output):
+    """Keep an explicit yes/please response when its following words survive.
+
+    Restore only an initial standalone response before a question or an explicit
+    please-go-ahead directive. Exact remainder words avoid guessing acceptance
+    from a rewritten, negated, quoted or corrected utterance.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|instead|rather|i mean|withdraw|retract)\b|\bactually[, ]+no\b|[.!?]\s*no\b', source, re.I): return output
+    response = re.match(r'^Yes,?\s+please(?P<end>[.!])\s+(?P<body>(?:is|are|was|were|do|does|did|can|could|will|would|should|have|has|what|when|where|why|how)\b.*)$', source, re.I)
+    if response and words(response['body']) == words(output):
+        return 'Yes, please' + response['end'] + ' ' + output.lstrip()
+    directive = re.match(r'^Yes,?\s+(?P<body>please (?:go ahead|proceed|continue)\b.*)$', source, re.I)
+    if directive and words(directive['body']) == words(output):
+        body = output.lstrip()
+        return 'Yes, ' + body[0].lower() + body[1:] if body else output
+    return output
+
+
 def restore_distinct_coordinated_predicate(source, output):
     """Preserve a distinct middle predicate when repeated subjects are shortened.
 
@@ -2358,6 +2377,7 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (restore_repeated_emphasis, 'repeated_emphasis'),
                          (restore_explicit_inclusive_scope, 'inclusive_scope'),
                          (restore_distinct_coordinated_predicate, 'distinct_coordinated_predicate'),
+                         (restore_explicit_acceptance, 'explicit_acceptance'),
                          (restore_explicit_quantifier_emphasis, 'quantifier_emphasis'),
                          (restore_anchored_profanity, 'anchored_profanity'),
                          (restore_continuation_statement, 'continuation_statement'),

@@ -123,3 +123,18 @@ the summary limit leave the original paragraph intact.
 This is source-grounded repair of a naming claim, not independent verification
 of speaker identity or all summary facts. Wider agreement, attribution and
 commitment-recall failures require separate full-output evaluation.
+
+## Explicit acceptance before a follow-up
+
+An initial “Yes, please” can express acceptance independently of the question
+that follows. If polishing drops it while retaining the complete question's
+words, restore that acceptance and its original sentence-ending emphasis. A
+bounded companion rule retains “Yes” before “please go ahead”, “please proceed”
+or “please continue” when the rest of the wording is aligned. Neither rule adds
+a model call or bypasses the meaning guard.
+
+Quoted text, retractions, corrections, changed wording and unrelated initial
+“Yes” clauses are outside this repair. Broader acceptance loss remains open;
+this release does not close question-boundary, uncertainty or meeting-summary
+work. Compare full outputs and legitimate cleanup, including fresh reserved
+evaluation, before promotion.

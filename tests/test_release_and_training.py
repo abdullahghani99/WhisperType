@@ -82,9 +82,14 @@ class ReleaseAndTrainingTests(unittest.TestCase):
         env = changed['EnvironmentVariables']
         for key,value in previous['EnvironmentVariables'].items(): self.assertEqual(env[key], value)
         self.assertEqual(env['VF_DB_PATH'], '/old/source/history.sqlite')
-        self.assertEqual(env['VF_POLISH_ADAPTER'], '/old/source/lora-polish')
+        self.assertNotIn('VF_POLISH_ADAPTER', env)  # Never invent an unconfigured adapter.
         self.assertEqual(changed['ProgramArguments'][-3:], ['127.0.0.1','--port','9000'])
         self.assertEqual(previous['EnvironmentVariables'].get('VF_KEEPALIVE_SEC'), None)
+
+    def test_explicit_adapter_survives_release_staging(self):
+        previous = {'EnvironmentVariables': {'VF_POLISH_ADAPTER': '/models/reviewed-adapter'}}
+        changed = release.configuration(previous, Path('/root'), Path('/root/releases/new'), {})
+        self.assertEqual(changed['EnvironmentVariables']['VF_POLISH_ADAPTER'], '/models/reviewed-adapter')
 
     def test_explicit_override_and_existing_external_storage_survive(self):
         changed = release.configuration({'EnvironmentVariables':{'VF_DB_PATH':'/data/custom.sqlite','VF_API_KEY':'old'}}, Path('/root'), Path('/root/release'), {'VF_API_KEY':'new'})

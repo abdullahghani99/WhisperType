@@ -17,15 +17,19 @@ SYSTEM = (
     "final intended version. E.g. 'I did this, oh no, I did not do it' -> 'I did "
     "not do it'; 'send it to John, sorry, to Jane' -> 'send it to Jane'.\n"
     "3. Fixing capitalization and punctuation; splitting run-on speech into "
-    "proper sentences and grouping related sentences into PARAGRAPHS (blank line "
-    "between paragraphs when the speaker shifts topic). Question mark ONLY for "
-    "genuine questions (not statements like 'meeting at 11 today').\n"
-    "4. When the speaker clearly ENUMERATES multiple distinct items or sequential "
-    "steps (e.g. 'first... then... then...', or 'we need X, Y, and Z' as separate "
-    "actions), format them as a Markdown list — numbered (1. 2. 3.) for ordered "
-    "steps, bullets ('- ') for unordered items, each on its own line. ONLY for "
-    "genuine enumerations; keep ordinary prose as prose (a passing 'first of "
-    "all...' is not a list).\n\n"
+    "proper sentences and grouping related sentences into PARAGRAPHS. A dictation "
+    "of more than three or four sentences is never one block: start a new "
+    "paragraph (blank line) wherever the speaker moves to a new topic, request or "
+    "step. Question mark ONLY for genuine questions (not statements like "
+    "'meeting at 11 today').\n"
+    "4. When the speaker names three or more parallel items, tasks, questions or "
+    "requirements — announced ('first... then... then...', 'three things') or "
+    "not ('we need X, Y and Z') — format them as a Markdown list, introduced by "
+    "the sentence that leads into it: numbered (1. 2. 3.) for ordered steps, "
+    "bullets ('- ') otherwise, each item on its own line in the speaker's words. "
+    "Ordinary prose stays prose (a passing 'first of all...' is not a list). "
+    "Paragraphs and lists only move line breaks; they never change, merge or "
+    "drop the speaker's words.\n\n"
     "Preserve EVERY point the speaker made, in their own words, meaning, order, "
     "and first-person point of view. Do NOT summarize, shorten, paraphrase, "
     "reword, add, explain, answer, or address the speaker. Apart from filler and "
@@ -40,7 +44,14 @@ SYSTEM = (
     "  \"so there are three things we need to do first fix the bug then write the "
     "tests and then deploy to production\" => \"There are three things we need to "
     "do:\\n\\n1. First, fix the bug\\n2. Then write the tests\\n3. Then deploy to "
-    "production\""
+    "production\"\n"
+    "  \"okay so the server is stable now we fixed the route issue yesterday and "
+    "nothing has broken since um for the launch next week we need the pricing sheet "
+    "the product photos and the dealer email can you check who owns each of those\" => "
+    "\"The server is stable now. We fixed the route issue yesterday and nothing has "
+    "broken since.\\n\\nFor the launch next week we need:\\n\\n- The pricing "
+    "sheet\\n- The product photos\\n- The dealer email\\n\\nCan you check who "
+    "owns each of those?\""
 )
 RULES = SYSTEM
 # The worked examples are inline in SYSTEM above. Mirrored here ONLY so
@@ -54,6 +65,8 @@ EXAMPLES = [
      "Send it to Jane by end of day."),
     ("so there are three things we need to do first fix the bug then write the tests and then deploy to production",
      "There are three things we need to do:\n\n1. First, fix the bug\n2. Then write the tests\n3. Then deploy to production"),
+    ("okay so the server is stable now we fixed the route issue yesterday and nothing has broken since um for the launch next week we need the pricing sheet the product photos and the dealer email can you check who owns each of those",
+     "The server is stable now. We fixed the route issue yesterday and nothing has broken since.\n\nFor the launch next week we need:\n\n- The pricing sheet\n- The product photos\n- The dealer email\n\nCan you check who owns each of those?"),
 ]
 
 
@@ -933,15 +946,25 @@ def project_punctuation(source, proposal, *, infer_restart_question=False):
             # The following discourse word may have been omitted by the model.
             # Both first clauses still end at this exact aligned word.
             adjacent = True
-        if adjacent and not protected_boundary and (replace_question_period or not re.search(r"[.!?؟？:;]",gap)):
-            target_end=b[j+1].start() if j+1<len(b) else len(proposal)
-            proposed_gap=proposal[b[j].end():target_end]
-            # Never transfer quotation/bracket/list syntax or alter numeric
+        proposed_gap=proposal[b[j].end():b[j+1].start() if j+1<len(b) else len(proposal)] if j is not None else ''
+        # Paragraph breaks and bullets are layout, not words: flattening them sent
+        # every rejected long dictation out as one block. They need only the word
+        # before them aligned (a paragraph usually opens with filler the model
+        # dropped), and may follow punctuation the source already has.
+        layout=re.fullmatch(r"[ \t]*([.:!?؟？]?)[ \t]*(\n\n- |\n- |\n\n)[ \t]*",proposed_gap) if i+1<len(a) else None
+        plain=re.fullmatch(r"[ \t]*([,.;:!?؟？]?)[ \t]*",gap)
+        if layout and plain and not protected_boundary:
+            kept=plain.group(1) if plain.group(1) in ('.','!','?','؟','？',':') else ''
+            boundary='?' if replace_question_period else (kept or layout.group(1))
+            if boundary or layout.group(2)!='\n\n':
+                gap=boundary+layout.group(2)
+        elif adjacent and not protected_boundary and (replace_question_period or not re.search(r"[.!?؟？:;]",gap)):
+            # Never transfer quotation/bracket syntax or alter numeric
             # separators. Only plain sentence boundaries and commas qualify.
             mark=re.fullmatch(r"\s*([,.;:!?؟？])\s*",proposed_gap)
             if mark and not (token.group().isdigit() and i+1<len(a) and a[i+1].group().isdigit()):
                 gap=('?' if replace_question_period else mark.group(1))+(' ' if i+1<len(a) else '')
-        result.append(gap);sentence_start=bool(re.search(r'[.!?؟？]\s+$',gap));cursor=end
+        result.append(gap);sentence_start=bool(re.search(r'(?:[.!?؟？]\s+|\n\n|\n- )$',gap));cursor=end
     return ''.join(result)
 
 

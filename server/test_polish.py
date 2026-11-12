@@ -853,6 +853,30 @@ class CopyeditingTests(unittest.TestCase):
         self.assertIn('https://example.com/CaseSensitive',result)
         self.assertIn('1.25',result)
         self.assertEqual(words(src,False),words(result,False))
+    def test_projection_keeps_paragraphs_and_bullets(self):
+        # Half of long dictations fall back to projection; it used to turn every
+        # paragraph break and bullet into a space, so long dictations arrived flat.
+        src=('the server is fine we fixed the route yesterday anyway for the launch we need '
+             'the pricing sheet the product photos and the dealer email')
+        proposal=('The server is fine. We fixed the route yesterday.\n\nAnyway, for the launch we need:\n\n'
+                  '- The pricing sheet\n- The product photos\n- The dealer email')
+        result=project_punctuation(src,proposal)
+        # The model dropped "and"; the source keeps it, and the bullet still lands.
+        self.assertEqual(result,'The server is fine. We fixed the route yesterday.\n\nAnyway, for the launch we need:\n\n'
+                                '- The pricing sheet\n- The product photos\n- And the dealer email')
+        # A paragraph that opens with filler the model removed keeps the filler
+        # (projection never drops a word) and still keeps the break.
+        self.assertEqual(project_punctuation('it is stable now um next we test it',
+                                             'It is stable now.\n\nNext, we test it.'),
+                         'It is stable now.\n\nUm next, we test it.')
+        # Whisper already wrote the period; the break still lands after it.
+        self.assertEqual(project_punctuation('It is stable now. Next we test it.',
+                                             'It is stable now.\n\nNext, we test it.'),
+                         'It is stable now.\n\nNext, we test it.')
+        self.assertTrue(punctuation_is_faithful(src,result))
+        # A numbered item's digit is not a source word, so it is never invented.
+        self.assertNotIn('1', project_punctuation('first fix the bug then test it',
+                                                  'First:\n\n1. Fix the bug\n2. Then test it'))
     def test_preprocessing_never_deletes_a_distinct_listed_item(self):
         # A restart-removal rule was added in v0.5.2 and reverted in v0.5.3: it
         # deleted a deliberately distinct activity, and because copyedit validates

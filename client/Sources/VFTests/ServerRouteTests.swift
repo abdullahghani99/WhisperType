@@ -7,34 +7,47 @@ import WhisperTypeKit
 final class ServerRouteTests: XCTestCase {
 
     func testAnEnvironmentOverrideWinsOverEverything() {
-        let (url, _) = ServerRoute.resolve(environment: ["VF_SERVER_URL": "http://127.0.0.1:18790"],
+        let (url, _, _) = ServerRoute.resolve(environment: ["VF_SERVER_URL": "http://127.0.0.1:18790"],
                                            stored: "tailscale")
         XCTAssertEqual(url, "http://127.0.0.1:18790")
     }
 
     func testTheOverrideIsRecognisedWhenItMatchesAKnownRoute() {
-        let (_, route) = ServerRoute.resolve(environment: ["VF_SERVER_URL": ServerRoute.tailscale.url],
+        let (_, route, _) = ServerRoute.resolve(environment: ["VF_SERVER_URL": ServerRoute.tailscale.url],
                                              stored: nil)
         XCTAssertEqual(route, .tailscale)
     }
 
     func testTheStoredChoiceIsHonoured() {
-        let (url, route) = ServerRoute.resolve(environment: [:], stored: "tailscale")
+        let (url, route, _) = ServerRoute.resolve(environment: [:], stored: "tailscale")
         XCTAssertEqual(route, .tailscale)
         XCTAssertEqual(url, "http://198.51.100.10:8790")
     }
 
-    func testWithNoChoiceItUsesTheOfficeRoute() {
-        // Office works on the LAN and, through WARP, away from it. Tailscale was
-        // the old default and is the one that failed.
-        let (url, route) = ServerRoute.resolve(environment: [:], stored: nil)
-        XCTAssertEqual(route, .office)
-        XCTAssertEqual(url, "http://192.0.2.10:8790")
+    func testWithNoChoiceTheRouteIsAutomatic() {
+        // A pinned office route broke every dictation on 2026-11-12.
+        for stored in [nil, ServerRoute.automatic, "carrier-pigeon"] {
+            let (url, route, pinned) = ServerRoute.resolve(environment: [:], stored: stored)
+            XCTAssertNil(route); XCTAssertFalse(pinned)
+            XCTAssertEqual(url, ServerRoute.tailscale.url)
+        }
     }
 
-    func testAnUnknownStoredValueDoesNotStrandTheClient() {
-        let (_, route) = ServerRoute.resolve(environment: [:], stored: "carrier-pigeon")
-        XCTAssertEqual(route, .office)
+    func testTheSelectorTakesTheFirstRouteThatAnswers() {
+        let routes = RouteSelector(candidates: ["a", "b"])
+        // The runner has no async support; block on the probe instead.
+        func probe(_ up: @escaping @Sendable (String) -> Bool) -> String {
+            final class Box: @unchecked Sendable { var value = "" }
+            let box = Box(), done = DispatchSemaphore(value: 0)
+            Task { box.value = await routes.reselect { up($0) }; done.signal() }
+            done.wait(); return box.value
+        }
+        XCTAssertEqual(probe { $0 == "b" }, "b")
+        // Back up: preference order wins again.
+        XCTAssertEqual(probe { _ in true }, "a")
+        // Nothing answers (offline): stay put rather than flap.
+        _ = probe { $0 == "b" }
+        XCTAssertEqual(probe { _ in false }, "b")
     }
 
     func testEveryRouteHasAUsableURL() {

@@ -75,6 +75,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let micMenu = NSMenu(title: "Microphone")   // one-click device switch
     /// Which route the client is currently using, for the menu checkmark.
     private var activeRoute: ServerRoute?
+    private var routeTimer: Timer?
 
     // Last dictation, so "Correct last dictation…" can teach the server a fix.
     private var lastDictationId: Int?
@@ -319,7 +320,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func setupClient() {
-        let (urlStr, route) = ServerRoute.resolve()
+        let (urlStr, route, pinned) = ServerRoute.resolve()
         activeRoute = route
         // The launch agent supplies VF_API_KEY, but only to launches it makes.
         // Reopening the app from the Dock or Spotlight starts it with no
@@ -327,7 +328,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // key" (2026-10-17). The Keychain is there for every launch path.
         let apiKey = ProcessInfo.processInfo.environment["VF_API_KEY"] ?? Self.keychainAPIKey()
         client = ServerClient(baseURL: URL(string: urlStr)!, apiKey: apiKey)
-        vlog("server url: \(urlStr)")
+        routeTimer?.invalidate(); routeTimer = nil
+        if !pinned {
+            let routes = RouteSelector(candidates: ServerRoute.automaticOrder.map(\.url))
+            client.routes = routes
+            // Re-probe in the background, so a route that went dark is left
+            // before the next dictation rather than during it.
+            let probe = {
+                Task {
+                    let before = routes.current
+                    let now = await routes.reselect(reachable: ServerClient.answers)
+                    if now != before { vlog("server route: automatic moved \(before) -> \(now)") }
+                }
+            }
+            probe()
+            routeTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in _ = probe() }
+        }
+        vlog("server url: \(pinned ? urlStr : "automatic (\(ServerRoute.automaticOrder.map(\.url).joined(separator: ", ")))")")
         vlog("api key: \(ProcessInfo.processInfo.environment["VF_API_KEY"] != nil ? "launch agent" : apiKey != nil ? "keychain" : "MISSING")")
         Task {
             // Teach the destination layer which remote-desktop client reaches the
@@ -390,6 +407,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // than something only a launchd variable can change.
         let routeItem = NSMenuItem(title: "Server route", action: nil, keyEquivalent: "")
         let routeMenu = NSMenu()
+        let auto = NSMenuItem(title: "Automatic", action: #selector(pickServerRoute(_:)), keyEquivalent: "")
+        auto.representedObject = ServerRoute.automatic
+        auto.state = activeRoute == nil ? .on : .off
+        auto.toolTip = "Uses whichever route answers, re-checked every 30 seconds"
+        routeMenu.addItem(auto)
         for option in ServerRoute.allCases {
             let entry = NSMenuItem(title: option.title, action: #selector(pickServerRoute(_:)), keyEquivalent: "")
             entry.representedObject = option.rawValue
@@ -708,22 +730,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// the one it replaced, and the speaker should learn that here rather than
     /// from a dictation that fails five minutes later.
     @objc private func pickServerRoute(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let chosen = ServerRoute(rawValue: raw) else { return }
+        guard let raw = sender.representedObject as? String else { return }
+        let chosen = ServerRoute(rawValue: raw)
         UserDefaults.standard.set(raw, forKey: ServerRoute.defaultsKey)
         setupClient()
         setupMenu()
-        vlog("server route switched to \(chosen.rawValue) (\(chosen.url))")
-        overlay.show(.message("Checking \(chosen.title)…"))
+        let title = chosen?.title ?? "Automatic"
+        vlog("server route switched to \(raw)")
+        overlay.show(.message("Checking \(title)…"))
         Task { @MainActor in
             let started = Date()
             let reachable = (try? await client.health()) != nil
             let ms = Int(Date().timeIntervalSince(started) * 1000)
             overlay.show(.message(reachable
-                ? "\(chosen.title): connected in \(ms) ms"
-                : "\(chosen.title) did not answer. Switch back if dictation fails."))
+                ? "\(title): connected in \(ms) ms"
+                : "\(title) did not answer. Switch back if dictation fails."))
             overlay.hide(after: 4)
-            vlog("route check: \(chosen.rawValue) reachable=\(reachable) in \(ms)ms")
+            vlog("route check: \(raw) reachable=\(reachable) in \(ms)ms")
         }
     }
 

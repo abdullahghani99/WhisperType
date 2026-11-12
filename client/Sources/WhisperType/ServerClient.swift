@@ -6,14 +6,43 @@ struct ServerClient {
     let baseURL: URL
     let apiKey: String?
     var session: URLSession = .shared
+    /// Automatic routing; nil when a route is pinned. Requests are built on
+    /// `baseURL` and moved onto whichever route currently answers.
+    var routes: RouteSelector? = nil
+
+    /// Does ms2 answer on this base URL within two seconds?
+    static func answers(_ base: String) async -> Bool {
+        guard let url = URL(string: base + "/health") else { return false }
+        var req = URLRequest(url: url); req.timeoutInterval = 2
+        let status = (try? await URLSession.shared.data(for: req))?.1 as? HTTPURLResponse
+        return status?.statusCode == 200
+    }
+
+    private func onRoute(_ req: URLRequest, _ base: String) -> URLRequest {
+        var moved = req
+        let prefix = baseURL.absoluteString
+        if let s = req.url?.absoluteString, s.hasPrefix(prefix) { moved.url = URL(string: base + s.dropFirst(prefix.count)) }
+        if let key = apiKey, !key.isEmpty {
+            moved.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+        return moved
+    }
 
     /// One authenticated, status-checked boundary for every client operation.
     private func request(_ original: URLRequest) async throws -> (Data, URLResponse) {
-        var req = original
-        if let key = apiKey, !key.isEmpty {
-            req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        let req = onRoute(original, routes?.current ?? baseURL.absoluteString)
+        let data: Data, response: URLResponse
+        do {
+            (data, response) = try await session.data(for: req)
+        } catch let error as URLError where routes != nil && [.cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+                                                               .networkConnectionLost, .timedOut].contains(error.code) {
+            // Retry once only if the route itself is down: the probe then moves us,
+            // so a request that merely ran slow on a live route is never resent.
+            let before = routes!.current
+            let now = await routes!.reselect(reachable: Self.answers)
+            guard now != before else { throw error }
+            (data, response) = try await session.data(for: onRoute(original, now))
         }
-        let (data, response) = try await session.data(for: req)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         guard (200..<300).contains(http.statusCode) else {
             let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"] as? String

@@ -188,8 +188,8 @@ func run(_ name: String, _ body: () -> Void) {
         run("ServerRouteTests.testAnEnvironmentOverrideWinsOverEverything") { t.testAnEnvironmentOverrideWinsOverEverything() }
         run("ServerRouteTests.testTheOverrideIsRecognisedWhenItMatchesAKnownRoute") { t.testTheOverrideIsRecognisedWhenItMatchesAKnownRoute() }
         run("ServerRouteTests.testTheStoredChoiceIsHonoured") { t.testTheStoredChoiceIsHonoured() }
-        run("ServerRouteTests.testWithNoChoiceItUsesTheOfficeRoute") { t.testWithNoChoiceItUsesTheOfficeRoute() }
-        run("ServerRouteTests.testAnUnknownStoredValueDoesNotStrandTheClient") { t.testAnUnknownStoredValueDoesNotStrandTheClient() }
+        run("ServerRouteTests.testWithNoChoiceTheRouteIsAutomatic") { t.testWithNoChoiceTheRouteIsAutomatic() }
+        run("ServerRouteTests.testTheSelectorTakesTheFirstRouteThatAnswers") { t.testTheSelectorTakesTheFirstRouteThatAnswers() }
         run("ServerRouteTests.testEveryRouteHasAUsableURL") { t.testEveryRouteHasAUsableURL() }
     }
     suite("SmokeTests") {

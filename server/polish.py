@@ -1557,6 +1557,37 @@ def restore_explicit_quantifier_emphasis(source, output):
     return output[:tokens[i].start()] + value + ' ' + output[tokens[i+1].start():]
 
 
+def restore_duration_emphasis(source, output):
+    """Retain an explicit repeated duration in one uniquely aligned clause."""
+    if re.search(r'["“”`]|\b(?:sorry|correction|instead|rather|i mean|not|never)\b', source, re.I):
+        return output
+    token = r"[^\W_]+(?:['’][^\W_]+)*"
+    src = list(re.finditer(token, source)); out = list(re.finditer(token, output))
+    a = [m[0].casefold() for m in src]; b = [m[0].casefold() for m in out]
+    pattern = r'\b(?P<prep>for|after)\s+(?P<unit>seconds|minutes|hours|days|weeks|months|years) and (?P=unit)\b'
+    matches = list(re.finditer(pattern, source, re.I))
+    if len(matches) != 1: return output
+    match = matches[0]
+    first = next(i for i, m in enumerate(src) if m.start() == match.start())
+    end = first + 4
+    left = a[max(0, first-2):first]; right = a[end:end+2]
+    if len(left) < 2 or len(right) < 2: return output
+    if sum(a[i:i+2] == left for i in range(len(a))) != 1: return output
+    if sum(a[i:i+2] == right for i in range(len(a))) != 1: return output
+    positions = []
+    for j, word in enumerate(b):
+        if word != match['unit'].casefold(): continue
+        lo = j-1 if j and b[j-1] == match['prep'].casefold() else j
+        if b[max(0,lo-2):lo] != left or b[j+1:j+3] != right: continue
+        # All anchors belong to this clause, not a new sentence or list item.
+        span = output[out[lo-2].end():out[j+2].start()]
+        if re.search(r'[.!?;:"“”`\n]', span): continue
+        positions.append(j)
+    if len(positions) != 1: return output
+    j = positions[0]
+    return output[:out[j].end()] + ' and ' + out[j][0] + output[out[j].end():]
+
+
 def restore_repeated_emphasis(source, output):
     """Restore a lost repeated intensifier using unique unchanged word anchors."""
     token = r"[^\W_]+(?:['’][^\W_]+)*"
@@ -2398,6 +2429,7 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (repair_remaining_duration, 'remaining_duration'),
                          (repair_nominal_boundaries, 'nominal_boundary'),
                          (restore_repeated_emphasis, 'repeated_emphasis'),
+                         (restore_duration_emphasis, 'duration_emphasis'),
                          (restore_explicit_inclusive_scope, 'inclusive_scope'),
                          (restore_distinct_coordinated_predicate, 'distinct_coordinated_predicate'),
                          (restore_explicit_acceptance, 'explicit_acceptance'),

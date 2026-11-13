@@ -138,3 +138,17 @@ Quoted text, retractions, corrections, changed wording and unrelated initial
 this release does not close question-boundary, uncertainty or meeting-summary
 work. Compare full outputs and legitimate cleanup, including fresh reserved
 evaluation, before promotion.
+
+## Repeated duration emphasis
+
+“Days and days” can express prolonged duration beyond a plain “days”. A bounded
+repair restores an explicit repeated plural time unit after “for” or “after”
+when the surviving clause has unique unchanged neighboring word anchors. It
+keeps the model's other accepted edits, including redundant-preposition cleanup,
+paragraphs and lists, and adds no generation call.
+
+Ordinary duplicate words remain eligible for cleanup. Quotations, corrections,
+negation, changed anchors, repeated contexts and missing context abstain. Other
+duration paraphrases and wider repetition mechanisms remain separate open work.
+Validate complete actual outputs, meaningful cleanup and fresh source-based
+nonregression before promotion; restoring words alone does not certify fluency.

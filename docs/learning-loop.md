@@ -152,3 +152,19 @@ negation, changed anchors, repeated contexts and missing context abstain. Other
 duration paraphrases and wider repetition mechanisms remain separate open work.
 Validate complete actual outputs, meaningful cleanup and fresh source-based
 nonregression before promotion; restoring words alone does not certify fluency.
+
+
+## Numbered meeting proposals and agreement
+
+The meeting notes repair follows the latest definitions of numbered agenda items
+when a speaker explicitly asks to align on one item. For an unambiguous month-end,
+month-start or mid-month date anchor in a compound agreement sentence, it can
+qualify the date proposal while preserving the separately accepted item.
+Ambiguous shared dates, hypothetical or quoted references, later approvals and
+corrections abstain. It adds no inference calls and changes neither dictation
+polishing nor capture, speaker assignment or text delivery.
+
+This is a bounded summary repair. Other conditional agreements, accepted-request
+recall, mixed speaker attribution and broader date language remain separate work.
+Evaluation compares complete notes and preserves original source evidence; a
+passing finite sample is not a claim that every meeting note is correct.

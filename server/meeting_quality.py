@@ -159,6 +159,58 @@ def ground_naming_proposal(source, summary):
     return summary
 
 
+def numbered_alignment_state(source):
+    """Read latest numbered definitions and explicit unresolved references.
+
+    Definitions supersede earlier uses of the same number. References require a
+    standalone first-person clause, including one following an explicit closure.
+    Return source positions so a caller can abstain on later disposition changes.
+    """
+    ordinals = {'first':'one', 'second':'two', 'third':'three', 'fourth':'four', 'fifth':'five'}
+    definitions = {}; reference = None
+    for index, row in enumerate(source):
+        text = row['text']
+        if re.search(r'["“”]', text): continue
+        for m in re.finditer(r'\b(first|second|third|fourth|fifth)(?: thing| point)? is (.{5,1200})', text, re.I):
+            # Do not store a proposal described only inside a hypothetical.
+            if re.search(r'\b(?:if|unless|imagine|suppose|example)\b', text[:m.start()], re.I): continue
+            definitions[ordinals[m[1].lower()]] = {'text':m[2], 'index':index}
+        for m in re.finditer(r"(?:^|[.!?]\s+|(?<!if )that['’]s not an issue\s+)(?:I want to|we (?:still )?need to) (?:align|a line) on point (?:number )?(one|two|three|four|five)\b", text, re.I):
+            tail = text[m.end():]
+            if re.search(r'\b(?:if|unless|actually|instead|rather|sorry|not)\b', tail, re.I): continue
+            reference = {'number':m[1].lower(), 'index':index, 'offset':m.end(), 'speaker':row['speaker']}
+    return definitions, reference
+
+
+def qualify_numbered_alignment(source, summary):
+    """Qualify a compound date agreement using unique chronological evidence."""
+    if re.search(r'["“”]', summary): return summary
+    definitions, ref = numbered_alignment_state(source)
+    if not ref or ref['number'] not in definitions: return summary
+    definition = definitions[ref['number']]
+    if definition['index'] > ref['index']: return summary
+    if re.search(r'\b(?:if|unless|not|never|no|said|reported|sorry|instead|rather)\b', definition['text'], re.I): return summary
+    later = [source[ref['index']]['text'][ref['offset']:]] + [x['text'] for x in source[ref['index']+1:]]
+    if any(re.search(r"\b(?:agreed|approved|aligned|confirmed|settled|accepted|withdraw|retract|actually|instead|rather|sorry)\b|not an issue|sounds good|(?:let us|let[’']s) (?:go with|do it)|(?:will|can) proceed", t, re.I) for t in later): return summary
+    months = 'January|February|March|April|May|June|July|August|September|October|November|December'
+    anchor_pattern = r'\b(?:end|beginning|middle) of (?:'+months+r')\b'
+    anchors = list(re.finditer(anchor_pattern, definition['text'], re.I))
+    if len(anchors) != 1: return summary
+    anchor = anchors[0][0]
+    if any(re.search(re.escape(anchor), x['text'], re.I) for k,x in definitions.items() if k != ref['number']): return summary
+    pattern = re.compile(r'(?P<subject>They|Both speakers|The participants) agreed to (?P<accepted>[^.!?;]+?) and (?P<proposal>set (?:a|the) new date [^.!?;]+)[.]', re.I)
+    matches = list(pattern.finditer(summary))
+    if len(matches) != 1: return summary
+    m = matches[0]
+    if len(re.findall(re.escape(anchor), m['proposal'], re.I)) != 1 or re.search(re.escape(anchor), m['accepted'], re.I): return summary
+    # A single date occurrence must not be transplanted between multiple claims.
+    if len(re.findall(re.escape(anchor), summary, re.I)) != 1: return summary
+    proposal = 'Setting' + m['proposal'][3:]
+    replacement = m['subject']+' agreed to '+m['accepted']+'. '+proposal+' remained subject to alignment on point '+ref['number']+'.'
+    repaired = summary[:m.start()]+replacement+summary[m.end():]
+    return repaired if len(repaired.split()) <= 160 else summary
+
+
 def selected_notes(source, response):
     """Render validated excerpts for commitments; keep summaries readable."""
     body = re.sub(r'^```(?:json)?\s*|\s*```$', '', response.strip())
@@ -208,7 +260,7 @@ def selected_notes(source, response):
             text=norm(excerpt)
             if not text or text in seen or (key=='summary' and text in dedicated): continue
             if key=='summary':
-                text=ground_naming_proposal(source,retain_disputed_numeric_estimate(source,restore_future_summary_attribution(source,text)))
+                text=qualify_numbered_alignment(source,ground_naming_proposal(source,retain_disputed_numeric_estimate(source,restore_future_summary_attribution(source,text))))
                 all_source=' '.join(row['speaker']+' '+row['text'] for row in source)
                 numbers=re.findall(r'(?<!\w)\d+(?:[.,]\d+)*(?:%|\b)',text)
                 source_numbers={n.replace(',','') for n in re.findall(r'(?<!\w)\d+(?:[.,]\d+)*(?:%|\b)',all_source)}

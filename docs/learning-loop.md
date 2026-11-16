@@ -168,3 +168,18 @@ This is a bounded summary repair. Other conditional agreements, accepted-request
 recall, mixed speaker attribution and broader date language remain separate work.
 Evaluation compares complete notes and preserves original source evidence; a
 passing finite sample is not a claim that every meeting note is correct.
+
+
+## Polite requests inside a run-on sentence
+
+A bounded punctuation repair separates an aligned “can/could/would/will you
+please” request from its preceding context and following “I'm/I am” aside when
+the complete request and nearby words survive. It preserves accepted comma
+cleanup and changes only sentence punctuation and initial capitalization.
+Reported or quoted wording, hypothetical and nominal clauses, corrections,
+ambiguous anchors and later explanations that the speaker is quoting rather
+than asking abstain. No extra generation call is added.
+
+This does not resolve all long dictations or reported-question boundaries.
+Track remaining mechanisms separately, and validate complete outputs rather
+than counting an added question mark alone as a quality improvement.

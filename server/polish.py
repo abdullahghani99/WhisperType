@@ -2107,6 +2107,40 @@ def repair_framed_request(source, output):
     return output
 
 
+def repair_polite_request_boundaries(source, output):
+    """Separate an aligned polite request from its following first-person aside.
+
+    Explicit reporting, hypothetical and nominal contexts abstain. The complete
+    request words and both adjacent anchors must survive; only punctuation and
+    initial capitalization change, retaining the model's other accepted cleanup.
+    """
+    if re.search(r'["“”`\n;:]|\b(?:sorry|correction|rather)\b', source + output, re.I): return output
+    if re.search(r"(?<!\w)'(?=\w)", source + output): return output
+    pattern = r"\b(?P<request>(?:can|could|would|will) you please [^.!?;:\n]{3,220}?)\s+(?P<after>I['’]m|I am)\s+"
+    matches = list(re.finditer(pattern, source, re.I))
+    if len(matches) != 1: return output
+    match = matches[0]; prefix = source[:match.start()]
+    if re.search(r'\b(?:quoting|describing|not asking|not requesting|giving an example)\b', source[match.end():], re.I): return output
+    if not prefix.strip() or re.search(r'\b(?:say|says|said|ask|asks|asked|tell|told|write|wrote|written|read|reads|explain|explained|mention|mentioned|message|instruction|quote|phrase|question|wonder|whether|if|unless|suppose|example)\b', prefix, re.I): return output
+    request = match['request']
+    if not local_question_kind(request) or re.search(r'\b(?:if|unless|whether)\b|\b(?:and|or|because|when|to|please|that)\s*$', request, re.I): return output
+    token = r"[^\W_]+(?:['’][^\W_]+)*"
+    wanted = re.findall(token, request)
+    target = r'[ ,\t]+'.join(re.escape(x) for x in wanted)
+    hits = list(re.finditer(r'\b'+target+r"[.?]\s+"+re.escape(match['after'])+r'\s+', output, re.I))
+    if len(hits) != 1: return output
+    hit = hits[0]; before = output[:hit.start()]
+    # No moved request or changed boundary anchors; a prior sentence stays prior.
+    if words(prefix)[-3:] != words(before)[-3:]: return output
+    if len(re.findall(r'\b(?:can|could|would|will) you please\b', source, re.I)) != 1: return output
+    boundary = re.search(r"[.?]\s+"+re.escape(match['after']), hit[0], re.I)
+    if boundary is None: return output
+    q = hit[0][:boundary.start()]
+    joined = before.rstrip(' ,')
+    if joined[-1:] not in '.!?': joined += '.'
+    return joined+' '+q[0].upper()+q[1:]+'? '+hit[0][boundary.start()+1:].lstrip()+output[hit.end():]
+
+
 def restore_question_before_condition(source, output):
     """Keep a topic-framed direct question and its following conditional action.
 
@@ -2449,6 +2483,7 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (restore_current_fact_after_plan_tag, 'current_fact_after_plan_tag'),
                          (repair_confirmation_manner_boundary, 'confirmation_manner'),
                          (repair_framed_request, 'framed_request'),
+                         (repair_polite_request_boundaries, 'polite_request_boundaries'),
                          (restore_descriptive_attachment, 'descriptive_attachment'),
                          (restore_excluded_group, 'excluded_group'),
                          (restore_question_before_condition, 'question_before_condition'),

@@ -2107,6 +2107,35 @@ def repair_framed_request(source, output):
     return output
 
 
+def restore_device_operating_state(source, output):
+    """Restore a dropped device-state complement in an otherwise aligned clause.
+
+    Temporal complements distinguish operating state from locative/scheduling
+    uses of on/off. Unique predicate and neighboring word anchors are required;
+    corrections, quotations and changed predicates abstain. No model call.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|rather|instead|i mean|actually)\b', source + output, re.I):
+        return output
+    if re.search(r"(?<!\w)'(?=\w)", source + output): return output
+    device = r'(?:unit|device|computer|server|machine|monitor|screen|microphone|camera|printer|console|router|light|fan|heater|pump)s?'
+    pattern = (r'\b(?P<predicate>(?:need|needs|needed|want|wants|wanted|keep|keeps|kept|leave|leaves|left) '
+               r'(?:the|this|that|these|those|my|your|our) '+device+r') '
+               r"(?P<state>on|off) (?P<tail>(?:now|today|tonight|overnight|until|while|during)\b)(?!['’])")
+    for match in re.finditer(pattern, source, re.I):
+        predicate, tail = match['predicate'], match['tail']
+        if len(re.findall(r'\b'+re.escape(predicate)+r'\b', source, re.I)) != 1: continue
+        target = r'\b'+re.escape(predicate)+r' '+re.escape(tail)+r'\b'
+        hits = list(re.finditer(target, output, re.I))
+        if len(hits) != 1: continue
+        hit = hits[0]
+        before = lambda value: [w for w in words(value) if w not in {'um', 'uh'}][-3:]
+        if before(source[:match.start()]) != before(output[:hit.start()]): continue
+        if words(source[match.end():])[:3] != words(output[hit.end():])[:3]: continue
+        # No new clause or parenthesis between the matching words.
+        output = output[:hit.start()]+hit[0][:len(predicate)]+' '+match['state']+hit[0][len(predicate):]+output[hit.end():]
+    return output
+
+
 def repair_polite_request_boundaries(source, output):
     """Separate an aligned polite request from its following first-person aside.
 
@@ -2484,6 +2513,7 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (repair_confirmation_manner_boundary, 'confirmation_manner'),
                          (repair_framed_request, 'framed_request'),
                          (repair_polite_request_boundaries, 'polite_request_boundaries'),
+                         (restore_device_operating_state, 'device_operating_state'),
                          (restore_descriptive_attachment, 'descriptive_attachment'),
                          (restore_excluded_group, 'excluded_group'),
                          (restore_question_before_condition, 'question_before_condition'),

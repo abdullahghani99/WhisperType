@@ -183,3 +183,18 @@ than asking abstain. No extra generation call is added.
 This does not resolve all long dictations or reported-question boundaries.
 Track remaining mechanisms separately, and validate complete outputs rather
 than counting an added question mark alone as a quality improvement.
+
+## Device operating-state complements
+
+An explicitly requested device state can be lost when a model shortens a
+sentence. A bounded repair retains an omitted “on” or “off” after an unchanged
+need, want, keep or leave predicate and before an aligned temporal complement.
+The predicate and neighboring word anchors must be unique and unchanged.
+Locations, calendar-day attachments, quotations, corrections and changed
+predicates abstain. Accepted filler and repeat cleanup stays intact; the repair
+adds no generation call and still passes the existing meaning checks.
+
+This covers aligned operating-state omissions only. It does not establish
+complete predicate preservation or close broader punctuation, uncertainty,
+emphasis, recognition or meeting repairs. Actual complete-output comparisons
+and independent reserved evaluation remain required for promotion.

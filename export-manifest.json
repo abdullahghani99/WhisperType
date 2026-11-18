@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "a54e5fb04a60fd5a6204b3a32a5291ea7354bdc7e20cb7c6246ae63db0fcee7a",
+    "VERSION": "55201ca1becb45e39fefa0fd4dba6411fddf25ed6531721810d1885d0753236d",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/AudioUploadTests.swift": "1bd8f3580878381507e4d23ede7f5ff16b90d7fc1ff05f1adf068b7c5298328e",
@@ -73,7 +73,7 @@
     "docs/DICTATION-REPAIR.md": "55f1615670520aa09bcbcc9cff953ad8d672e86883adcdf80f2b86ffce44a4a2",
     "docs/OPERATIONS.md": "65128c46d1a09519ef4bc065642a344b17da75e4dba46f2ced0a9c4b052195aa",
     "docs/SETUP.md": "6bbd0153f9ac6fe01e2deb8120d6f6bfdf774719bd058602c9551906ba503e19",
-    "docs/learning-loop.md": "f77636914682f99e18720a5b395d2d0df0c13f4936dc8e306e4694efc763a999",
+    "docs/learning-loop.md": "a36ba9a93a1c9f85a298374bdf8d5ce6f2e6d1db463ff25b69ab14e6787d9828",
     "remote-agent/Package.swift": "ba75109e10980531850f84dbfc097c2159489eff727561a6ddcd1b68d48d0058",
     "remote-agent/Sources/vfinsert/AgentProtocol.swift": "188d292bea7548735020182a99c9b5354565221cec92a50e9d4f1b91870861ab",
     "remote-agent/Sources/vfinsert/CaptureDestination.swift": "b1e711b6fadd1af392d86336d56127b352fc55f5f1e0b15e6515e88aba3ac07f",
@@ -110,7 +110,7 @@
     "server/inference_worker.py": "5b3f43b88c2abedc25cfd6d3575aea819b0650aa92a28ce8ce24373a43cc4525",
     "server/learning.py": "d9f1b5e1060d1581145ec1895a26fd45a396fff5e7b4896ebe47aa4eed8c8b56",
     "server/meeting_quality.py": "f285ac74f895dcb35aba5aeaab5880be37fb6ba8324a174d8f1271577d79f05a",
-    "server/polish.py": "b6572485192be1c18caa0edc49e63ca454523be882a9c1f6c188d541f045b986",
+    "server/polish.py": "4f0b477886a4e3b361e62637024e843f826b2e89e24de95a76749eb097a6052d",
     "server/requirements-diarize-lock.txt": "0634e2a6fd432ff6ae82b3cf7d045dcb963f07b5fea0599f9a85e3f18c805f15",
     "server/requirements-lock.txt": "52f6c853921d29a55dfebcaea9e77b5ab99f92ccea7baf0a92b31b0132af99ff",
     "server/requirements.txt": "bb12900b14f541ac611c731cd4fa89f5f1cbfc91514b1f17009929746378c394",
@@ -122,6 +122,7 @@
     "server/test_device_state.py": "6ca21e0782f1646f9270bf3ded5df4bf675507a6e392644a4371fa58da2f2e3f",
     "server/test_diarize_recovery.py": "2bc0694a35ce0c58bed9c0ba0787a5fdb6f5e08c078a516a0204f54d0fe16dbf",
     "server/test_duration_emphasis.py": "91f6b94b539957376f4716f2d35ff3ee121e4b832921a82be9d79392a0bca2b5",
+    "server/test_emphasis_chain.py": "37fc8c072dfeac7a0279d90d4a1bd8ea78137dddfaf8a5c3b44472c9ae70a3f9",
     "server/test_fragment.py": "e1b7eebb6c353acee33a0bfe9aa9dcdd0ec6b20b48c3b13ebaa434bf5e9fd253",
     "server/test_inclusive_scope.py": "ac2ad937f8c3a769cacf8434b8c48821a379b17d1ca4fae78e6494f289fba3c0",
     "server/test_learning.py": "e999006ff099bcdebdcf01fb05987d86cfad887fe08b4e3a710d0767fa3fc23d",

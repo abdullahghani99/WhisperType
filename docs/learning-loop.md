@@ -198,3 +198,15 @@ This covers aligned operating-state omissions only. It does not establish
 complete predicate preservation or close broader punctuation, uncertainty,
 emphasis, recognition or meeting repairs. Actual complete-output comparisons
 and independent reserved evaluation remain required for promotion.
+
+## Coordinated repetition alignment
+
+Repeated “over and over” or “tons and tons” phrases are aligned as complete
+runs. A partial pair match could previously insert another repetition into an
+already preserved longer run. The repair now preserves the source run under
+unique unchanged neighboring words and leaves aligned equal runs unchanged.
+Accepted cleanup and rephrased emphasis outside that alignment remain intact.
+
+Quotes, explicit corrections, sentence-boundary changes and duplicate ambiguous
+phrases abstain. This repairs a bounded repetition mechanism; broader adverbial
+emphasis, uncertainty, punctuation and meeting quality remain separate work.

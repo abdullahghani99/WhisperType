@@ -2373,15 +2373,36 @@ def restore_aligned_nuance(source, output):
     """
     if re.search(r'["“”`]|\b(?:sorry|correction|rather|i mean)\b', source, re.I): return output
     token = r"[^\W_]+(?:['’][^\W_]+)*"
-    for match in re.finditer(r'\b(?P<word>tons|lots|more|again|over) and (?P=word)\b', source, re.I):
-        before = words(source[:match.start()])[-2:]; after = words(source[match.end():])[:2]
-        if not before or not after: continue
-        tokens = list(re.finditer(token, output)); values = [m[0].casefold() for m in tokens]
-        positions = [i for i,v in enumerate(values) if v == match['word'].casefold()
-                     and values[max(0,i-len(before)):i] == before and values[i+1:i+1+len(after)] == after]
-        if len(positions) != 1 or len(re.findall(re.escape(match[0]),source,re.I)) != 1: continue
-        hit = tokens[positions[0]]
-        output = output[:hit.start()] + match[0] + output[hit.end():]
+    # Match maximal coordinated runs. Matching only the first pair of a
+    # longer run can mistake a retained repetition for a missing one and grow
+    # the phrase on every pass.
+    pattern = r'\b(?P<word>tons|lots|more|again|over)(?: and (?P=word))+\b'
+    for match in re.finditer(pattern, source, re.I):
+        before = words(source[:match.start()])[-2:]
+        after = words(source[match.end():])[:2]
+        if not before or not after or re.search(r'["“”`]', output): continue
+        if len(re.findall(re.escape(match[0]), source, re.I)) != 1: continue
+        if re.search(r"(?<!\w)'(?=\w)|\b(?:instead|actually|scratch that|take that back)\b", source + output, re.I): continue
+        src_left = list(re.finditer(token, source[:match.start()]))
+        src_right = list(re.finditer(token, source[match.end():]))
+        source_span = source[src_left[-len(before)].start():match.end()+src_right[len(after)-1].end()]
+        if re.search(r'[.!?;:"“”`\n]', source_span): continue
+        target = r'\b'+re.escape(match['word'])+r'(?: and '+re.escape(match['word'])+r')*\b'
+        hits = []
+        for hit in re.finditer(target, output, re.I):
+            left = list(re.finditer(token, output[:hit.start()]))
+            right = list(re.finditer(token, output[hit.end():]))
+            if words(output[:hit.start()])[-len(before):] != before: continue
+            if words(output[hit.end():])[:len(after)] != after: continue
+            if len(after) == 1 and len(right) != 1: continue
+            lo = left[-len(before)].start(); hi = hit.end()+right[len(after)-1].end()
+            if re.search(r'[.!?;:"“”`\n]', output[lo:hi]): continue
+            hits.append(hit)
+        if len(hits) != 1: continue
+        hit = hits[0]
+        if words(hit[0]) == words(match[0]): continue
+        replacement = hit[0][0]+match[0][1:]
+        output = output[:hit.start()] + replacement + output[hit.end():]
     for match in re.finditer(r'(?P<anchor>\b\w+ \w+ \w+),\s*right\?\s*(?P<next>\w+(?: \w+){0,2})?', source, re.I):
         anchor = match['anchor']; following = match['next'] or ''
         if len(re.findall(re.escape(anchor), source, re.I)) != 1: continue

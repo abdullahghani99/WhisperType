@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "55201ca1becb45e39fefa0fd4dba6411fddf25ed6531721810d1885d0753236d",
+    "VERSION": "729c06db3931eb7198f4a518992cae692668e7d4c6f519ef1034edf1805b1820",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/AudioUploadTests.swift": "1bd8f3580878381507e4d23ede7f5ff16b90d7fc1ff05f1adf068b7c5298328e",
@@ -105,7 +105,7 @@
     "scripts/test_end_to_end.sh": "2a65b7fa3305a3a8334b1b55b0566fad3626e3b5ec80cf775715ca96f29f5841",
     "scripts/test_native_microphone_pcm.sh": "d67d836ec44cfe6de0ae39b3f4073d9cc696eeaffb05525553d1dd8652336fb5",
     "scripts/test_polish_report.py": "ee8d4299209f2b6bf5cb48ac2f85c094a1110fe0e9981611efb5270e313d31e6",
-    "server/deploy_release.py": "b2be7d860556c26d08adc047fbb84469bbe6277505392344bb0fbdc997edf3dc",
+    "server/deploy_release.py": "e3bb7ede26a401bec75978445250fa60930905f0a5a1d19d55557995555468ec",
     "server/diarize.py": "370b671eb1143ff5d817ac387c6c22c834b4cae2aff770179562aba79b25479a",
     "server/inference_worker.py": "5b3f43b88c2abedc25cfd6d3575aea819b0650aa92a28ce8ce24373a43cc4525",
     "server/learning.py": "d9f1b5e1060d1581145ec1895a26fd45a396fff5e7b4896ebe47aa4eed8c8b56",
@@ -119,6 +119,7 @@
     "server/test_continuous_learning.py": "a3d6dc4db55fe0d862895a28fae1a1cc1e5c0900a087dfa5832b3c2b05e57826",
     "server/test_coordinated_predicate.py": "64331fdbe426cc925d2b81729b700ab63de108156b6f59f810b08d793626af96",
     "server/test_current_fact.py": "d05924e0618c6c55df80810dbe2e1fdeabeef24e7ea2c679a718060e3b02290a",
+    "server/test_deploy_release.py": "e0c6b3d69a8d56973059f7e4c9ca22bf21fd955cff8dae745c90c69ee28ab0af",
     "server/test_device_state.py": "6ca21e0782f1646f9270bf3ded5df4bf675507a6e392644a4371fa58da2f2e3f",
     "server/test_diarize_recovery.py": "2bc0694a35ce0c58bed9c0ba0787a5fdb6f5e08c078a516a0204f54d0fe16dbf",
     "server/test_duration_emphasis.py": "91f6b94b539957376f4716f2d35ff3ee121e4b832921a82be9d79392a0bca2b5",

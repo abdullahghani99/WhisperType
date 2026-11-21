@@ -55,6 +55,26 @@ def atomic_write(path, data):
     finally:
         temporary.unlink(missing_ok=True)
 
+def prune(releases, current, keep=3):
+    """Keep `current` plus the newest activated releases up to `keep`; remove the rest.
+
+    Each activated release holds a full copy of the dictation database, so 80 of them filled
+    467 GB. Staged-but-never-activated releases older than `current` go too; newer ones stay,
+    because someone may be about to activate them.
+    """
+    def activated_at(r):
+        marks = [r / 'before-activation.sqlite', r / 'previous-launch-agent.plist']
+        return max((m.stat().st_mtime for m in marks if m.exists()), default=0.0)
+    def created(r):
+        manifest = r / 'release-manifest.json'
+        return (manifest if manifest.exists() else r).stat().st_mtime
+    others = [r for r in releases.iterdir() if r.is_dir() and r != current]
+    active = sorted((r for r in others if activated_at(r)), key=activated_at, reverse=True)
+    kept = set(active[:keep - 1])
+    removed = sorted((r for r in others if r not in kept and created(r) <= created(current)), key=lambda r: r.name)
+    for r in removed: shutil.rmtree(r)
+    return [r.name for r in removed]
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
@@ -114,10 +134,12 @@ def main():
                 with urllib.request.urlopen('http://127.0.0.1:' + port + '/health', timeout=3) as response:
                     health = json.load(response)
                     if health.get('status') == 'ok' and health.get('release') == release.name:
-                        print(json.dumps({'activated': True, 'release': str(release)})); return
+                        print(json.dumps({'activated': True, 'release': str(release)}), flush=True)
+                        break
             except (OSError, ValueError): pass
             time.sleep(2)
-        raise RuntimeError('New service did not become healthy')
+        else:
+            raise RuntimeError('New service did not become healthy')
     except BaseException:
         subprocess.run(['launchctl', 'bootout', domain, str(plist)], capture_output=True)
         if previous_bytes:
@@ -127,5 +149,8 @@ def main():
         # Never overwrite a database containing new user writes during rollback.
         # Additive migrations remain compatible; the snapshot is for manual recovery.
         raise
+    # Outside the try: a pruning failure must never roll back a healthy release.
+    try: print(json.dumps({'pruned': prune(release.parent, release)}))
+    except OSError as error: print(json.dumps({'prune_error': str(error)}))
 
 if __name__ == '__main__': main()

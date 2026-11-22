@@ -210,3 +210,19 @@ Accepted cleanup and rephrased emphasis outside that alignment remain intact.
 Quotes, explicit corrections, sentence-boundary changes and duplicate ambiguous
 phrases abstain. This repairs a bounded repetition mechanism; broader adverbial
 emphasis, uncertainty, punctuation and meeting quality remain separate work.
+
+
+## Direct deletion instructions in meeting notes
+
+A concise summary can omit a brief instruction from a different topic. A bounded
+source-excerpt repair retains an omitted direct deletion hold, its speaker label
+and an adjacent explanation. A short interrupted causal continuation is marked
+with an ellipsis; wording from another speaker is never joined into that quote.
+The excerpt appears under Instructions stated, separate from accepted tasks
+and collective decisions. It does not infer the object of an unfinished reference.
+
+Quoted, hypothetical, historical, retracted and ambiguous instructions abstain.
+Existing summaries, other sections and model calls remain unchanged. This closes
+only the tested direct-deletion scope. Wider cross-topic recall, recognition,
+speaker identity and final-disposition interpretation remain separate work and
+require complete-output comparisons and fresh independent meeting evaluation.

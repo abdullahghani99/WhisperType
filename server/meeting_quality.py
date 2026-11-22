@@ -211,6 +211,53 @@ def qualify_numbered_alignment(source, summary):
     return repaired if len(repaired.split()) <= 160 else summary
 
 
+def retained_deletion_instructions(source, rendered):
+    """Quote omitted direct deletion holds without inventing an owner or object.
+
+    A short same-speaker continuation can retain the reason for the hold.
+    Ellipses mark an interrupted turn rather than silently joining speakers.
+    Ambiguous framing or later disposition leaves the existing notes alone.
+    """
+    direct = re.compile(r"^(?:Please,? )?(?:Do not|Don['’]t|Never) (?:delete|erase|purge|wipe|destroy)\b", re.I)
+    framing = re.compile(r"\b(?:if|unless|suppose|imagine|example|hypothetical|quote[ds]?|said|says|role.play|pretend)\b|[\"“”]", re.I)
+    result = []
+    for index, row in enumerate(source):
+        text = row['text']
+        if not row['speaker'] or not direct.match(text) or '?' in text or framing.search(text):
+            continue
+        # A prior speaker can establish hypothetical framing too.
+        before = source[max(0, index-3):index]
+        if any(framing.search(x['text']) or re.search(r'\b(?:reading|read aloud|manual|yesterday|previously|formerly|last week|used to)\b', x['text'], re.I) for x in before): continue
+        following = source[index+1:]
+        if any(re.search(r"\b(?:this|that|it) (?:is|was) (?:only |just )?(?:an? )?(?:example|quotation|role.play)|\bnot (?:a |an? actual |a real )?instruction\b", x['text'], re.I) for x in following[:4]):
+            continue
+        # Do not reassert a withdrawn hold or one whose prerequisite was met.
+        later = ' '.join(x['text'] for x in following)
+        if re.search(r"\b(?:withdraw|retract|cancel|override|no longer)\b|\b(?:approve[ds]?|allow|can|may|will|go ahead|proceed|instead|actually)\b[^.!?]{0,80}\b(?:delet\w*|eras\w*|purg\w*|wip\w*|destroy\w*)\b|\b(?:audit|analysis|review|assessment)\b[^.!?]{0,50}\b(?:complete[ds]?|finished|passed)\b", later, re.I):
+            continue
+        end = index+1
+        while end < len(source) and source[end]['speaker'] == row['speaker']:
+            text += ' '+source[end]['text']; end += 1
+        # Retain a tightly adjacent causal continuation across a short interjection.
+        if text.endswith(',') and end+1 < len(source):
+            interruption, continuation = source[end:end+2]
+            if (len(interruption['text'].split()) <= 8 and not framing.search(interruption['text'])
+                    and continuation['speaker'] == row['speaker']
+                    and re.match(r'^(?:so|because|until)\b', continuation['text'], re.I)):
+                text += ' … '+continuation['text']
+        if not text.endswith(('.', '!')) or len(text.split()) > 65 or framing.search(text): continue
+        # Existing exact instructions need no duplicate quote. Paraphrase
+        # equivalence is deliberately not guessed from a shared deletion word.
+        def normalized(value):
+            value = re.sub(r"\b(?:don['’]t|do not|not to)\b", 'not', value.casefold())
+            value = re.sub(r'\b(?:advises?|advised) against deleting\b', 'not delete', value)
+            return re.sub(r'\W+', ' ', value).strip()
+        if normalized(row['text']) in normalized(rendered): continue
+        quote = row['speaker']+': '+text
+        if quote not in result: result.append(quote)
+    return result[:3]
+
+
 def selected_notes(source, response):
     """Render validated excerpts for commitments; keep summaries readable."""
     body = re.sub(r'^```(?:json)?\s*|\s*```$', '', response.strip())
@@ -320,6 +367,9 @@ def selected_notes(source, response):
                 lines=[old for old in lines if not (line.startswith(old+' ') and old.endswith(('.', '!', '?')))]
             lines.append(line);seen.add(text)
         if lines:output.append('**'+heading+':**\n'+'\n'.join('- '+line for line in lines))
+    instructions = retained_deletion_instructions(source, '\n\n'.join(output))
+    if instructions:
+        output.append('**Instructions stated:**\n'+'\n'.join('- '+line for line in instructions))
     if not output:raise ValueError('No supported notes selected; transcript retained')
     return '\n\n'.join(output)
 

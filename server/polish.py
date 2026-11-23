@@ -2487,6 +2487,33 @@ def restore_excluded_group(source, output):
             output = output[:start] + match[0] + output[hit.end():]
     return output
 
+def repair_numeric_rating_punctuation(source, output):
+    """Keep a uniquely aligned, explicitly framed rating in one phrase.
+
+    Recover only interior punctuation, never a rating's numbers or relation.
+    Existing source boundaries, quotations, lists and changed wording abstain.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|rather|instead|i mean)\b', source+output, re.I):
+        return output
+    pattern = r'\b(?P<frame>a full|a perfect|score of|rating of) (?P<rating>(?P<n>\d{1,3}) (?P<relation>on|out of) (?P<d>\d{1,3}))\b(?![.,]\d)'
+    for match in re.finditer(pattern, source, re.I):
+        if not 0 <= int(match['n']) <= int(match['d']) <= 100 or int(match['d']) == 0:
+            continue
+        if re.match(r'\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\b', source[match.end():], re.I):
+            continue
+        if len(re.findall(re.escape(match[0]), source, re.I)) != 1: continue
+        relation = r'[,.!?;:]?[ \t]+'.join(re.escape(x) for x in match['relation'].split())
+        target = (r'\b'+re.escape(match['frame'])+r'[ \t]+(?P<rating>'
+                  +re.escape(match['n'])+r'[,.!?;:]?[ \t]+'
+                  +relation+r'[,.!?;:]?[ \t]+'+re.escape(match['d'])+r')\b(?![.,]\d)')
+        hits = list(re.finditer(target, output, re.I))
+        if len(hits) != 1: continue
+        hit = hits[0]
+        if not re.search(r'[,.!?;:]', hit['rating']): continue
+        output = output[:hit.start('rating')] + match['rating'] + output[hit.end('rating'):]
+    return output
+
+
 def copyedit(text, generate, examples=(), known_terms=()):
     output, diagnostics = _copyedit(text, generate, examples, known_terms)
     source = clean_stutters(text)
@@ -2544,7 +2571,8 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (restore_standalone_confirmation, 'standalone_confirmation'),
                          (remove_stranded_determiner_restart, 'determiner_restart'),
                          (repair_topic_question_frame, 'topic_question_frame'),
-                         (restore_statement_after_question, 'statement_after_question')]:
+                         (restore_statement_after_question, 'statement_after_question'),
+                         (repair_numeric_rating_punctuation, 'numeric_rating_punctuation')]:
         candidate = repair(text if repair is remove_stranded_filler_comma else source, output)
         reason = rejection_reason(source, candidate, known_terms) if candidate != output else None
         if candidate != output and reason == 'content_or_order' and repair is repair_conditional_restart:

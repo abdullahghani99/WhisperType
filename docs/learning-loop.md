@@ -226,3 +226,14 @@ Existing summaries, other sections and model calls remain unchanged. This closes
 only the tested direct-deletion scope. Wider cross-topic recall, recognition,
 speaker identity and final-disposition interpretation remain separate work and
 require complete-output comparisons and fresh independent meeting evaluation.
+
+
+## Punctuation inside explicit numeric ratings
+
+Keep a uniquely aligned phrase such as “a full 9 on 10” intact when punctuation
+recovery inserts a comma or sentence break inside it. This bounded repair changes
+only interior punctuation with unchanged numeric values and relation words. It
+preserves neighboring sentences, questions and accepted cleanup, with no extra
+model call. Changed wording, dates, decimal denominators, quotations, corrections,
+repeated ambiguous anchors and list boundaries abstain. Broader numeric references
+and question boundaries still require their own evidence and release gates.

@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "0806441305546617784d710aaf8653b6e02b7e66c9a29e702da5b2aa02bb07ed",
+    "VERSION": "2baa53be5696b54d059cc20a252d16eaa5c14c7b7bf423485d8232db301af84f",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/AudioUploadTests.swift": "1bd8f3580878381507e4d23ede7f5ff16b90d7fc1ff05f1adf068b7c5298328e",
@@ -73,7 +73,7 @@
     "docs/DICTATION-REPAIR.md": "55f1615670520aa09bcbcc9cff953ad8d672e86883adcdf80f2b86ffce44a4a2",
     "docs/OPERATIONS.md": "65128c46d1a09519ef4bc065642a344b17da75e4dba46f2ced0a9c4b052195aa",
     "docs/SETUP.md": "6bbd0153f9ac6fe01e2deb8120d6f6bfdf774719bd058602c9551906ba503e19",
-    "docs/learning-loop.md": "83a365097756fe402304e206b96ae0fbe18a50e15781aef2c11ca183d936f782",
+    "docs/learning-loop.md": "6a2ecc95a9c0ed800e842f08c4e92e12a466ba89464249f4d68dc15c34aa7274",
     "remote-agent/Package.swift": "ba75109e10980531850f84dbfc097c2159489eff727561a6ddcd1b68d48d0058",
     "remote-agent/Sources/vfinsert/AgentProtocol.swift": "188d292bea7548735020182a99c9b5354565221cec92a50e9d4f1b91870861ab",
     "remote-agent/Sources/vfinsert/CaptureDestination.swift": "b1e711b6fadd1af392d86336d56127b352fc55f5f1e0b15e6515e88aba3ac07f",
@@ -110,7 +110,7 @@
     "server/inference_worker.py": "5b3f43b88c2abedc25cfd6d3575aea819b0650aa92a28ce8ce24373a43cc4525",
     "server/learning.py": "d9f1b5e1060d1581145ec1895a26fd45a396fff5e7b4896ebe47aa4eed8c8b56",
     "server/meeting_quality.py": "c3afdc6081e91150045e307e5646078a1050aa8e42fe2ac3859f333c5f04b282",
-    "server/polish.py": "4f0b477886a4e3b361e62637024e843f826b2e89e24de95a76749eb097a6052d",
+    "server/polish.py": "71fa70fe641cde76fc2f5b10a1013bb5140939d435c1e8138202d2b511c2f2d5",
     "server/requirements-diarize-lock.txt": "0634e2a6fd432ff6ae82b3cf7d045dcb963f07b5fea0599f9a85e3f18c805f15",
     "server/requirements-lock.txt": "52f6c853921d29a55dfebcaea9e77b5ab99f92ccea7baf0a92b31b0132af99ff",
     "server/requirements.txt": "bb12900b14f541ac611c731cd4fa89f5f1cbfc91514b1f17009929746378c394",
@@ -131,6 +131,7 @@
     "server/test_meeting_quality.py": "f5eadf8fa7f9f99c88bd0660d7a7c887fdbe6bdfa6f24fb42ece4d1654ffbc04",
     "server/test_naming_proposal.py": "c1194b246f94a504f3a5baed2fc01e7a107c5dbfa5ba0122a33af87913ac79e8",
     "server/test_numbered_alignment.py": "2d75dba109684081df8a9bd30c2b76422e5ca0705375271ce101a8a5f02253a3",
+    "server/test_numeric_rating.py": "02a46051fbfd440d3256574187e0afe794fb885aa0e0af3728d1854ed93bd12f",
     "server/test_polish.py": "4ff9865e160bf2b1ef09d269d6f371b0b92bde0508c7be922d219094a3d01ed8",
     "server/test_polite_boundary.py": "178283493211185b218f1e6c2158a29b0ff9eeded5be29cb79457792b836c08c",
     "server/test_reliability.py": "ed0ebbf599b7b16bf146a603e4e0fc84221d28af7112df4655df0bb6c0f48c73",

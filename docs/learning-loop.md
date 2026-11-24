@@ -237,3 +237,18 @@ preserves neighboring sentences, questions and accepted cleanup, with no extra
 model call. Changed wording, dates, decimal denominators, quotations, corrections,
 repeated ambiguous anchors and list boundaries abstain. Broader numeric references
 and question boundaries still require their own evidence and release gates.
+
+
+## Coordinated update topics
+
+An opening update question can lose its second topic during cleanup. A bounded
+repair restores a distinct omitted “and on” topic when the complete first-topic
+question and following sentence anchors remain unchanged. It retains accepted
+cleanup elsewhere and adds no model call. Shared-preposition cleanup, repeated
+topics, quotes, corrections, withdrawals, conditional scope, changed anchors and
+topics already present elsewhere abstain. Existing meaning validation still runs.
+
+This covers exact topic alignment only. Rewritten first topics and separately
+omitted questions remain open mechanisms. Compare complete actual outputs and
+fresh source-based nonregression before promotion; synthetic checks alone do not
+establish a real dictation-quality improvement.

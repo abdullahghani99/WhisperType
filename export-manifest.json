@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "2baa53be5696b54d059cc20a252d16eaa5c14c7b7bf423485d8232db301af84f",
+    "VERSION": "1d46ee6d5897a090681bdf0b401826c48c4605a2071275053173eab7d30c0113",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/AudioUploadTests.swift": "1bd8f3580878381507e4d23ede7f5ff16b90d7fc1ff05f1adf068b7c5298328e",
@@ -73,7 +73,7 @@
     "docs/DICTATION-REPAIR.md": "55f1615670520aa09bcbcc9cff953ad8d672e86883adcdf80f2b86ffce44a4a2",
     "docs/OPERATIONS.md": "65128c46d1a09519ef4bc065642a344b17da75e4dba46f2ced0a9c4b052195aa",
     "docs/SETUP.md": "6bbd0153f9ac6fe01e2deb8120d6f6bfdf774719bd058602c9551906ba503e19",
-    "docs/learning-loop.md": "6a2ecc95a9c0ed800e842f08c4e92e12a466ba89464249f4d68dc15c34aa7274",
+    "docs/learning-loop.md": "c3985e4644fea684fbeba2513144839417e7b5bb0d41fefdcf8b7e32a19f2190",
     "remote-agent/Package.swift": "ba75109e10980531850f84dbfc097c2159489eff727561a6ddcd1b68d48d0058",
     "remote-agent/Sources/vfinsert/AgentProtocol.swift": "188d292bea7548735020182a99c9b5354565221cec92a50e9d4f1b91870861ab",
     "remote-agent/Sources/vfinsert/CaptureDestination.swift": "b1e711b6fadd1af392d86336d56127b352fc55f5f1e0b15e6515e88aba3ac07f",
@@ -110,7 +110,7 @@
     "server/inference_worker.py": "5b3f43b88c2abedc25cfd6d3575aea819b0650aa92a28ce8ce24373a43cc4525",
     "server/learning.py": "d9f1b5e1060d1581145ec1895a26fd45a396fff5e7b4896ebe47aa4eed8c8b56",
     "server/meeting_quality.py": "c3afdc6081e91150045e307e5646078a1050aa8e42fe2ac3859f333c5f04b282",
-    "server/polish.py": "71fa70fe641cde76fc2f5b10a1013bb5140939d435c1e8138202d2b511c2f2d5",
+    "server/polish.py": "f514549ed4c504495be95197ce592d3beb65432a9482d54e4ba1c8f6ca4d236c",
     "server/requirements-diarize-lock.txt": "0634e2a6fd432ff6ae82b3cf7d045dcb963f07b5fea0599f9a85e3f18c805f15",
     "server/requirements-lock.txt": "52f6c853921d29a55dfebcaea9e77b5ab99f92ccea7baf0a92b31b0132af99ff",
     "server/requirements.txt": "bb12900b14f541ac611c731cd4fa89f5f1cbfc91514b1f17009929746378c394",
@@ -118,6 +118,7 @@
     "server/test_confirmation_modal.py": "977fb6ad6c8360f35b631d84fcaf51634a90203b8a71889d6bcc52229d4a8092",
     "server/test_continuous_learning.py": "a3d6dc4db55fe0d862895a28fae1a1cc1e5c0900a087dfa5832b3c2b05e57826",
     "server/test_coordinated_predicate.py": "64331fdbe426cc925d2b81729b700ab63de108156b6f59f810b08d793626af96",
+    "server/test_coordinated_update.py": "82a6534ca3c60089f98359398d13e2403a87d1d1c8426fc46b95781c6ad3622a",
     "server/test_current_fact.py": "d05924e0618c6c55df80810dbe2e1fdeabeef24e7ea2c679a718060e3b02290a",
     "server/test_deletion_instructions.py": "71d5044fe82f7932382a921fa2a0d22ef911d501079d5073699ce6c6a5bee3e3",
     "server/test_deploy_release.py": "e0c6b3d69a8d56973059f7e4c9ca22bf21fd955cff8dae745c90c69ee28ab0af",

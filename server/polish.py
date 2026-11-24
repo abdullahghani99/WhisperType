@@ -2514,6 +2514,34 @@ def repair_numeric_rating_punctuation(source, output):
     return output
 
 
+def restore_coordinated_update_topic(source, output):
+    """Retain an omitted second topic in a uniquely aligned opening update question.
+
+    The first topic and the following sentence must survive. Do not reconstruct
+    rewritten questions, duplicate topics, corrections or conditional scope.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|rather|instead|i mean|forget|ignore|retract|withdraw|cancel|drop|no longer|do not|don.t)\b', source+output, re.I):
+        return output
+    phrase = r'[a-z0-9]+(?:[ -][a-z0-9]+){0,11}'
+    pattern = (r'^(?P<head>what is (?:the )?(?:overall )?(?:update|status) on '
+               r'(?P<first>'+phrase+r')) and on (?P<second>[a-z0-9]+(?:[ -][a-z0-9]+){0,5}?)'
+               r'(?=\s*[.!?]|\s*$|\s+by the way\b)')
+    match = re.match(pattern, source, re.I)
+    if not match: return output
+    if re.search(r'\b(?:and|or|but|if|unless|whether|because|except|not|never)\b', match['first']+' '+match['second'], re.I):
+        return output
+    content = lambda text: {root(w) for w in words(text) if w not in FUNCTION_WORDS | FILLER_WORDS}
+    missing = content(match['second'])
+    if not missing or missing <= content(match['first']) or missing & content(output): return output
+    if len(re.findall(re.escape(match['head']), source, re.I)) != 1: return output
+    hit = re.match(re.escape(match['head'])+r'\?', output, re.I)
+    if not hit: return output
+    source_tail, output_tail = words(source[match.end():]), words(output[hit.end():])
+    if bool(source_tail) != bool(output_tail): return output
+    if source_tail and (len(source_tail) < 3 or source_tail[:3] != output_tail[:3]): return output
+    return output[:hit.end()-1] + ' and on ' + match['second'] + output[hit.end()-1:]
+
+
 def copyedit(text, generate, examples=(), known_terms=()):
     output, diagnostics = _copyedit(text, generate, examples, known_terms)
     source = clean_stutters(text)
@@ -2572,7 +2600,8 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (remove_stranded_determiner_restart, 'determiner_restart'),
                          (repair_topic_question_frame, 'topic_question_frame'),
                          (restore_statement_after_question, 'statement_after_question'),
-                         (repair_numeric_rating_punctuation, 'numeric_rating_punctuation')]:
+                         (repair_numeric_rating_punctuation, 'numeric_rating_punctuation'),
+                         (restore_coordinated_update_topic, 'coordinated_update_topic')]:
         candidate = repair(text if repair is remove_stranded_filler_comma else source, output)
         reason = rejection_reason(source, candidate, known_terms) if candidate != output else None
         if candidate != output and reason == 'content_or_order' and repair is repair_conditional_restart:

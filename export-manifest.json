@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "1d46ee6d5897a090681bdf0b401826c48c4605a2071275053173eab7d30c0113",
+    "VERSION": "221fb31300fd2cb2b4c79bde233ada0f0221d9be5a493ceb78cb6f10f736010d",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/AudioUploadTests.swift": "1bd8f3580878381507e4d23ede7f5ff16b90d7fc1ff05f1adf068b7c5298328e",
@@ -73,7 +73,7 @@
     "docs/DICTATION-REPAIR.md": "55f1615670520aa09bcbcc9cff953ad8d672e86883adcdf80f2b86ffce44a4a2",
     "docs/OPERATIONS.md": "65128c46d1a09519ef4bc065642a344b17da75e4dba46f2ced0a9c4b052195aa",
     "docs/SETUP.md": "6bbd0153f9ac6fe01e2deb8120d6f6bfdf774719bd058602c9551906ba503e19",
-    "docs/learning-loop.md": "c3985e4644fea684fbeba2513144839417e7b5bb0d41fefdcf8b7e32a19f2190",
+    "docs/learning-loop.md": "175a3f10bd6db4f057791a5239e0db15c65b9654b16e61b1a0c28162600ce22b",
     "remote-agent/Package.swift": "ba75109e10980531850f84dbfc097c2159489eff727561a6ddcd1b68d48d0058",
     "remote-agent/Sources/vfinsert/AgentProtocol.swift": "188d292bea7548735020182a99c9b5354565221cec92a50e9d4f1b91870861ab",
     "remote-agent/Sources/vfinsert/CaptureDestination.swift": "b1e711b6fadd1af392d86336d56127b352fc55f5f1e0b15e6515e88aba3ac07f",
@@ -110,7 +110,7 @@
     "server/inference_worker.py": "5b3f43b88c2abedc25cfd6d3575aea819b0650aa92a28ce8ce24373a43cc4525",
     "server/learning.py": "d9f1b5e1060d1581145ec1895a26fd45a396fff5e7b4896ebe47aa4eed8c8b56",
     "server/meeting_quality.py": "c3afdc6081e91150045e307e5646078a1050aa8e42fe2ac3859f333c5f04b282",
-    "server/polish.py": "f514549ed4c504495be95197ce592d3beb65432a9482d54e4ba1c8f6ca4d236c",
+    "server/polish.py": "bca07f4a180a27298c03401499ba8d14276276d0de8c5400f2a6140859c5949a",
     "server/requirements-diarize-lock.txt": "0634e2a6fd432ff6ae82b3cf7d045dcb963f07b5fea0599f9a85e3f18c805f15",
     "server/requirements-lock.txt": "52f6c853921d29a55dfebcaea9e77b5ab99f92ccea7baf0a92b31b0132af99ff",
     "server/requirements.txt": "bb12900b14f541ac611c731cd4fa89f5f1cbfc91514b1f17009929746378c394",
@@ -135,6 +135,7 @@
     "server/test_numeric_rating.py": "02a46051fbfd440d3256574187e0afe794fb885aa0e0af3728d1854ed93bd12f",
     "server/test_polish.py": "4ff9865e160bf2b1ef09d269d6f371b0b92bde0508c7be922d219094a3d01ed8",
     "server/test_polite_boundary.py": "178283493211185b218f1e6c2158a29b0ff9eeded5be29cb79457792b836c08c",
+    "server/test_question_alternative.py": "56d110ae5675cf090247e04ae87b9943e6c81396192776aec7345c161adaf0fb",
     "server/test_reliability.py": "ed0ebbf599b7b16bf146a603e4e0fc84221d28af7112df4655df0bb6c0f48c73",
     "server/test_remaining_quality.py": "62ddadbd25b9e286b4189e43839b65e1ed4ac3d96c09c07092ce18a4a3eb2b6a",
     "server/test_repeated_actor.py": "b0c04b8c0ddaabe628a7cf1c054906c0ba42bd7c14d3087fbdb6602571775456",

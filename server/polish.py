@@ -2542,6 +2542,48 @@ def restore_coordinated_update_topic(source, output):
     return output[:hit.end()-1] + ' and on ' + match['second'] + output[hit.end()-1:]
 
 
+def restore_question_before_alternative(source, output):
+    """Restore an omitted direct question between surviving statement/action anchors.
+
+    An explicit 'Or let me/us' action is an alternative, not an answer. Restore
+    only a complete source question and its connector; leave other cleanup intact.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|instead|rather|i mean|forget|ignore|withdraw|retract|rephrase)\b', source+output, re.I):
+        return output
+    if re.search(r'\b(?:what|which|why|how|where|when|'
+                 r'(?:do|does|did|can|could|should|would|will|is|are|was|were|have|has|am) '
+                 r'(?:i|you|we|he|she|they|it|this|that))\b[^.!?]*\?', output, re.I):
+        return output
+    pattern = (r'(?P<question>(?:what|which|why|how|where|when)(?: more| else)? '
+               r'(?:do|does|did|can|could|should|would|will|is|are|was|were|have|has) '
+               r'(?:i|you|we|he|she|they|it|this|that) [^.!?;:\n]{1,100})\?\s+'
+               r'or (?P<action>let (?:me|us) [a-z]+(?: [a-z]+){1,3})\b')
+    matches = list(re.finditer(pattern, source, re.I))
+    if len(matches) != 1: return output
+    match = matches[0]; prefix = source[:match.start()].rstrip()
+    if not prefix or prefix[-1] not in ',.': return output
+    if re.search(r'\b(?:said|says|say|asked|asks|ask|told|tell|wrote|write|quote|question|whether|wonder|if|unless|suppose|answer)\b|[?"“”`]', prefix, re.I):
+        return output
+    before = words(prefix, expand=False)[-4:]; after = words(match['action'], expand=False)[:4]
+    if len(before) != 4 or len(after) != 4: return output
+    question = match['question'].strip()
+    if not 4 <= len(words(question)) <= 22: return output
+    # A source question retained or paraphrased elsewhere is not a proven omission.
+    content = {root(w) for w in words(question) if w not in (FUNCTION_WORDS - {'more','need'}) | FILLER_WORDS}
+    if not content - {root(w) for w in words(output)}: return output
+    anchor = lambda seq: r'\b' + r'[ ,\t]+'.join(re.escape(w) for w in seq) + r'\b'
+    left, right = anchor(before), anchor(after)
+    if any(len(list(re.finditer(a, text, re.I))) != 1 for a in (left,right) for text in (source,output)):
+        return output
+    target = left + r'(?P<gap>[.,;]\s+(?:or\s+)?)(?P<right>' + right + ')'
+    hits = list(re.finditer(target, output, re.I))
+    if len(hits) != 1: return output
+    hit = hits[0]
+    return (output[:hit.start('gap')] + '. ' + question[0].upper() + question[1:]
+            + '? Or ' + output[hit.start('right'):hit.start('right')+1].lower()
+            + output[hit.start('right')+1:])
+
+
 def copyedit(text, generate, examples=(), known_terms=()):
     output, diagnostics = _copyedit(text, generate, examples, known_terms)
     source = clean_stutters(text)
@@ -2601,7 +2643,8 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (repair_topic_question_frame, 'topic_question_frame'),
                          (restore_statement_after_question, 'statement_after_question'),
                          (repair_numeric_rating_punctuation, 'numeric_rating_punctuation'),
-                         (restore_coordinated_update_topic, 'coordinated_update_topic')]:
+                         (restore_coordinated_update_topic, 'coordinated_update_topic'),
+                         (restore_question_before_alternative, 'question_before_alternative')]:
         candidate = repair(text if repair is remove_stranded_filler_comma else source, output)
         reason = rejection_reason(source, candidate, known_terms) if candidate != output else None
         if candidate != output and reason == 'content_or_order' and repair is repair_conditional_restart:

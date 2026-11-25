@@ -252,3 +252,19 @@ This covers exact topic alignment only. Rewritten first topics and separately
 omitted questions remain open mechanisms. Compare complete actual outputs and
 fresh source-based nonregression before promotion; synthetic checks alone do not
 establish a real dictation-quality improvement.
+
+
+## Questions before an alternative action
+
+A model can remove a complete independent question between a statement and an
+“Or let me/us” alternative. A bounded repair restores the source question and
+connector when unique four-word statement/action anchors remain adjacent in the
+accepted output. It preserves other accepted cleanup and adds no generation call.
+An explicit source boundary is required; reported, conditional, corrected,
+answered, repeated and ambiguous questions abstain. A surviving direct question
+also abstains so an existing paraphrase is not duplicated.
+
+This closes only the aligned question-plus-alternative omission mechanism.
+Missing connectors beside retained questions, rewritten anchors and other
+alternative forms remain separate work. Promotion still requires complete actual
+comparisons, fresh source-based evaluation and idle no-insertion verification.

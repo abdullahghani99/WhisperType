@@ -258,6 +258,70 @@ def retained_deletion_instructions(source, rendered):
     return result[:3]
 
 
+def interrupted_request_excerpts(source, rendered):
+    """Retain a request split by short acknowledgments, without inferring consent.
+
+    Each turn keeps its speaker and exact wording. In particular, a response
+    before the final specification is not promoted to acceptance of that detail.
+    Only short, interrupted document/list requests qualify; ordinary capability
+    statements and complete requests stay outside this recovery rule.
+    """
+    start = re.compile(r'^(?:Please,? |Just )?(?:send|share|give|provide) (?:me|us)\b', re.I)
+    unfinished = re.compile(r'\b(?:the|a|an|complete|full|updated|revised|detailed|separate)\s*$|,$', re.I)
+    acknowledgment = re.compile(r'(?:okay|ok|yes|sure|thank you|thanks|no problem)(?:[, .!]+(?:okay|ok|yes|sure|thank you|thanks|no problem))*[.!]?', re.I)
+    framing = re.compile(r'["“”]|\b(?:if|unless|provided|suppose|imagine|example|hypothetical|quoted?|said|says|role.play|pretend|reading|yesterday|previously)\b', re.I)
+    disposition = re.compile(r"\b(?:withdraw|retract|cancel|instead|correction|actually|never mind|forget that|not needed|no longer|cannot|can't|won't|will not|refuse)\b", re.I)
+    def norm(text): return re.sub(r'\W+', ' ', text.casefold()).strip()
+    candidates = []
+    for index, row in enumerate(source):
+        if not row['speaker'] or not start.match(row['text']) or not unfinished.search(row['text']): continue
+        if any(framing.search(x['text']) for x in source[max(0,index-3):index+1]): continue
+        # Only one other attributed speaker may interrupt. Keep the chronology
+        # instead of silently concatenating text across different speakers.
+        turns = [dict(row)]; requester = row['speaker']; responder = None
+        interruptions = 0; end = index+1
+        while end < min(len(source), index+8):
+            following = source[end]
+            text = following['text']
+            if framing.search(text) or disposition.search(text): break
+            if following['speaker'] == requester:
+                if start.match(text): break
+                if turns[-1]['speaker'] == requester:
+                    turns[-1]['text'] += ' '+text
+                else:
+                    # A lowercase continuation is required. A new sentence
+                    # after an acknowledgment is not assumed to finish a task.
+                    if not text or not text[0].islower(): break
+                    turns.append(dict(following))
+                end += 1
+                if text.endswith(('.', '!', '?')): break
+            elif (following['speaker'] and following['speaker'] != requester
+                  and (responder is None or responder == following['speaker'])
+                  and acknowledgment.fullmatch(text) and interruptions < 2):
+                responder = following['speaker']; interruptions += 1
+                turns.append(dict(following)); end += 1
+            else: break
+        request = ' '.join(x['text'] for x in turns if x['speaker'] == requester)
+        if not interruptions or turns[-1]['speaker'] != requester or len(turns) < 3: continue
+        if not re.search(r'\b(?:list|report|document|schedule)\b', request, re.I): continue
+        if len(request.split()) > 75 or len(request.split()) < 7: continue
+        # Do not quote an unfinished continuation as a recovered specification.
+        if re.search(r'\b(?:the|a|an|and|or|to|of|for|with|that|these|those|complete|full|because|bifurcate|split|separate)\W*$', request, re.I): continue
+        if any(disposition.search(x['text']) or framing.search(x['text']) for x in source[end:]): continue
+        own_parts = [x['text'] for x in turns if x['speaker'] == requester]
+        if all(norm(part) in norm(rendered) for part in own_parts): continue
+        # A readable summary can already contain the entire requested object
+        # verbatim while changing "give us" to "requested ... from". Do not
+        # repeat that exchange merely because its leading verb was paraphrased.
+        body = re.sub(r'^(?:Please,? |Just )?(?:send|share|give|provide) (?:me|us)\s+(?:(?:the|a|an)\s+)?', '', request, flags=re.I)
+        def object_words(text): return ' '.join(w for w in norm(text).split() if w not in {'the', 'a', 'an'})
+        if len(body.split()) >= 5 and object_words(body) in object_words(rendered) and norm(requester) in norm(rendered): continue
+        candidates.append(turns)
+    # Multiple interrupted requests need a broader relevance/deduplication rule.
+    if len(candidates) != 1: return []
+    return [turn['speaker']+': “'+turn['text']+'”' for turn in candidates[0]]
+
+
 def selected_notes(source, response):
     """Render validated excerpts for commitments; keep summaries readable."""
     body = re.sub(r'^```(?:json)?\s*|\s*```$', '', response.strip())
@@ -370,6 +434,9 @@ def selected_notes(source, response):
     instructions = retained_deletion_instructions(source, '\n\n'.join(output))
     if instructions:
         output.append('**Instructions stated:**\n'+'\n'.join('- '+line for line in instructions))
+    request = interrupted_request_excerpts(source, '\n\n'.join(output))
+    if request:
+        output.append('**Request excerpts:**\n- '+'\n  '.join(request))
     if not output:raise ValueError('No supported notes selected; transcript retained')
     return '\n\n'.join(output)
 

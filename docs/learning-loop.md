@@ -268,3 +268,18 @@ This closes only the aligned question-plus-alternative omission mechanism.
 Missing connectors beside retained questions, rewritten anchors and other
 alternative forms remain separate work. Promotion still requires complete actual
 comparisons, fresh source-based evaluation and idle no-insertion verification.
+
+
+## Interrupted meeting requests
+
+A request for a list or document can be split across turns by brief acknowledgments.
+A bounded recovery retains the exact chronological exchange when an unfinished
+direct request resumes with the same speaker and an explicit specification.
+The excerpts remain separate from action items: an acknowledgment before the
+last detail does not establish acceptance of that detail. Existing complete
+request summaries are preserved without unnecessary repetition.
+
+Conditional, quoted, withdrawn, incomplete, ambiguous-speaker and multiple-request
+contexts abstain. This adds no model calls and changes neither capture nor
+speaker assignment. It closes only interrupted request recall; acceptance,
+owner inference and wider note accuracy need separate source-grounded evaluation.

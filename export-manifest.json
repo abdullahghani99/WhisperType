@@ -1,6 +1,6 @@
 {
   "files": {
-    "VERSION": "47d3724cf33749600f90c0a54a13ecfd079c82da6a5be012d70d1d7f7d25a000",
+    "VERSION": "efae64108ef260c70e75e0685b08d4e23b34274742dece47654275ef30a734bc",
     "client/Info.plist": "627e3ed0ced44dc193d299c9b3c6d9e6c2331c697f84fd4e8679b6c63ae2f33b",
     "client/Package.swift": "6dada9cbfe9638672b002021addb5c5980c19e09361de40bf9d89d49d107b00c",
     "client/Sources/VFTests/AudioUploadTests.swift": "1bd8f3580878381507e4d23ede7f5ff16b90d7fc1ff05f1adf068b7c5298328e",
@@ -73,7 +73,7 @@
     "docs/DICTATION-REPAIR.md": "55f1615670520aa09bcbcc9cff953ad8d672e86883adcdf80f2b86ffce44a4a2",
     "docs/OPERATIONS.md": "65128c46d1a09519ef4bc065642a344b17da75e4dba46f2ced0a9c4b052195aa",
     "docs/SETUP.md": "6bbd0153f9ac6fe01e2deb8120d6f6bfdf774719bd058602c9551906ba503e19",
-    "docs/learning-loop.md": "a829580cc75b2ef3debd9fbeae732ab2a3aeeec9ff27f17b9e6e3ae0eb8cde82",
+    "docs/learning-loop.md": "05d002f39476711ad638b7f14e318e5bcd4a7d9634b3578b8d32a88352432354",
     "remote-agent/Package.swift": "ba75109e10980531850f84dbfc097c2159489eff727561a6ddcd1b68d48d0058",
     "remote-agent/Sources/vfinsert/AgentProtocol.swift": "188d292bea7548735020182a99c9b5354565221cec92a50e9d4f1b91870861ab",
     "remote-agent/Sources/vfinsert/CaptureDestination.swift": "b1e711b6fadd1af392d86336d56127b352fc55f5f1e0b15e6515e88aba3ac07f",
@@ -110,7 +110,7 @@
     "server/inference_worker.py": "5b3f43b88c2abedc25cfd6d3575aea819b0650aa92a28ce8ce24373a43cc4525",
     "server/learning.py": "d9f1b5e1060d1581145ec1895a26fd45a396fff5e7b4896ebe47aa4eed8c8b56",
     "server/meeting_quality.py": "29e9aefdc3f9d81ba2a0d8dc265ccc93e7a2839a2fcc0058b8e1c50059a55edf",
-    "server/polish.py": "bca07f4a180a27298c03401499ba8d14276276d0de8c5400f2a6140859c5949a",
+    "server/polish.py": "c9168b4d90f2ad02feb858747dd1cb2f94bf68865a19e8368e18d2bf6750eb77",
     "server/requirements-diarize-lock.txt": "0634e2a6fd432ff6ae82b3cf7d045dcb963f07b5fea0599f9a85e3f18c805f15",
     "server/requirements-lock.txt": "52f6c853921d29a55dfebcaea9e77b5ab99f92ccea7baf0a92b31b0132af99ff",
     "server/requirements.txt": "bb12900b14f541ac611c731cd4fa89f5f1cbfc91514b1f17009929746378c394",
@@ -142,6 +142,7 @@
     "server/test_repeated_actor.py": "b0c04b8c0ddaabe628a7cf1c054906c0ba42bd7c14d3087fbdb6602571775456",
     "server/test_speakers.py": "08debdb8e31183c2d4d8a3d5c18c2a9ceb897e3c2ba772d16cbf6d4a5815d7e7",
     "server/test_speech_act.py": "794579d6546107d124dc87bd0adc8062bc3031ee15f1d145a5e982476ac2bb4e",
+    "server/test_terminal_recipient.py": "431100d4d3e403a3b6db67de4df6c2c23e53c74848810d5e65a14d07a0b98f57",
     "server/test_topic_frame.py": "e408fd4e4c7a4e9747d58c2729ea0a92c66b2dd95eb61273ad3d939c69834e8b",
     "server/server.py": "9513cb6c6382c6b72d5dac90c0813edb408db23ae2290f85d1ef530c711a2801",
     "tests/agent/AgentTests.swift": "0330465f4f0df8fb027f775b5d326ceb6e3f815a9a7d8f2d13f3fe1740c51d40",

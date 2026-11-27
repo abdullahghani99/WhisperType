@@ -2584,6 +2584,35 @@ def restore_question_before_alternative(source, output):
             + output[hit.start('right')+1:])
 
 
+
+def restore_terminal_recipient(source, output):
+    """Keep a sentence-final prepositional object in the speaker's perspective.
+
+    Require an otherwise token-aligned clause. Quotes, reported speech and
+    corrections are ambiguous; leave those to the existing copyediting policy.
+    """
+    if re.search(r'["“”`]|\b(?:sorry|correction|instead|rather|i mean|actually|'
+                 r'forget|ignore|withdraw|retract|rephrase|said|says|say|asked|asks|'
+                 r'ask|told|tell|wrote|write|quote)\b', source+output, re.I):
+        return output
+    pattern = r'\b(?P<prep>for|to|from|with|about|against) (?P<person>me|you|him|her|us|them)(?=[.!?]?\s*$)'
+    a, b = re.search(pattern, source, re.I), re.search(pattern, output, re.I)
+    if not a or not b or a['prep'].lower() != b['prep'].lower(): return output
+    if a['person'].lower() == b['person'].lower(): return output
+    # Compare the entire final clause, not just an anchor which could belong to
+    # another sentence. Only leading hesitation/connectors may be cleaned up.
+    def clause(text, end):
+        prefix = re.split(r'[.!?;\n]', text[:end])[-1]
+        tokens = words(prefix, expand=False)
+        while tokens and tokens[0] in {'um', 'uh', 'so', 'well'}: tokens.pop(0)
+        return tokens
+    left, right = clause(source, a.start('person')), clause(output, b.start('person'))
+    if len(left) < 5 or left != right: return output
+    # Do not select one of several nearby recipients from the same clause.
+    if any(w in {'me','you','him','her','us','them'} for w in left[-4:-1]): return output
+    return output[:b.start('person')] + a['person'] + output[b.end('person'):]
+
+
 def copyedit(text, generate, examples=(), known_terms=()):
     output, diagnostics = _copyedit(text, generate, examples, known_terms)
     source = clean_stutters(text)
@@ -2644,7 +2673,8 @@ def copyedit(text, generate, examples=(), known_terms=()):
                          (restore_statement_after_question, 'statement_after_question'),
                          (repair_numeric_rating_punctuation, 'numeric_rating_punctuation'),
                          (restore_coordinated_update_topic, 'coordinated_update_topic'),
-                         (restore_question_before_alternative, 'question_before_alternative')]:
+                         (restore_question_before_alternative, 'question_before_alternative'),
+                         (restore_terminal_recipient, 'terminal_recipient')]:
         candidate = repair(text if repair is remove_stranded_filler_comma else source, output)
         reason = rejection_reason(source, candidate, known_terms) if candidate != output else None
         if candidate != output and reason == 'content_or_order' and repair is repair_conditional_restart:

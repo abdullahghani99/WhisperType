@@ -283,3 +283,11 @@ Conditional, quoted, withdrawn, incomplete, ambiguous-speaker and multiple-reque
 contexts abstain. This adds no model calls and changes neither capture nor
 speaker assignment. It closes only interrupted request recall; acceptance,
 owner inference and wider note accuracy need separate source-grounded evaluation.
+
+## Recipient alignment
+
+A sentence-final prepositional object can change the intended recipient even when
+all content words survive. Restore it only when the preceding final clause is
+otherwise aligned, and keep surrounding cleanup. Quotes, reported speech, explicit
+corrections and changed contexts require separate evidence; a passing narrow
+recipient repair does not close those broader mechanisms.
